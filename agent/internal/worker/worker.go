@@ -67,7 +67,7 @@ func (writer logWriter) Write(data []byte) (int, error) {
 	return length, nil
 }
 
-func Run(input io.Reader, output io.Writer) error {
+func Run(processContext context.Context, input io.Reader, output io.Writer) error {
 	decoder := json.NewDecoder(input)
 	var initial Input
 	if err := decoder.Decode(&initial); err != nil {
@@ -77,7 +77,7 @@ func Run(input io.Reader, output io.Writer) error {
 		return errors.New("invalid worker assignment")
 	}
 	emit := &emitter{encoder: json.NewEncoder(output)}
-	parent, cancel := context.WithCancelCause(context.Background())
+	parent, cancel := context.WithCancelCause(processContext)
 	defer cancel(nil)
 	ctx, stop := context.WithTimeout(parent, time.Duration(initial.Assignment.TimeoutSeconds)*time.Second)
 	defer stop()

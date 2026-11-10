@@ -35,7 +35,9 @@ func run() error {
 		return errors.New("usage: artifact-agent register|run|doctor|service|version")
 	}
 	if os.Args[1] == "worker" {
-		return worker.Run(os.Stdin, os.Stdout)
+		ctx, stop := workerSignalContext()
+		defer stop()
+		return worker.Run(ctx, os.Stdin, os.Stdout)
 	}
 	if os.Args[1] == "git-askpass" {
 		worker.Askpass(os.Args[2:])

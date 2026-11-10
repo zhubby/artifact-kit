@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,15 +38,21 @@ import (
 const serviceTestUser = "ak-service-ci"
 
 type serviceConnection struct {
-	hello  *pb.AgentEvent
-	closed chan struct{}
+	hello    *pb.AgentEvent
+	closed   chan struct{}
+	commands chan *pb.Command
+	finished chan *pb.AgentEvent
+	peer     *servicePeer
 }
 
 // This loopback peer exercises the installed Agent and real mTLS transport.
-// It is not the Rust control plane or an application-build acceptance test.
+// It acknowledges test-task events/logs, but is not the Rust control plane,
+// object storage, or a real application/signing acceptance test.
 type servicePeer struct {
 	pb.UnimplementedControlServer
 	connected chan serviceConnection
+	logMutex  sync.Mutex
+	logs      map[string][]byte
 }
 
 func (peer *servicePeer) Connect(stream pb.Control_ConnectServer) error {
@@ -55,18 +63,98 @@ func (peer *servicePeer) Connect(stream pb.Control_ConnectServer) error {
 	if event.Kind != "hello" || event.AgentId != "native-service-test" || event.ProtocolMajor != 1 {
 		return status.Error(codes.PermissionDenied, "unexpected test Agent identity")
 	}
-	connection := serviceConnection{hello: event, closed: make(chan struct{})}
+	connection := serviceConnection{hello: event, closed: make(chan struct{}), commands: make(chan *pb.Command), finished: make(chan *pb.AgentEvent, 8), peer: peer}
 	defer close(connection.closed)
 	select {
 	case peer.connected <- connection:
 	case <-stream.Context().Done():
 		return stream.Context().Err()
 	}
+	events := make(chan *pb.AgentEvent)
+	errors := make(chan error, 1)
+	go func() {
+		for {
+			event, err := stream.Recv()
+			if err != nil {
+				errors <- err
+				return
+			}
+			select {
+			case events <- event:
+			case <-stream.Context().Done():
+				return
+			}
+		}
+	}()
 	for {
-		if _, err := stream.Recv(); err != nil {
+		var command *pb.Command
+		select {
+		case command = <-connection.commands:
+		case event := <-events:
+			if event.Kind == "accept" {
+				command = &pb.Command{Kind: "start", AttemptId: event.AttemptId, LeaseToken: event.LeaseToken, RequestId: event.CommandId, LeaseSeconds: 90}
+			} else if event.Kind == "heartbeat" {
+				var payload struct {
+					Active []struct {
+						ID    string `json:"attempt_id"`
+						Token string `json:"lease_token"`
+					} `json:"active_attempts"`
+				}
+				if err := json.Unmarshal([]byte(event.PayloadJson), &payload); err != nil {
+					return err
+				}
+				if len(payload.Active) == 1 {
+					active := payload.Active[0]
+					command = &pb.Command{Kind: "renew", AttemptId: active.ID, LeaseToken: active.Token, RequestId: event.CommandId, LeaseSeconds: 90}
+				}
+			} else if event.Sequence > 0 {
+				command = &pb.Command{Kind: "event_ack", AttemptId: event.AttemptId, AckSequence: event.Sequence}
+			}
+			if event.Kind == "finished" {
+				select {
+				case connection.finished <- event:
+				case <-stream.Context().Done():
+					return stream.Context().Err()
+				}
+			}
+		case err := <-errors:
 			return err
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		}
+		if command != nil {
+			if err := stream.Send(command); err != nil {
+				return err
+			}
 		}
 	}
+}
+
+func (peer *servicePeer) UploadLogs(stream pb.Control_UploadLogsServer) error {
+	var through uint64
+	for {
+		chunk, err := stream.Recv()
+		if err == io.EOF {
+			return stream.SendAndClose(&pb.LogAck{ThroughSequence: through})
+		}
+		if err != nil {
+			return err
+		}
+		peer.logMutex.Lock()
+		data := append(peer.logs[chunk.AttemptId], chunk.Data...)
+		if len(data) > 64*1024 {
+			data = data[len(data)-64*1024:]
+		}
+		peer.logs[chunk.AttemptId] = data
+		peer.logMutex.Unlock()
+		through = chunk.Sequence
+	}
+}
+
+func (peer *servicePeer) taskLogs(id string) string {
+	peer.logMutex.Lock()
+	defer peer.logMutex.Unlock()
+	return string(peer.logs[id])
 }
 
 type nativeServiceState struct {
@@ -143,6 +231,11 @@ func TestNativeServiceLifecycle(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
+	// macOS resolves /tmp to /private/tmp in the actual workload's getcwd.
+	directory, err = filepath.EvalSymlinks(directory)
+	if err != nil {
+		test.Fatal(err)
+	}
 	// The executable path and private configuration both contain spaces.
 	binaryDirectory := filepath.Join(directory, "agent bin %i $HOME {{literal}}")
 	private := filepath.Join(directory, "private data %n $HOME {{literal}}")
@@ -181,9 +274,17 @@ func TestNativeServiceLifecycle(test *testing.T) {
 	if err := config.Save(configPath, configuration); err != nil {
 		test.Fatal(err)
 	}
+	workload := newServiceWorkload(test, private)
 	password := fmt.Sprintf("Ak-CI-%x!", makeServiceRandom(test, 20))
 	accountEnvironment := append(os.Environ(), "AK_TEST_SERVICE_PASSWORD="+password)
 	createServiceTestUser(test, accountEnvironment, directory, private)
+	test.Cleanup(workload.stop)
+	if runtime.GOOS == "windows" {
+		// Git's local upload-pack checks repository ownership, even when its
+		// DACL already allows access. Change only this private fixture's owner.
+		environment := append(os.Environ(), "AK_TEST_GIT_FIXTURE="+workload.repository)
+		requireNativeCommand(test, environment, true, "pwsh.exe", "-NoProfile", "-NonInteractive", "-Command", `$ErrorActionPreference='Stop'; $sid=(Get-LocalUser -Name 'ak-service-ci').SID; $paths=@((Get-Item -LiteralPath $env:AK_TEST_GIT_FIXTURE))+@(Get-ChildItem -LiteralPath $env:AK_TEST_GIT_FIXTURE -Recurse -Force); foreach ($path in $paths) { $acl=Get-Acl -LiteralPath $path.FullName; $acl.SetOwner($sid); Set-Acl -LiteralPath $path.FullName -AclObject $acl }`)
+	}
 	if runtime.GOOS != "windows" {
 		for path, mode := range map[string]string{private: "700", configPath: "600", configuration.KeyFile: "600"} {
 			arguments := []string{"stat", "-c", "%U %a", path}
@@ -239,22 +340,37 @@ func TestNativeServiceLifecycle(test *testing.T) {
 			requireNativeCommand(test, nil, true, "test", "-f", filepath.Join(private, name))
 		}
 	}
+	firstTask := workload.assign(test, first, 1, "parent")
+	firstTreeStopped, _ := workload.awaitTree(test, first, firstTask, state.PID, serviceTestUser, configuration.Root)
 	action("restart")
 	awaitServiceDisconnect(test, first)
+	firstTreeStopped()
 	second := awaitServiceConnection(test, peer)
 	state = awaitNativeService(test, true)
 	if state.PID == firstPID || state.User != serviceTestUser {
 		test.Fatalf("restart failed to replace the service process under its dedicated account: %+v", state)
 	}
 	test.Logf("restart created a fresh authenticated Agent process (pid=%d)", state.PID)
+	completed := workload.assign(test, second, 2, "success")
+	workload.awaitSuccess(test, second, completed)
+	secondTask := workload.assign(test, second, 3, "parent")
+	secondTreeStopped, _ := workload.awaitTree(test, second, secondTask, state.PID, serviceTestUser, configuration.Root)
 	action("stop")
 	awaitServiceDisconnect(test, second)
+	awaitNativeService(test, false)
+	secondTreeStopped()
+	action("start")
+	third := awaitServiceConnection(test, peer)
+	completed = workload.assign(test, third, 4, "success")
+	workload.awaitSuccess(test, third, completed)
+	action("stop")
+	awaitServiceDisconnect(test, third)
 	awaitNativeService(test, false)
 	action("uninstall")
 	if state := inspectNativeService(test); state.Installed {
 		test.Fatalf("service still installed after uninstall: %+v", state)
 	}
-	test.Log("native install, automatic-start configuration, account identity, mTLS, restart, stop and uninstall passed")
+	test.Log("native install, account identity, mTLS, active Worker/process-tree restart and stop, follow-up tasks, workspace cleanup and uninstall passed")
 }
 
 func makeServiceRandom(test *testing.T, size int) []byte {
@@ -320,7 +436,7 @@ func startServicePeer(test *testing.T, private string) (string, *servicePeer) {
 	roots := x509.NewCertPool()
 	roots.AppendCertsFromPEM(caPEM)
 	server := grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS13, Certificates: certificates[:1], ClientCAs: roots, ClientAuth: tls.RequireAndVerifyClientCert})))
-	peer := &servicePeer{connected: make(chan serviceConnection, 8)}
+	peer := &servicePeer{connected: make(chan serviceConnection, 8), logs: map[string][]byte{}}
 	pb.RegisterControlServer(server, peer)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

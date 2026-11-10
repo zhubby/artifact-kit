@@ -3,6 +3,7 @@
 package worker
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -32,7 +33,7 @@ func TestWorkerKillsProcessTreeOnParentDeathAndLeaseExpiry(test *testing.T) {
 			defer reader.Close()
 			defer writer.Close()
 			done := make(chan error, 1)
-			go func() { done <- Run(reader, io.Discard) }()
+			go func() { done <- Run(context.Background(), reader, io.Discard) }()
 			lease := uint32(30)
 			if scenario == "lease-expiry" {
 				lease = 1

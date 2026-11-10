@@ -99,15 +99,19 @@ artifact-agent.exe service --action start --config C:\ArtifactKit\agent.json
 
 Agent 启动后若发生不可恢复的本地错误（例如配置从未注册），服务进程会记录错误并以非零状态退出，让系统服务管理器看到失败；网络中断仍由 Agent 重连。系统是否自动重启失败服务取决于实际服务管理器及其恢复策略。
 
+Unix Worker 将 SIGTERM、SIGINT 和因 Agent 关闭输出管道产生的 SIGPIPE 转为执行取消，先终止任务进程树并删除该 attempt 的受管工作目录。Worker 的信号处理只在独立 Worker 命令中启用。Windows 继续通过控制管道关闭取消任务，由 Job Object 清理后代。
+
 系统服务不要求交互式用户的 HOME / APPDATA：服务使用安装时保存的绝对 `--config` 路径。没有用户配置目录时，交互式注册命令也必须显式提供 `--config` 和 `--root`。systemd 单元对可执行文件与配置参数逐项引用，允许安装路径含空格；不把执行参数的转义误用为启动条件路径。
 
 ### 临时 CI 原生服务验收
 
 `native-agent` 作业在三种 GitHub 托管临时 VM 上显式启用 `TestNativeServiceLifecycle`。测试创建专用非管理员账户和临时私有配置，通过实际 systemd / launchd / SCM 安装 Agent，核对自动启动配置和真实进程账户，并连接仅监听 loopback、要求客户端证书的 Go 测试控制端；重启必须产生新的认证连接及 PID，停止后连接必须关闭，卸载后服务记录必须消失。二进制及配置路径均含空格，测试结束卸载服务、删除其创建的账户和目录。
 
+测试控制端还分配固定本地 Git 提交的受控任务。任务启动真实后代进程，测试通过 OS 进程信息核对专用账户和 Agent → Worker → 步骤 / 后代的实际归属；在服务重启及停止后要求所有旧任务进程消失、工作目录被删除，再让新 Agent / Worker 完成后续任务。受控程序及其后代有两分钟运行上限；失败清理只停止本次观察端，让这些任务自行退出。Windows 使用进程句柄观察退出，避免只按 PID 推断结果。
+
 普通 `go test` 会明确跳过此项；只设置 `AK_NATIVE_SERVICE_TESTS=1` 也不允许在开发机运行，必须同时处于 GitHub 托管临时 VM。Windows 临时账户只单独授予 `SeServiceLogonRight`，不改写既有登录权限策略；私有目录 ACL 限该账户、当前测试进程身份、SYSTEM 与管理员。
 
-这项测试只验收原生服务管理链路。其 Go 测试控制端不代替真实 Rust / PostgreSQL / S3 联测；检查自动启动配置不证明真实重启后恢复，空闲服务启停也不证明服务内真实应用、SDK、签名环境及在途构建的停止行为。
+这项测试覆盖原生服务管理及受控 Worker 的在途停止链路。Go 测试控制端只确认事件和日志，不代替真实 Rust / PostgreSQL / S3 联测；固定 Git 中的有限测试程序不代表五类真实应用、SDK 或发行签名环境。自动启动配置也不证明 VM / 实体机重启后的恢复。
 
 ## 本机签名配置
 

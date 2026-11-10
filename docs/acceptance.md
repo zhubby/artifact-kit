@@ -81,6 +81,14 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 
 此项没有在用户的 Mac 上安装系统服务，没有执行 VM / 实体机重启，没有给服务分配真实应用或发行签名任务。Go 测试控制端只验证服务管理链路，不代替 Rust 协议联测。自动启动配置存在不等于重启后恢复已验证，空闲服务启停不等于在途构建及子进程终止已验收。
 
+### 在途 Worker 的退出与清理
+
+新增 `TestForegroundAgentStopsActiveProcessTree` 在本机 macOS arm64 上实际运行编译后的 Agent / Worker、固定本地 Git 提交和有两分钟上限的后代程序。正常 SIGINT 退出、Agent 强制退出及单独向 Worker 发送 SIGTERM 三个场景均核对真实进程祖先与账户、旧 Worker / 步骤 / 后代消失，以及该 attempt 工作目录删除；三项修复前失败、修复后通过。
+
+独立管道复现保留于 `.local/native-service-workload/`：只关闭控制管道时原 Worker 以状态 1 退出且目录删除；同时关闭输出管道时被 SIGPIPE 终止（状态 -13），SIGTERM 则为 -15，两者均留下目录。Worker SIGTERM 的回归还实际观察到存活的后代。修复将独立 Unix Worker 的这些信号转为执行上下文取消，保证进程树终止和目录清理先完成；相同三个复现修复后均以状态 1 退出、无遗留目录。全部 Go vet / race 与五目标交叉构建通过。
+
+`TestNativeServiceLifecycle` 同时增加受控在途任务的真实服务重启 / 停止、OS 进程账户与归属、工作目录清理和后续任务成功检查。原三类空闲服务结果仍按上节历史运行记录；新增场景的三类临时 VM 执行结果以本提交的 [Actions](https://github.com/zhubby/artifact-kit/actions/workflows/ci.yml?query=branch%3Amain) 为准。本机前台结果不代表三类系统服务已验收，固定 Git 测试程序也不代表真实应用、实体机重启、SDK 或发行签名。
+
 ### 完整 Compose / TLS 隔离联测
 
 `scripts/compose_acceptance.py` 从 Git HEAD 快照构建产品镜像，并运行生产清单的 PostgreSQL、SeaweedFS、Rust 控制面、Next.js、Caddy 五个实际服务。运行 `1e38068d0dea` 的产品源码为 `1dae112f6a5319fc0521f092ae30da5fe5240bc8`，外层 23 项及专用 probe 的 21 项检查通过：
@@ -109,6 +117,8 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 另对运行 `44d3abff77c5` 在 S3 已暂停时强制终止测试容器。控制脚本按预期以状态 1 失败，Docker daemon 的 `unpause` 事件证明失败清理先恢复了本次 S3，随后容器 / 卷 / 网络全部移除，原开发服务身份 / 启动时间 / 重启次数保持。`interruption-regression.json` 和原始 Docker 事件保留在该运行目录；此运行保留为预期失败记录。
 
 远端 `42766169439` 的 Compose 运行 `5288d46f5b1d` 在原有 21 项流量检查通过后，遇到故障 fixture 的就绪检查竞态：Worker 已开始执行，而构建总状态由调度器下一轮按秒汇总。原检查立即读取总状态，可能仍为 queued；可控复现使用“子进程标记已就绪、API 先 queued 后 running”的时序，修复前失败，改为复用 running 等待及意外终态检查后通过。随后本机运行 `39256b4483b3` 的 25 项外围与 30 项流量检查再次通过；25 项包含两个现有开发容器保留检查，该轮重新构建产品镜像。原远端失败及清理证据保留，新增修正的远端结果以对应提交 Actions 为准。
+
+就绪修正提交 `39118c7` 的远端 [42767804429](https://github.com/zhubby/artifact-kit/actions/runs/42767804429) 已 completed / success，五个作业全部通过。Compose 运行 `6b0136f0b6c4` 的 23 项外围、30 项真实流量检查通过；实际缓冲 1,027,819 字节，小于 1 MiB，24 个缓存块恢复后与 SSE / PostgreSQL 一致，后续构建成功且清理无错误，源码与执行脚本摘要已核对。
 
 ### 跨语言协议联测
 
@@ -153,7 +163,7 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 
 演练曾复现真实路径缺陷：控制面 / Worker 的数据目录含空格时，OpenSSH 会再次解析 `UserKnownHostsFile`，外层 shell 引号被移除后主机信任文件路径被拆开。修复同时保留 OpenSSH 与 shell 所需的引号；最终冷恢复使用含空格和单引号的数据目录通过。失败运行 `4241b532629f` 以及之后已完成构建但验收脚本误读发布响应的 `a40240c2d147` 均保留为失败记录。
 
-Linux CI 的 S3 启动问题也有真实红 / 绿验证：0600 配置由宿主 UID 4242 持有时，原入口降为 UID 1000 后读取失败；新入口保留宿主原权限 / 归属，在容器内生成 UID 1000 的 0600 私有副本，S3 就绪、匿名请求被拒绝，主进程以 UID 1000 运行。完整生产 Compose / TLS 验收仍待完成。
+Linux CI 的 S3 启动问题也有真实红 / 绿验证：0600 配置由宿主 UID 4242 持有时，原入口降为 UID 1000 后读取失败；新入口保留宿主原权限 / 归属，在容器内生成 UID 1000 的 0600 私有副本，S3 就绪、匿名请求被拒绝，主进程以 UID 1000 运行。隔离 Compose / TLS 实跑结果见上节；正式主机和公网部署仍待验收。
 
 后续远端运行 `42750492414` 已通过三类原生 Agent、Rust 静态与数据库测试、Go 检查、交叉编译及前端构建，但首个 HTTPS fixture 构建失败。独立 Linux Git / GnuTLS 探针复现了 `TLS connection was non-properly terminated`：测试 HTTP/1.0 服务依靠 TLS EOF 结束响应，未声明长度。为 401 和 Git CGI 响应设置实际 `Content-Length` 后，同一 Linux 客户端使用带空格路径的真实 Agent askpass 成功认证并取得固定提交；完整远端结果仍以对应提交的 Actions 为准。
 

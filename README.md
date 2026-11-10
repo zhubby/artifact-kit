@@ -66,6 +66,8 @@ sh scripts/cross-build-agent.sh
 
 真实端到端验收会创建带 Basic Auth 的 HTTPS Git 服务、真实原生 C 构建、真实 Agent、S3 上传 / 下载、取消和故障场景。macOS 额外执行 ad-hoc codesign，**不是开发者分发签名**。
 
+Unix 的 Go 测试还会运行真实前台 Agent / Worker，检查正常退出、Agent 强制退出及 Worker 收到 SIGTERM 后的任务进程树与工作目录清理。系统服务验收仅在显式启用的 GitHub 托管临时 VM 上执行，包含专用账户下在途任务的服务停止 / 重启及后续任务；详见 [原生服务验收](docs/operations.md#临时-ci-原生服务验收)。
+
 ```sh
 cargo build --bin artifact-control
 (cd agent && CGO_ENABLED=0 go build -o bin/artifact-agent ./cmd/artifact-agent)
