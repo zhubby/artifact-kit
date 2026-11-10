@@ -144,7 +144,7 @@ type agentService struct {
 	done       chan struct{}
 }
 
-func (program *agentService) Start(_ service.Service) error {
+func (program *agentService) Start(instance service.Service) error {
 	cfg, err := config.Load(program.configPath)
 	if err != nil {
 		return err
@@ -155,7 +155,15 @@ func (program *agentService) Start(_ service.Service) error {
 	go func() {
 		defer close(program.done)
 		if err := agent.Run(ctx, cfg); err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			if logger, logErr := instance.Logger(nil); logErr == nil {
+				_ = logger.Error(err)
+			} else {
+				fmt.Fprintln(os.Stderr, err)
+			}
+			// Returning only from this goroutine leaves the service manager
+			// reporting a running service with no Agent. A fatal Runner error
+			// must terminate the process so native failure policy can apply.
+			os.Exit(1)
 		}
 	}()
 	return nil
