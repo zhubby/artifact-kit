@@ -134,7 +134,7 @@ func run() error {
 		program := &agentService{configPath: absolute}
 		settings := &service.Config{Name: "artifact-kit-agent", DisplayName: "Artifact Kit Agent", Description: "Outbound authenticated native build worker", Arguments: []string{"service-run", "--config", absolute}, UserName: *user, Option: service.KeyValue{"Password": os.Getenv("AK_SERVICE_PASSWORD")}}
 		if *serviceAction == "install" {
-			if err := configureService(settings); err != nil {
+			if err := configureService(settings, absolute); err != nil {
 				return err
 			}
 		}

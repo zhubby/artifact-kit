@@ -70,21 +70,39 @@ public static class ArtifactServiceTestLogon {
 }
 '@
 [ArtifactServiceTestLogon]::Grant($user.SID.Value)
-$grants = @(
-    "$($env:COMPUTERNAME)\$($account):(OI)(CI)F",
-    '*S-1-5-18:(OI)(CI)F',
-    '*S-1-5-32-544:(OI)(CI)F',
-    "$([Security.Principal.WindowsIdentity]::GetCurrent().Name):(OI)(CI)F"
-)
-& icacls.exe $Directory '/inheritance:r' '/grant:r' @grants '/T' '/Q'
-if ($LASTEXITCODE -ne 0) { throw 'Cannot set private test configuration ACLs.' }
-$allowed = @($user.SID.Value, 'S-1-5-18', 'S-1-5-32-544', [Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+$current = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$allowed = @($user.SID.Value, 'S-1-5-18', 'S-1-5-32-544', $current.Value)
 $paths = @((Get-Item -LiteralPath $Directory)) + @(Get-ChildItem -LiteralPath $Directory -Recurse -Force)
 foreach ($path in $paths) {
+    # Files need effective access rules, not directory-only inheritance flags.
+    # Set each DACL explicitly and verify both its identities and usable access.
+    $inheritance = [Security.AccessControl.InheritanceFlags]::None
+    if ($path.PSIsContainer) {
+        $acl = [Security.AccessControl.DirectorySecurity]::new()
+        $inheritance = [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit'
+    } else {
+        $acl = [Security.AccessControl.FileSecurity]::new()
+    }
+    $acl.SetOwner($current)
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($identity in $allowed) {
+        $sid = [Security.Principal.SecurityIdentifier]::new($identity)
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]::FullControl, $inheritance, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+        $acl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $path.FullName -AclObject $acl
     $acl = Get-Acl -LiteralPath $path.FullName
     if (!$acl.AreAccessRulesProtected) { throw "ACL inheritance still enabled: $($path.FullName)" }
+    $effective = @()
     foreach ($rule in $acl.Access) {
         $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
         if ($sid -notin $allowed) { throw "Unexpected ACL identity $sid on $($path.FullName)" }
+        if ($rule.AccessControlType -eq 'Allow' -and !($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl) {
+            $effective += $sid
+        }
+    }
+    foreach ($sid in $allowed) {
+        if ($sid -notin $effective) { throw "Missing effective access for $sid on $($path.FullName)" }
     }
 }
+if ((Get-Content -LiteralPath $marker -Raw).Trim() -ne $user.SID.Value) { throw 'Account ownership marker is not readable after setting ACLs.' }

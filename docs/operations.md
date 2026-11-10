@@ -62,6 +62,8 @@ sudo artifact-agent service --action start --config /Users/build/.config/artifac
 
 完整 macOS 应用通常还需要按正确嵌套顺序签名、notarization / stapling。原生命令由仓库维护；本机 ad-hoc 验证不是 Developer ID 或 App Store 验收。
 
+LaunchDaemon 的标准输出和错误日志保存在私有配置文件所在目录，文件名为 `artifact-kit-agent.out.log` / `artifact-kit-agent.err.log`；服务账户必须能写入该目录。launchd 降权后无法在默认 `/var/log` 中为普通账户新建文件，此时 Agent 尚未执行就会以 `EX_CONFIG` 退出。
+
 ### Windows / Service Control Manager
 
 使用具有“作为服务登录”权限的专用账户，不使用 LocalSystem。以管理员 PowerShell 安装，`AK_SERVICE_PASSWORD` 仅供安装过程读取，不写到命令参数。工作目录、配置和私钥使用 NTFS ACL，仅授予该账户、SYSTEM 与管理员必需权限；Go 的 Unix mode 位不能替代 Windows ACL 验证。

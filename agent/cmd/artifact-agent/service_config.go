@@ -4,13 +4,21 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/kardianos/service"
 )
 
-func configureService(settings *service.Config) error {
+func configureService(settings *service.Config, configPath string) error {
+	if runtime.GOOS == "darwin" {
+		// launchd opens stdout/stderr after dropping to the dedicated user.
+		// That account cannot create the dependency's default /var/log files;
+		// its existing private configuration directory is writable by design.
+		settings.Option["LogDirectory"] = filepath.Dir(configPath)
+	}
 	if service.Platform() != "linux-systemd" {
 		return nil
 	}
@@ -26,9 +34,13 @@ func configureService(settings *service.Config) error {
 		if strings.ContainsAny(value, "\x00\r\n") {
 			return errors.New("service paths must not contain control characters")
 		}
-		// systemd expands percent specifiers and command-line dollar variables
-		// even inside quotes. Escape both before its C-style string parsing.
-		values[index] = strconv.Quote(strings.NewReplacer("%", "%%", "$", "$$").Replace(value))
+		// Percent specifiers apply to every token. Dollar expansion only
+		// applies to arguments; the executable itself is always literal.
+		value = strings.ReplaceAll(value, "%", "%%")
+		if index > 0 {
+			value = strings.ReplaceAll(value, "$", "$$")
+		}
+		values[index] = strconv.Quote(value)
 	}
 	if strings.ContainsAny(settings.UserName, "\x00\r\n") {
 		return errors.New("service account must not contain control characters")

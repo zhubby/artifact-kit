@@ -145,7 +145,7 @@ func TestNativeServiceLifecycle(test *testing.T) {
 	}
 	// The executable path and private configuration both contain spaces.
 	binaryDirectory := filepath.Join(directory, "agent bin %i $HOME {{literal}}")
-	private := filepath.Join(directory, "private data")
+	private := filepath.Join(directory, "private data %n $HOME {{literal}}")
 	for _, path := range []string{directory, binaryDirectory} {
 		if err := os.MkdirAll(path, 0755); err != nil {
 			test.Fatal(err)
@@ -212,7 +212,7 @@ func TestNativeServiceLifecycle(test *testing.T) {
 	// as well, while preserving test failures and cleanup diagnostics.
 	test.Cleanup(func() {
 		if test.Failed() {
-			logNativeServiceFailure(test)
+			logNativeServiceFailure(test, private)
 		}
 		if state := inspectNativeService(test); state.Installed {
 			_, _ = nativeCommand(nil, true, binary, "service", "--action", "stop", "--config", configPath)
@@ -234,6 +234,11 @@ func TestNativeServiceLifecycle(test *testing.T) {
 		test.Fatalf("service process did not use its dedicated unprivileged account: %+v", state)
 	}
 	test.Logf("installed service connected over mTLS as %s (pid=%d)", state.User, firstPID)
+	if runtime.GOOS == "darwin" {
+		for _, name := range []string{"artifact-kit-agent.out.log", "artifact-kit-agent.err.log"} {
+			requireNativeCommand(test, nil, true, "test", "-f", filepath.Join(private, name))
+		}
+	}
 	action("restart")
 	awaitServiceDisconnect(test, first)
 	second := awaitServiceConnection(test, peer)
@@ -487,14 +492,14 @@ func inspectNativeService(test *testing.T) nativeServiceState {
 	return state
 }
 
-func logNativeServiceFailure(test *testing.T) {
+func logNativeServiceFailure(test *testing.T, private string) {
 	test.Helper()
 	var commands [][]string
 	switch runtime.GOOS {
 	case "linux":
 		commands = [][]string{{"systemctl", "status", "artifact-kit-agent.service", "--no-pager"}, {"journalctl", "-u", "artifact-kit-agent.service", "-n", "80", "--no-pager"}}
 	case "darwin":
-		commands = [][]string{{"launchctl", "print", "system/artifact-kit-agent"}, {"tail", "-n", "80", "/var/log/artifact-kit-agent.err.log"}, {"log", "show", "--last", "3m", "--style", "compact", "--predicate", `process == "launchd" AND eventMessage CONTAINS "artifact-kit-agent"`}}
+		commands = [][]string{{"launchctl", "print", "system/artifact-kit-agent"}, {"tail", "-n", "80", filepath.Join(private, "artifact-kit-agent.err.log")}, {"log", "show", "--last", "3m", "--style", "compact", "--predicate", `(process == "launchd" OR process == "xpcproxy") AND eventMessage CONTAINS "artifact-kit-agent"`}}
 	case "windows":
 		commands = [][]string{{"pwsh.exe", "-NoProfile", "-NonInteractive", "-Command", `Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='artifact-kit-agent'} -MaxEvents 15 -ErrorAction SilentlyContinue | Select-Object TimeCreated,Id,Message | Format-List`}}
 	}
