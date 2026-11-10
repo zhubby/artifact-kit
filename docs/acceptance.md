@@ -36,7 +36,7 @@
 | 检查 | 结果与证据 |
 |---|---|
 | Rust 格式与静态检查 | `cargo fmt --all --check`、`cargo clippy --all-targets -- -D warnings` 通过 |
-| Rust 测试 | 9 项配置 / 加密 / 权限 / 匹配测试、8 项显式启用的真实 PostgreSQL 测试、1 项真实 HTTPS 信任回归通过；TLS 测试另有一个子进程辅助入口 |
+| Rust 测试 | 9 项配置 / 加密 / 权限 / 匹配测试、8 项显式启用的真实 PostgreSQL 测试、1 项真实 HTTPS 信任回归及 2 个对象存储诊断测试入口通过；诊断覆盖 12 种故障，TLS / 诊断各有子进程辅助入口 |
 | S3 TLS 信任 | 实际 `Storage::initialize` 在独立子进程加载指定的 CA 信任文件，受信 CA 连接成功、无关 CA 和错误主机名均被拒绝；独立 Python HTTPS 客户端验证同一证书链 |
 | Go 检查 | `go vet ./...`、`go test -race ./... -count=1` 通过；不启用实时环境时协议联测会显式跳过 |
 | 服务启动失败回归 | 真实 `service-run` 子进程在未注册配置下报错后必须以非零状态退出；修复前进程存活并在 5 秒后触发测试超时，修复后通过 |
@@ -60,6 +60,12 @@
 普通 `cargo test --all-targets` 会跳过需要数据库的 8 项测试；本次另外设置 `AK_TEST_DATABASE_URL` 并使用 `--include-ignored` 执行。测试为每次运行创建隔离 schema，不能以默认命令中的 ignored 项冒充数据库验收。
 
 TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同一证书链在独立 Python 客户端通过，但实际 Storage 客户端使用 WebPKI 根证书、忽略指定的 CA 信任文件并报 `UnknownIssuer`。切换为系统根证书后通过受信、错误 CA 和错误主机名三种请求。该 loopback HTTPS 服务只验证真实产品客户端的 TLS 行为，不代替完整 S3、正式域名或生产部署验收。
+
+### 对象存储故障诊断
+
+`storage_errors.rs` 使用真实 Storage / reqwest 客户端、合成凭据和随机 loopback TCP 故障服务，覆盖初始化、日志上传 / 读取、制品读取及最终写入五个发送位置。修复前，五个断线场景均在 reqwest URL 字段及普通 / 完整 anyhow chain / Debug 诊断中保留预签名访问链接；五个 HTTP 403 和两个响应体截断对照没有泄漏。修复在五个发送错误边界移除 URL，保留原错误类型、底层 cause 和状态码，12 个场景通过。响应体对照另行断言错误确实发生在 body / decode 阶段。
+
+两个实际测试入口在子进程设置 loopback 的 `NO_PROXY`，不更改其他测试的环境或系统信任库；第三个测试入口仅供子进程执行。原始红 / 绿及执行源码 / 二进制摘要保留在 `.local/storage-diagnostics/`。该故障服务不实现 S3 存储或 TLS，真实对象存储与信任验收仍由完整协议、HTTPS 和 Compose 联测承担。
 
 ### 数据库与本机回归
 

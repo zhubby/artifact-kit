@@ -46,6 +46,7 @@ impl Storage {
             .put(url)
             .send()
             .await
+            .map_err(reqwest::Error::without_url)
             .context("object store connection failed")?;
         ensure!(
             response.status().is_success() || response.status().as_u16() == 409,
@@ -78,7 +79,8 @@ impl Storage {
             .put(url)
             .body(body)
             .send()
-            .await?
+            .await
+            .map_err(reqwest::Error::without_url)?
             .error_for_status()
             .map_err(|error| error.without_url())?;
         Ok(())
@@ -93,7 +95,8 @@ impl Storage {
             .client
             .get(url)
             .send()
-            .await?
+            .await
+            .map_err(reqwest::Error::without_url)?
             .error_for_status()
             .map_err(|error| error.without_url())?
             .bytes_stream();
@@ -121,7 +124,8 @@ impl Storage {
             .client
             .get(url)
             .send()
-            .await?
+            .await
+            .map_err(reqwest::Error::without_url)?
             .error_for_status()
             .map_err(|error| error.without_url())?;
         if let Some(size) = response.content_length() {
@@ -157,7 +161,8 @@ impl Storage {
                 tokio_util::io::ReaderStream::new(verified),
             ))
             .send()
-            .await?
+            .await
+            .map_err(reqwest::Error::without_url)?
             .error_for_status()
             .map_err(|error| error.without_url())?;
         Ok(())
