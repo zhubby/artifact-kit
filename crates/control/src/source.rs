@@ -104,7 +104,17 @@ pub async fn resolve(
                 use std::os::unix::fs::PermissionsExt;
                 tokio::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).await?;
             }
-            environment.push(("GIT_SSH_COMMAND".into(), format!("ssh -F /dev/null -i '{}' -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile='{}'", key.display(), hosts.display())));
+            // OpenSSH parses -o values again after the shell removes its quotes.
+            let trusted_hosts = format!(
+                "UserKnownHostsFile=\"{}\"",
+                hosts
+                    .to_str()
+                    .context("invalid managed path")?
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"")
+                    .replace('%', "%%")
+            );
+            environment.push(("GIT_SSH_COMMAND".into(), format!("ssh -F /dev/null -i {} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o {}", shell_quote(key.to_str().context("invalid managed path")?), shell_quote(&trusted_hosts))));
         } else {
             let askpass = directory.path().join("askpass.sh");
             tokio::fs::write(&askpass, "#!/bin/sh\ncase \"$1\" in *sername*) printf '%s\\n' \"$AK_GIT_USERNAME\";; *) printf '%s\\n' \"$AK_GIT_PASSWORD\";; esac\n").await?;
@@ -169,6 +179,10 @@ pub async fn resolve(
     );
     let config = run_git(&["-C", repo_path, "show", &object], &environment).await?;
     Ok((commit, config))
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 async fn run_git(arguments: &[&str], environment: &[(String, String)]) -> Result<String> {

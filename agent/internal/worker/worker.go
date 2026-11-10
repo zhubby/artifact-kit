@@ -276,7 +276,9 @@ func checkout(ctx context.Context, input Input, base, workspace string, emit *em
 			if err := os.WriteFile(hosts, []byte(auth.KnownHosts), 0600); err != nil {
 				return err
 			}
-			environment = append(environment, "GIT_SSH_COMMAND=ssh -F "+quote(os.DevNull)+" -i "+quote(filepath.ToSlash(key))+" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="+quote(filepath.ToSlash(hosts)))
+			// Preserve quotes for OpenSSH's second parse of the -o option value.
+			trustedHosts := `UserKnownHostsFile="` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, `%`, `%%`).Replace(filepath.ToSlash(hosts)) + `"`
+			environment = append(environment, "GIT_SSH_COMMAND=ssh -F "+quote(os.DevNull)+" -i "+quote(filepath.ToSlash(key))+" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "+quote(trustedHosts))
 		default:
 			return errors.New("unsupported Git credential")
 		}
