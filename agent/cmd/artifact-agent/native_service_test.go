@@ -418,9 +418,9 @@ func createServiceTestUser(test *testing.T, environment []string, directory, pri
 			test.Fatal(err)
 		}
 		test.Cleanup(func() {
-			requireNativeCommand(test, nil, true, "powershell.exe", "-NoProfile", "-NonInteractive", "-File", script, "-Action", "remove", "-Directory", directory)
+			requireNativeCommand(test, nil, true, "pwsh.exe", "-NoProfile", "-NonInteractive", "-File", script, "-Action", "remove", "-Directory", directory)
 		})
-		requireNativeCommand(test, environment, true, "powershell.exe", "-NoProfile", "-NonInteractive", "-File", script, "-Action", "create", "-Directory", directory)
+		requireNativeCommand(test, environment, true, "pwsh.exe", "-NoProfile", "-NonInteractive", "-File", script, "-Action", "create", "-Directory", directory)
 	default:
 		test.Fatal("unsupported service test OS")
 	}
@@ -468,7 +468,7 @@ func inspectNativeService(test *testing.T) nativeServiceState {
 			test.Fatalf("inspect launchd: %v: %s", err, output)
 		}
 	case "windows":
-		output := requireNativeCommand(test, nil, false, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", `$ErrorActionPreference='Stop'; $s=Get-CimInstance Win32_Service -Filter "Name='artifact-kit-agent'"; if (!$s) { '{"installed":false}' } else { $owner=''; if ($s.ProcessId) { $p=Get-CimInstance Win32_Process -Filter "ProcessId=$($s.ProcessId)"; if ($p) { $owner=(Invoke-CimMethod -InputObject $p -MethodName GetOwner).User } }; @{installed=$true; enabled=($s.StartMode -eq 'Auto'); pid=[int]$s.ProcessId; user=$owner} | ConvertTo-Json -Compress }`)
+		output := requireNativeCommand(test, nil, false, "pwsh.exe", "-NoProfile", "-NonInteractive", "-Command", `$ErrorActionPreference='Stop'; $s=Get-CimInstance Win32_Service -Filter "Name='artifact-kit-agent'"; if (!$s) { '{"installed":false}' } else { $owner=''; if ($s.ProcessId) { $p=Get-CimInstance Win32_Process -Filter "ProcessId=$($s.ProcessId)"; if ($p) { $owner=(Invoke-CimMethod -InputObject $p -MethodName GetOwner).User } }; @{installed=$true; enabled=($s.StartMode -eq 'Auto'); pid=[int]$s.ProcessId; user=$owner} | ConvertTo-Json -Compress }`)
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(output, "\ufeff")), &state); err != nil {
 			test.Fatalf("inspect SCM: %v: %s", err, output)
 		}
@@ -494,9 +494,9 @@ func logNativeServiceFailure(test *testing.T) {
 	case "linux":
 		commands = [][]string{{"systemctl", "status", "artifact-kit-agent.service", "--no-pager"}, {"journalctl", "-u", "artifact-kit-agent.service", "-n", "80", "--no-pager"}}
 	case "darwin":
-		commands = [][]string{{"launchctl", "print", "system/artifact-kit-agent"}, {"tail", "-n", "80", "/var/log/artifact-kit-agent.err.log"}}
+		commands = [][]string{{"launchctl", "print", "system/artifact-kit-agent"}, {"tail", "-n", "80", "/var/log/artifact-kit-agent.err.log"}, {"log", "show", "--last", "3m", "--style", "compact", "--predicate", `process == "launchd" AND eventMessage CONTAINS "artifact-kit-agent"`}}
 	case "windows":
-		commands = [][]string{{"powershell.exe", "-NoProfile", "-NonInteractive", "-Command", `Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='artifact-kit-agent'} -MaxEvents 15 -ErrorAction SilentlyContinue | Select-Object TimeCreated,Id,Message | Format-List`}}
+		commands = [][]string{{"pwsh.exe", "-NoProfile", "-NonInteractive", "-Command", `Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='artifact-kit-agent'} -MaxEvents 15 -ErrorAction SilentlyContinue | Select-Object TimeCreated,Id,Message | Format-List`}}
 	}
 	for _, arguments := range commands {
 		output, err := nativeCommand(nil, true, arguments...)

@@ -79,6 +79,8 @@ artifact-agent.exe service --action start --config C:\ArtifactKit\agent.json
 
 Agent 启动后若发生不可恢复的本地错误（例如配置从未注册），服务进程会记录错误并以非零状态退出，让系统服务管理器看到失败；网络中断仍由 Agent 重连。系统是否自动重启失败服务取决于实际服务管理器及其恢复策略。
 
+系统服务不要求交互式用户的 HOME / APPDATA：服务使用安装时保存的绝对 `--config` 路径。没有用户配置目录时，交互式注册命令也必须显式提供 `--config` 和 `--root`。systemd 单元对可执行文件与配置参数逐项引用，允许安装路径含空格；不把执行参数的转义误用为启动条件路径。
+
 ### 临时 CI 原生服务验收
 
 `native-agent` 作业在三种 GitHub 托管临时 VM 上显式启用 `TestNativeServiceLifecycle`。测试创建专用非管理员账户和临时私有配置，通过实际 systemd / launchd / SCM 安装 Agent，核对自动启动配置和真实进程账户，并连接仅监听 loopback、要求客户端证书的 Go 测试控制端；重启必须产生新的认证连接及 PID，停止后连接必须关闭，卸载后服务记录必须消失。二进制及配置路径均含空格，测试结束卸载服务、删除其创建的账户和目录。

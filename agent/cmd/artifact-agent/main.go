@@ -47,13 +47,22 @@ func run() error {
 	}
 	base, err := os.UserConfigDir()
 	if err != nil {
-		return err
+		// System service accounts may have no interactive profile environment.
+		// An explicit configuration still supplies every path the Agent needs.
+		// Leave its default empty and validate it after parsing the flags.
+		base = ""
+	}
+	defaultConfig := ""
+	defaultRoot := ""
+	if base != "" {
+		defaultConfig = filepath.Join(base, "artifact-kit", "agent.json")
+		defaultRoot = filepath.Join(base, "artifact-kit", "data")
 	}
 	flags := flag.NewFlagSet(os.Args[1], flag.ContinueOnError)
-	configPath := flags.String("config", filepath.Join(base, "artifact-kit", "agent.json"), "agent configuration path")
+	configPath := flags.String("config", defaultConfig, "agent configuration path")
 	endpoint := flags.String("endpoint", "", "gRPC host:port")
 	ca := flags.String("ca", "", "pinned control-plane CA file")
-	root := flags.String("root", filepath.Join(base, "artifact-kit", "data"), "managed data root")
+	root := flags.String("root", defaultRoot, "managed data root")
 	name := flags.String("name", "", "node display name")
 	tokenEnvironment := flags.String("token-env", "AK_ENROLLMENT_TOKEN", "environment variable containing one-time enrollment token")
 	allowHTTP := flags.Bool("allow-http-uploads", false, "allow HTTP object-store uploads for explicit local development only")
@@ -62,12 +71,18 @@ func run() error {
 	if err = flags.Parse(os.Args[2:]); err != nil {
 		return err
 	}
+	if *configPath == "" {
+		return errors.New("--config is required when the account has no configuration directory")
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	switch os.Args[1] {
 	case "register":
 		if *endpoint == "" || *ca == "" {
 			return errors.New("--endpoint and --ca are required")
+		}
+		if *root == "" {
+			return errors.New("--root is required when the account has no configuration directory")
 		}
 		if *name == "" {
 			*name, _ = os.Hostname()
@@ -118,6 +133,11 @@ func run() error {
 		}
 		program := &agentService{configPath: absolute}
 		settings := &service.Config{Name: "artifact-kit-agent", DisplayName: "Artifact Kit Agent", Description: "Outbound authenticated native build worker", Arguments: []string{"service-run", "--config", absolute}, UserName: *user, Option: service.KeyValue{"Password": os.Getenv("AK_SERVICE_PASSWORD")}}
+		if *serviceAction == "install" {
+			if err := configureService(settings); err != nil {
+				return err
+			}
+		}
 		instance, err := service.New(program, settings)
 		if err != nil {
 			return err

@@ -28,18 +28,29 @@ func TestServiceRunExitsWhenAgentCannotStart(test *testing.T) {
 	if err := config.Save(path, config.Config{Endpoint: "127.0.0.1:1", CAFile: "unused.pem", Root: directory}); err != nil {
 		test.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestServiceRunHelper$")
-	command.Env = append(os.Environ(), "AK_TEST_SERVICE_RUN_HELPER=1", "AK_TEST_SERVICE_CONFIG="+path)
-	output, err := command.CombinedOutput()
-	if ctx.Err() != nil {
-		test.Fatalf("service stayed alive after its Agent failed: %s", output)
-	}
-	if err == nil {
-		test.Fatalf("service reported successful startup: %s", output)
-	}
-	if !strings.Contains(string(output), "agent must be registered first") {
-		test.Fatalf("expected the real Agent startup error, got %v: %s", err, output)
+	for _, profile := range []string{"interactive-profile", "no-profile"} {
+		test.Run(profile, func(test *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestServiceRunHelper$")
+			for _, variable := range os.Environ() {
+				key, _, _ := strings.Cut(variable, "=")
+				if profile == "no-profile" && (strings.EqualFold(key, "HOME") || strings.EqualFold(key, "APPDATA") || strings.EqualFold(key, "XDG_CONFIG_HOME")) {
+					continue
+				}
+				command.Env = append(command.Env, variable)
+			}
+			command.Env = append(command.Env, "AK_TEST_SERVICE_RUN_HELPER=1", "AK_TEST_SERVICE_CONFIG="+path)
+			output, err := command.CombinedOutput()
+			if ctx.Err() != nil {
+				test.Fatalf("service stayed alive after its Agent failed: %s", output)
+			}
+			if err == nil {
+				test.Fatalf("service reported successful startup: %s", output)
+			}
+			if !strings.Contains(string(output), "agent must be registered first") {
+				test.Fatalf("expected the real Agent startup error, got %v: %s", err, output)
+			}
+		})
 	}
 }
