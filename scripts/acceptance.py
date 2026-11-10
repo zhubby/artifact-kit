@@ -160,6 +160,7 @@ targets:
             if self.headers.get('Authorization') != authorization:
                 self.send_response(401)
                 self.send_header('WWW-Authenticate', 'Basic realm="acceptance"')
+                self.send_header('Content-Length', '0')
                 self.end_headers()
                 return
             parsed = urllib.parse.urlsplit(self.path)
@@ -170,8 +171,9 @@ targets:
             status = next((int(value.split()[0]) for key, value in headers if key.lower() == 'status'), 200)
             self.send_response(status)
             for key, value in headers:
-                if key.lower() != 'status':
+                if key.lower() not in ('status', 'content-length'):
                     self.send_header(key, value)
+            self.send_header('Content-Length', str(len(content)))
             self.end_headers()
             self.wfile.write(content)
 
@@ -191,6 +193,21 @@ def terminal(build_id, status):
     def complete():
         value = api('/builds/' + build_id)
         if value['status'] in ('succeeded', 'failed', 'canceled', 'lost'):
+            if value['status'] != status:
+                failure = {
+                    'build_id': build_id,
+                    'expected': status,
+                    'actual': value['status'],
+                    'error': value.get('error'),
+                    'attempts': [
+                        {'target': job.get('target'), 'status': attempt.get('status'), 'error': attempt.get('error')}
+                        for job in value.get('jobs', [])
+                        for attempt in job.get('attempts', [])
+                    ],
+                }
+                EVIDENCE['unexpected_build'] = failure
+                (DIRECTORY / 'evidence.json').write_text(json.dumps(EVIDENCE, indent=2) + '\n')
+                raise AssertionError('unexpected build result: ' + json.dumps(failure))
             check(f'build {status}', value['status'] == status)
             return value
         return None

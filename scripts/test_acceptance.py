@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import signal
 import socket
@@ -113,6 +114,22 @@ class ControlStartupTests(unittest.TestCase):
                 if process is not None:
                     process.terminate()
                     process.wait(timeout=5)
+
+
+class BuildFailureDiagnosticsTests(unittest.TestCase):
+    def test_unexpected_build_records_errors_without_attempt_credentials(self):
+        result = {'id': 'fixture-build', 'status': 'failed', 'error': 'fixture source resolution failed', 'jobs': [{'target': 'native', 'attempts': [{'status': 'failed', 'error': 'checkout failed', 'lease_token': 'must-not-appear'}]}]}
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            with patch.multiple(acceptance, DIRECTORY=directory, EVIDENCE={'checks': []}), patch.object(acceptance, 'api', return_value=result):
+                with self.assertRaisesRegex(AssertionError, 'fixture source resolution failed') as failure:
+                    acceptance.terminal('fixture-build', 'succeeded')
+            recorded = (directory / 'evidence.json').read_text()
+            self.assertNotIn('must-not-appear', recorded + str(failure.exception))
+            self.assertNotIn('lease_token', recorded + str(failure.exception))
+            diagnostic = json.loads(recorded)['unexpected_build']
+            self.assertEqual(diagnostic['actual'], 'failed')
+            self.assertEqual(diagnostic['attempts'][0]['error'], 'checkout failed')
 
 
 if __name__ == "__main__":
