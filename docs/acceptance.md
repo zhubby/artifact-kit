@@ -8,9 +8,9 @@
 |---|---|---|
 | M0 | 已确认设计、设计自审、版本化 Protobuf、v1 JSON schema、两次数据库迁移、状态机文档 | 已交付 |
 | M1 | 内置登录、三类角色、项目范围 Token、一次性注册、节点证书认证、心跳、能力、排空、诊断与服务管理 CLI | 本机协议及三类临时原生 VM 服务生命周期通过；实体机重启与业务负载待验 |
-| M2 | Git 引用解析及不可变快照、事务调度、独立 Worker、进程树清理、SSE 日志、私有制品校验与下载 | macOS arm64 真实原生闭环通过 |
+| M2 | Git 引用解析及不可变快照、事务调度、独立 Worker、进程树清理、SSE 日志、私有制品校验与下载 | macOS arm64 原生闭环及 Linux 容器五服务联测通过 |
 | M3 | 项目 / 节点 / 本机签名引用授权、sign / verify 阶段、不可变内部 Release、幂等发布重试、审计 | 本机 ad-hoc 签名与发布通过；发行签名待验 |
-| M4 | Compose、镜像、服务安装说明、运维手册、故障自动化、浏览器测试、二进制交叉构建、兼容性矩阵 | 部分交付，外部验收尚未完成 |
+| M4 | Compose / TLS 五服务实跑、镜像、服务安装说明、运维手册、故障自动化、浏览器测试、二进制交叉构建、兼容性矩阵 | 部分交付，外部验收尚未完成 |
 
 控制台页面调用真实 Rust API，覆盖项目、构建表单与历史、目标矩阵 / 步骤 / 日志、节点、制品、Release、用户 / Token / Git 凭据 / 审计。构建成功与发布失败分别显示，不用页面展示或模拟响应代替执行结果。
 
@@ -52,6 +52,8 @@
 | Agent 编译 | Linux amd64 / arm64、Darwin amd64 / arm64、Windows amd64 五个目标二进制生成成功 |
 | Windows 原生回归 | GitHub `windows-latest` 上 vet / race 与 Job Object 子进程树终止回归通过，SCM 空闲服务生命周期通过；真实 Windows 应用及在途构建的服务停止仍待验 |
 | 配置与部署文件 | 五个示例通过真实 Rust Recipe 解析；JSON schema 语法、shell 脚本语法、Compose 配置校验通过 |
+| 生产 tmpfs 回归 | 实际 Compose 解析与 Docker daemon 先复现未加引号的挂载被拆成两项并拒绝启动；修复后解析为一个挂载，真实非 root / read-only 容器核对 1777 并写入 `/tmp`；Python 回归现共 8 项 |
+| 完整 Compose / TLS | 产品源码 `1dae112` 的本机运行 `1e38068d0dea`：外层 23 项、实际流量 21 项通过，全部五服务、受信 HTTPS / mTLS、运行中 SSE、私有 S3、在途构建中重启及凭据持久化均已实跑 |
 | 远端 CI | Linux / macOS / Windows 原生 Agent 检查通过；[诊断运行 42746144635](https://github.com/zhubby/artifact-kit/actions/runs/42746144635) 确认 Linux S3 配置权限错误，已本地复现并修复；完整流水线现包含 SSH 与冷恢复，最新结果见 [main Actions](https://github.com/zhubby/artifact-kit/actions/workflows/ci.yml?query=branch%3Amain) |
 
 普通 `cargo test --all-targets` 会跳过需要数据库的 8 项测试；本次另外设置 `AK_TEST_DATABASE_URL` 并使用 `--include-ignored` 执行。测试为每次运行创建隔离 schema，不能以默认命令中的 ignored 项冒充数据库验收。
@@ -77,6 +79,20 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 真实红 / 绿记录包括：Agent 报错后外层服务仍存活、没有 HOME / APPDATA 时提前拒绝显式配置、服务库将 systemd 执行参数转义误用于路径条件、launchd 普通账户无法创建默认 `/var/log` 输出文件。对应修复后均有子进程或原生服务结果。systemd 还分别处理可执行文件和参数的美元符规则；launchd 日志移到专用账户的私有配置目录。早期失败运行保留为失败；部分旧流水线被后续提交替代后取消，未计作成功。
 
 此项没有在用户的 Mac 上安装系统服务，没有执行 VM / 实体机重启，没有给服务分配真实应用或发行签名任务。Go 测试控制端只验证服务管理链路，不代替 Rust 协议联测。自动启动配置存在不等于重启后恢复已验证，空闲服务启停不等于在途构建及子进程终止已验收。
+
+### 完整 Compose / TLS 隔离联测
+
+`scripts/compose_acceptance.py` 从 Git HEAD 快照构建产品镜像，并运行生产清单的 PostgreSQL、SeaweedFS、Rust 控制面、Next.js、Caddy 五个实际服务。运行 `1e38068d0dea` 的产品源码为 `1dae112f6a5319fc0521f092ae30da5fe5240bc8`，外层 23 项及专用 probe 的 21 项检查通过：
+
+- Caddy HTTPS 使用独立内部 CA，Python / Rust / Go 客户端实际校验证书；登录返回 Secure / HttpOnly / SameSite=Strict Cookie，拒绝匿名访问、缺少 CSRF 头和外站 Origin。
+- Go Agent 以新登记证书完成真实 mTLS，并从带 Basic Auth 的 HTTPS Git 固定相同提交，使用 Linux cc 编译、执行校验。
+- 构建仍在运行时，真实 `log` SSE 事件经过 Next.js 与 Caddy 到达客户端；制品经 HTTPS 上传、服务端校验、私有签名下载，独立核对大小 / SHA-256 并运行下载的二进制；匿名下载拒绝。
+- 中心在构建进行中重启；Agent 使用原证书重连，同一个 attempt 继续成功，没有重复派发。原会话、Release 和下载保持可用，随后新建构建再次成功，确认持久化的 Git 凭据可解密。
+- 控制面非 root、read-only、capabilities 全移除；三个宿主端口全部绑定随机 loopback 地址。仅删除归属标签匹配本次 run 的资源，确认既有开发 PostgreSQL / S3 的容器身份、启动时间和重启次数保持。
+
+证据及日志在 `.local/compose-tls/1e38068d0dea/`。本机使用镜像源和已有 Docker 网络设置，控制面 / Web / PostgreSQL / S3 / probe 为 Linux amd64，Caddy 为 Linux arm64/v8；各服务显式采用实际镜像平台，未覆盖原缓存镜像或全局默认平台。控制面和 Web 均验证源码 revision 与 Dockerfile 标签；probe 的测试工具镜像可复用，本次 Go Agent 从相同源码快照重新编译。诊断白名单扫描未发现生成的部署密码、主密钥、S3 secret 或私钥内容。
+
+早期失败保留原状：`7501a32f5242` 是缓存 Caddy 平台与进程默认平台冲突，`ab074741b6d8` 发现生产 tmpfs YAML 拆项，`d011d2795e6a` 是重启测试在 HTTP 就绪前查询节点。对应修正后使用新建资源重新运行。测试 CA 仅存在于独立栈和客户端；完整 Compose 成功不证明公网 DNS / ACME、正式部署主机、实体 Agent 服务重启、五类实际应用或发行签名已经验收。
 
 ### 跨语言协议联测
 

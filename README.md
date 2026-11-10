@@ -101,6 +101,14 @@ python3 -u scripts/recovery_acceptance.py
 
 两个命令都需要加载 `.local/env`。Linux 临时 CI runner 使用 `--sudo-sshd` 并准备 `/run/sshd`，仅隔离 sshd 通过无密码 sudo 启动。本地恢复脚本仅接受固定的 loopback 开发环境，清理本次新建的容器 / 卷，保留私有备份与证据。备份包含明文秘密，不能上传为 CI artifact；此演练不代替生产加密、异地备份和灾难恢复验收。
 
+完整 Compose / TLS 验收使用独立 Git 快照、数据库 / 对象卷、网络、测试 CA 和随机 loopback 端口，不需要加载 `.local/env`：
+
+```sh
+python3 -u scripts/compose_acceptance.py
+```
+
+需要 Unix 非 root Docker 账户及 Go、Git、Python 3.12+、OpenSSL。覆盖生产五服务、真实 HTTPS / mTLS、原生 Linux C 构建、运行中 SSE、私有制品与中心重启；保留现有开发服务，不修改宿主信任库。输入、证据和正式环境验收边界见 [运维手册](docs/operations.md#隔离-compose--tls-验收)。
+
 ## 仓库导航
 
 | 目录 | 内容 |

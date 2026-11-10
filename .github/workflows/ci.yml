@@ -102,3 +102,30 @@ jobs:
         working-directory: agent
         env:
           AK_NATIVE_SERVICE_TESTS: '1'
+  compose-tls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.27.x
+          cache-dependency-path: agent/go.sum
+      - name: Real production Compose with isolated HTTPS trust
+        run: python3 -u scripts/compose_acceptance.py
+      - name: Preserve Compose diagnostics without private deployment files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-tls-diagnostics
+          retention-days: 7
+          include-hidden-files: true
+          path: |
+            .local/compose-tls/*/evidence.json
+            .local/compose-tls/*/probe.log
+            .local/compose-tls/*/services.log
+            .local/compose-tls/*/startup.log
+            .local/compose-tls/*/cleanup.log
+            .local/compose-tls/*/*-build.log
+            .local/compose-tls/*/probe/probe-evidence.json
+            .local/compose-tls/*/probe/agent.log

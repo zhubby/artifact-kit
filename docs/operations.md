@@ -33,6 +33,20 @@ S3 启动脚本把只读挂载、0600 权限的宿主认证配置复制为容器
 
 本仓库 Compose 清单和镜像不代表已经部署到用户生产域名；公有证书、DNS、磁盘容量、备份恢复与实际网络仍需现场验收。
 
+### 隔离 Compose / TLS 验收
+
+在有 Docker / Compose、Go、Git、Python 3.12+ 和 OpenSSL 的 Unix 非 root 账户下运行：
+
+```sh
+python3 -u scripts/compose_acceptance.py
+```
+
+脚本从当前 Git HEAD 创建私有源码快照，构建实际控制面与控制台镜像；以独立项目名、卷、网络和随机 loopback 端口运行生产清单的全部五个服务。测试覆盖使用 Caddy 内部 CA 的真实 HTTPS、Secure Cookie / CSRF、运行中 SSE、mTLS Agent、HTTPS Git 原生 C 构建、私有 S3 上传下载与中心重启。CA 只注入测试客户端与独立控制面进程，不修改宿主信任库。默认不加载已有 `.local/env` 或 `.deploy/env`，运行后仅清理归属标签匹配本次 run 的容器、网络与卷。
+
+`--image-prefix` 可指定拉取镜像所用的 registry 镜像源；输入变更、各镜像的实际平台与 ID 随证据记录，不修改默认部署镜像或全局 Docker 配置。可选 `--control-image` / `--web-image` 仅复用 `org.opencontainers.image.revision` 与当前 HEAD、`artifact-kit.dockerfile.sha256` 与对应 Dockerfile 均匹配的镜像。`--probe-image` 可复用包含 python3、Git、cc、OpenSSL 的 Linux 测试工具镜像；Agent 二进制仍从本次源码快照重新编译，验收脚本也由本次 run 单独挂载。
+
+日志和证据保存在 `.local/compose-tls/<run>/`。其中源码快照含本次部署的主密钥、数据库 / S3 密码和测试 PKI，必须保持私有；CI 仅上传显式列出的诊断日志和证据文件，不上传快照、生成的 Compose 配置或 Agent 私钥。专用 probe 容器只承载该验收的原生 Linux 进程，不属于产品的容器执行器，也不证明实体 Agent 服务、五类真实应用、发行签名或公网 DNS / ACME 已验收。
+
 ## Agent 安装与注册
 
 先运行 `sh scripts/cross-build-agent.sh`，结果位于 `agent/bin`。所有目标为 CGO-disabled 二进制；这只是可编译性，不是宿主运行验证。使用已有 OS 原生工具链，不安装 SDK。
