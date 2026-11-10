@@ -46,6 +46,6 @@ Agent 在租约内断线保持 Worker，重连后补报；无续租则本地终�
 
 ## 制品传输
 
-`PrepareArtifact` 声明相对路径、大小和 SHA-256，获得 15 分钟 HTTPS staging PUT URL。`CompleteArtifact` 获取对象，验证完整内容，再写入从不签发 PUT URL 的 final key；成功后登记制品。每次入库重新验证租约，重复完成返回相同制品。下载经 HTTP 项目权限校验，签发 60 秒 GET URL，不能匿名访问桶。
+`PrepareArtifact` 声明相对路径、大小和 SHA-256，获得 15 分钟 HTTPS staging PUT URL。`CompleteArtifact` 获取对象，验证完整内容，再写入从不签发 PUT URL 的 final key；成功后登记制品。上传声明和制品登记各自在事务提交前获得 attempt / 节点共享锁，并重新检查当前租约、节点证书期限、吊销和构建取消状态；锁等待期间失效则回滚本次记录。完成接口在 S3 校验结束后才取得这些锁，保留独立心跳续租。重复完成返回相同制品，仍需当前授权有效。下载经 HTTP 项目权限校验，签发 60 秒 GET URL，不能匿名访问桶。
 
 对象传输不使用双向控制流。未来容器执行器可以复用 attempt / lease / log / artifact 契约，但不改变制品为文件还是 OCI 镜像的独立建模。

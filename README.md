@@ -91,6 +91,8 @@ export AK_LIVE_PROJECT_ID="$(python3 -c 'import json; print(json.load(open(".loc
 
 协议联测还需要 `psql`，且 `.local/env` 中的 `DATABASE_URL` 必须指向该验收中心的数据库。测试会锁住本次创建的任务记录，实际提交节点吊销、数据库证书期限失效及 mTLS 会话替换，验证等待中的续租、开始授权与完成事件被拒绝，同时保留正常授权的成功对照；另行验证失败任务重试后的旧完成事件重放及后续任务开始。
 
+制品联测同样持有真实 attempt 行锁，验证准备上传和完成登记在等待期间遇到吊销、证书期限失效、构建取消及租约实际到期后，均不得提交新的上传声明或制品记录。
+
 在上述验收中心和 Agent 仍运行时，可继续验证 SSH Git。需要本机 OpenSSH server / `git-shell`；脚本创建仅监听 loopback 的临时 sshd、密钥和带空格路径的 Git 仓库，并验证正确密钥构建、错误主机指纹和未授权密钥拒绝：
 
 ```sh

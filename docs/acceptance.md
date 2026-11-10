@@ -154,6 +154,14 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 
 原始红 / 绿日志、源码及二进制摘要保存在 `.local/lease-node-fencing/`。首次新测试的 psql 连接参数错误另行保留，未算作产品竞态复现；修复前原有 35 项本机端到端验收通过。这里调整的是临时节点的数据库授权期限，没有将 TLS 证书实际老化，也没有替代真实 Worker / 实体宿主故障验收。CI 同时保留 `.local/protocol-live.log`，本次提交的远端结果按精确 SHA 的 [Actions](https://github.com/zhubby/artifact-kit/actions/workflows/ci.yml?query=branch%3Amain) 核验。
 
+### 制品接口等待任务锁时的授权
+
+`TestLiveRustGoProtocolArtifactFencing` 使用真实 mTLS、PostgreSQL 和 S3，分别阻塞 `PrepareArtifact` 与 `CompleteArtifact` 对本次 attempt 的数据库访问，并用 `pg_blocking_pids` 证明请求确实等待。每个接口包含正常授权、节点吊销、数据库证书期限失效、构建取消和租约在等待期间实际到期五种场景；完成接口先把真实内容上传至私有 staging 对象。
+
+原实现的两个正常对照通过，八个失效场景均错误提交了上传声明或制品记录。修正后将准备上传纳入同一事务，提交前取得 attempt / 节点共享锁并以当前时钟重新检查；完成接口在 S3 校验结束后才取得这些锁，并对首次登记及重复完成都重新验证。上述十项本机红 / 绿检查通过。回滚覆盖数据库声明 / 索引；已写入 S3 的私有对象沿用既有人工保留策略。
+
+`TestLiveRustGoProtocolArtifactConcurrency` 另行并发准备同一路径，再混合重复准备、完成及同一 attempt 的心跳，检查上传身份及内容一致、只登记一份上传 / 制品、心跳续租成功；本机检查通过。原有两类真实 S3 暂停续租、控制流授权和重放检查也通过。证据保留在 `.local/lease-node-fencing/`，最终远端结果按当前提交的完整 CI 核验。
+
 ### 真实端到端记录
 
 最近一次完整本机运行：`c4032f9f5461`，35 项通过；测试 Git 提交为 `1154016965ec486d1f9a1b45d92fccfd64133905`。此前通过的运行还包括 `e85df4be20b7`、`7f8d8b60fce5`、`2089db7ceec6`。生成的完整运行清单保存在忽略版本控制的 `.local/acceptance/<run_id>/evidence.json`，最近一次结果另存 `.local/acceptance/latest.json`。证据中的 `commit` 是测试 Git 仓库的提交，不是当前平台仓库提交。

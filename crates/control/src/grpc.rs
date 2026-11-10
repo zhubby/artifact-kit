@@ -69,8 +69,8 @@ async fn lock_authorized_node(
     valid_node(&mut **transaction, node, session).await
 }
 
-async fn valid_attempt(
-    state: &AppState,
+async fn valid_attempt<'e>(
+    executor: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
     node: Uuid,
     attempt: &str,
     token: &str,
@@ -83,7 +83,7 @@ async fn valid_attempt(
         .bind(node)
         .bind(token)
         .bind(allow_canceled)
-        .fetch_one(&state.pool)
+        .fetch_one(executor)
         .await
         .map_err(internal)?;
     if valid {
@@ -93,6 +93,28 @@ async fn valid_attempt(
             "attempt lease expired, canceled or superseded",
         ))
     }
+}
+
+async fn lock_artifact_attempt(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    node: Uuid,
+    attempt: Uuid,
+    token: &str,
+) -> Result<(), Status> {
+    // Shared locks coexist with insertion's foreign-key KEY SHARE lock. Check
+    // again after waiting; hold authorization stable through the short commit.
+    sqlx::query("SELECT id FROM attempts WHERE id=$1 FOR SHARE")
+        .bind(attempt)
+        .execute(&mut **transaction)
+        .await
+        .map_err(internal)?;
+    sqlx::query("SELECT id FROM nodes WHERE id=$1 FOR SHARE")
+        .bind(node)
+        .execute(&mut **transaction)
+        .await
+        .map_err(internal)?;
+    valid_attempt(&mut **transaction, node, &attempt.to_string(), token, false).await?;
+    Ok(())
 }
 
 #[tonic::async_trait]
@@ -239,8 +261,14 @@ impl protocol::control_server::Control for AgentService {
             {
                 return Err(Status::invalid_argument("invalid log chunk"));
             }
-            let attempt =
-                valid_attempt(&self.0, node, &chunk.attempt_id, &chunk.lease_token, true).await?;
+            let attempt = valid_attempt(
+                &self.0.pool,
+                node,
+                &chunk.attempt_id,
+                &chunk.lease_token,
+                true,
+            )
+            .await?;
             let hash = crypto::hash(&chunk.data);
             let key = format!("logs/{attempt}/{}/{hash}", chunk.sequence);
             let size = chunk.data.len() as i64;
@@ -311,8 +339,14 @@ impl protocol::control_server::Control for AgentService {
     ) -> Result<Response<protocol::UploadTicket>, Status> {
         let node = identity(&self.0, &request).await?;
         let input = request.into_inner();
-        let attempt =
-            valid_attempt(&self.0, node, &input.attempt_id, &input.lease_token, false).await?;
+        let attempt = valid_attempt(
+            &self.0.pool,
+            node,
+            &input.attempt_id,
+            &input.lease_token,
+            false,
+        )
+        .await?;
         if !safe_relative_path(&input.path)
             || input.size == 0
             || input.size > 20 * 1024 * 1024 * 1024
@@ -326,9 +360,10 @@ impl protocol::control_server::Control for AgentService {
         }
         let id = Uuid::new_v4();
         let key = format!("uploads/{id}");
+        let mut transaction = self.0.pool.begin().await.map_err(internal)?;
         sqlx::query("INSERT INTO uploads(id,attempt_id,path,object_key,expected_size,expected_sha256,expires_at) VALUES($1,$2,$3,$4,$5,$6,now()+interval '15 minutes') ON CONFLICT(attempt_id,path) DO NOTHING")
-            .bind(id).bind(attempt).bind(&input.path).bind(key).bind(input.size as i64).bind(&input.sha256).execute(&self.0.pool).await.map_err(internal)?;
-        let row=sqlx::query("SELECT u.*,EXISTS(SELECT 1 FROM artifacts a WHERE a.id=u.id) AS completed FROM uploads u WHERE attempt_id=$1 AND path=$2").bind(attempt).bind(input.path).fetch_one(&self.0.pool).await.map_err(internal)?;
+            .bind(id).bind(attempt).bind(&input.path).bind(key).bind(input.size as i64).bind(&input.sha256).execute(&mut *transaction).await.map_err(internal)?;
+        let row=sqlx::query("SELECT u.*,EXISTS(SELECT 1 FROM artifacts a WHERE a.id=u.id) AS completed FROM uploads u WHERE attempt_id=$1 AND path=$2").bind(attempt).bind(input.path).fetch_one(&mut *transaction).await.map_err(internal)?;
         if row.get::<i64, _>("expected_size") != input.size as i64
             || row.get::<String, _>("expected_sha256") != input.sha256
         {
@@ -336,6 +371,8 @@ impl protocol::control_server::Control for AgentService {
                 "artifact path already declared with different content",
             ));
         }
+        lock_artifact_attempt(&mut transaction, node, attempt, &input.lease_token).await?;
+        transaction.commit().await.map_err(internal)?;
         let url = if row.get::<bool, _>("completed") {
             String::new()
         } else {
@@ -356,8 +393,14 @@ impl protocol::control_server::Control for AgentService {
     ) -> Result<Response<protocol::ArtifactRecord>, Status> {
         let node = identity(&self.0, &request).await?;
         let input = request.into_inner();
-        let attempt =
-            valid_attempt(&self.0, node, &input.attempt_id, &input.lease_token, false).await?;
+        let attempt = valid_attempt(
+            &self.0.pool,
+            node,
+            &input.attempt_id,
+            &input.lease_token,
+            false,
+        )
+        .await?;
         let id = Uuid::parse_str(&input.upload_id)
             .map_err(|_| Status::invalid_argument("invalid upload ID"))?;
         let mut transaction = self.0.pool.begin().await.map_err(internal)?;
@@ -373,8 +416,8 @@ impl protocol::control_server::Control for AgentService {
             .fetch_one(&mut *transaction)
             .await
             .map_err(internal)?;
+        let final_key = format!("artifacts/{id}");
         if !exists {
-            let final_key = format!("artifacts/{id}");
             self.0
                 .storage
                 .verify_and_promote(
@@ -387,7 +430,11 @@ impl protocol::control_server::Control for AgentService {
                 .map_err(|_| {
                     Status::failed_precondition("artifact verification or promotion failed")
                 })?;
-            valid_attempt(&self.0, node, &input.attempt_id, &input.lease_token, false).await?;
+        }
+        // Network verification completes before taking the attempt/node locks,
+        // so a slow S3 request does not block heartbeat renewal.
+        lock_artifact_attempt(&mut transaction, node, attempt, &input.lease_token).await?;
+        if !exists {
             sqlx::query("INSERT INTO artifacts(id,attempt_id,path,object_key,size,sha256) VALUES($1,$2,$3,$4,$5,$6)")
                 .bind(id).bind(attempt).bind(row.get::<String,_>("path")).bind(final_key).bind(row.get::<i64,_>("expected_size")).bind(row.get::<String,_>("expected_sha256")).execute(&mut *transaction).await.map_err(internal)?;
         }
