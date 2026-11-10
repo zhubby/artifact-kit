@@ -204,6 +204,16 @@ func TestNativeServiceLifecycle(test *testing.T) {
 	if os.Getenv("GITHUB_ACTIONS") != "true" || os.Getenv("RUNNER_ENVIRONMENT") != "github-hosted" {
 		test.Fatal("refusing service/account changes outside a GitHub-hosted ephemeral runner")
 	}
+	platform := runtime.GOOS + "/" + runtime.GOARCH
+	if expected := os.Getenv("AK_NATIVE_EXPECTED_PLATFORM"); expected != platform {
+		test.Fatalf("native platform mismatch: expected %q, executing %s", expected, platform)
+	}
+	runnerOS := map[string]string{"linux": "Linux", "darwin": "macOS", "windows": "Windows"}[runtime.GOOS]
+	runnerArch := map[string]string{"amd64": "X64", "arm64": "ARM64"}[runtime.GOARCH]
+	if runnerOS == "" || runnerArch == "" || os.Getenv("RUNNER_OS") != runnerOS || os.Getenv("RUNNER_ARCH") != runnerArch {
+		test.Fatalf("runner platform does not match native execution: go=%s runner=%s/%s", platform, os.Getenv("RUNNER_OS"), os.Getenv("RUNNER_ARCH"))
+	}
+	test.Logf("native platform verified: go=%s runner=%s/%s image=%s version=%s", platform, runnerOS, runnerArch, os.Getenv("ImageOS"), os.Getenv("ImageVersion"))
 	if state := inspectNativeService(test); state.Installed {
 		test.Fatal("refusing to replace an existing artifact-kit-agent service")
 	}

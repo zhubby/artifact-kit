@@ -105,7 +105,7 @@ Unix Worker 将 SIGTERM、SIGINT 和因 Agent 关闭输出管道产生的 SIGPIP
 
 ### 临时 CI 原生服务验收
 
-`native-agent` 作业在三种 GitHub 托管临时 VM 上显式启用 `TestNativeServiceLifecycle`。测试创建专用非管理员账户和临时私有配置，通过实际 systemd / launchd / SCM 安装 Agent，核对自动启动配置和真实进程账户，并连接仅监听 loopback、要求客户端证书的 Go 测试控制端；重启必须产生新的认证连接及 PID，停止后连接必须关闭，卸载后服务记录必须消失。二进制及配置路径均含空格，测试结束卸载服务、删除其创建的账户和目录。
+`native-agent` 作业覆盖 GitHub 托管临时 VM 的 Linux amd64 / arm64、macOS amd64 / arm64 与 Windows amd64 五种组合，并显式启用 `TestNativeServiceLifecycle`。测试在系统变更前核对矩阵传入的 `AK_NATIVE_EXPECTED_PLATFORM`、实际 Go 运行平台和 runner 系统 / 架构，记录镜像版本。随后创建专用非管理员账户和临时私有配置，通过实际 systemd / launchd / SCM 安装 Agent，核对自动启动配置和真实进程账户，并连接仅监听 loopback、要求客户端证书的 Go 测试控制端；重启必须产生新的认证连接及 PID，停止后连接必须关闭，卸载后服务记录必须消失。二进制及配置路径均含空格，测试结束卸载服务、删除其创建的账户和目录。
 
 测试控制端还分配固定本地 Git 提交的受控任务。任务启动真实后代进程，测试通过 OS 进程信息核对专用账户和 Agent → Worker → 步骤 / 后代的实际归属；在服务重启及停止后要求所有旧任务进程消失、工作目录被删除，再让新 Agent / Worker 完成后续任务。受控程序及其后代有两分钟运行上限；失败清理只停止本次观察端，让这些任务自行退出。Windows 使用进程句柄观察退出，避免只按 PID 推断结果。
 
