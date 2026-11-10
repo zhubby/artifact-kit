@@ -93,6 +93,8 @@ export AK_LIVE_PROJECT_ID="$(python3 -c 'import json; print(json.load(open(".loc
 
 制品联测同样持有真实 attempt 行锁，验证准备上传和完成登记在等待期间遇到吊销、证书期限失效、构建取消及租约实际到期后，均不得提交新的上传声明或制品记录。
 
+取消联测分别持有 attempt 与节点行锁，验证真实 API 在等待期间提交取消后，accept 不再获得 start，finished 按 canceled 登记；未取消的相同请求仍可正常完成。
+
 在上述验收中心和 Agent 仍运行时，可继续验证 SSH Git。需要本机 OpenSSH server / `git-shell`；脚本创建仅监听 loopback 的临时 sshd、密钥和带空格路径的 Git 仓库，并验证正确密钥构建、错误主机指纹和未授权密钥拒绝：
 
 ```sh

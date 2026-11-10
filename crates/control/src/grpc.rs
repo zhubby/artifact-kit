@@ -530,26 +530,23 @@ async fn apply_event(
         return Err(Status::invalid_argument("oversized task event"));
     }
     let mut transaction = state.pool.begin().await.map_err(internal)?;
-    let row=sqlx::query("SELECT a.*,b.cancel_requested,j.target_config FROM attempts a JOIN jobs j ON j.id=a.job_id JOIN builds b ON b.id=j.build_id WHERE a.id=$1 AND a.node_id=$2 AND a.lease_token=$3 AND a.lease_expires_at>now() FOR UPDATE OF a,j")
+    let row=sqlx::query("SELECT a.*,j.target_config FROM attempts a JOIN jobs j ON j.id=a.job_id WHERE a.id=$1 AND a.node_id=$2 AND a.lease_token=$3 AND a.lease_expires_at>now() FOR UPDATE OF a,j")
         .bind(id).bind(node).bind(&event.lease_token).fetch_optional(&mut *transaction).await.map_err(internal)?
         .ok_or_else(|| Status::failed_precondition("attempt lease expired or unknown"))?;
     lock_authorized_node(&mut transaction, node, session).await?;
-    let current: bool =
-        sqlx::query_scalar("SELECT lease_expires_at>clock_timestamp() FROM attempts WHERE id=$1")
-            .bind(id)
-            .fetch_one(&mut *transaction)
-            .await
-            .map_err(internal)?;
-    if !current {
+    // Cancellation can commit while either row lock waits. Read it with the
+    // current lease clock after both waits, rather than using the old snapshot.
+    let current = sqlx::query("SELECT a.lease_expires_at>clock_timestamp() AS lease_valid,b.cancel_requested FROM attempts a JOIN jobs j ON j.id=a.job_id JOIN builds b ON b.id=j.build_id WHERE a.id=$1")
+        .bind(id).fetch_one(&mut *transaction).await.map_err(internal)?;
+    if !current.get::<bool, _>("lease_valid") {
         return Err(Status::failed_precondition(
             "attempt lease expired while waiting for its lock",
         ));
     }
+    let canceled: bool = current.get("cancel_requested");
     let status: String = row.get("status");
     if event.kind == "accept" {
-        if !["leased", "running"].contains(&status.as_str())
-            || row.get::<bool, _>("cancel_requested")
-        {
+        if !["leased", "running"].contains(&status.as_str()) || canceled {
             return Err(Status::failed_precondition("attempt cannot start"));
         }
         sqlx::query("UPDATE attempts SET status='running',started_at=coalesce(started_at,now()),lease_expires_at=now()+interval '90 seconds' WHERE id=$1").bind(id).execute(&mut *transaction).await.map_err(internal)?;
@@ -642,11 +639,7 @@ async fn apply_event(
             if !["succeeded", "failed", "canceled"].contains(&requested) {
                 return Err(Status::invalid_argument("invalid result status"));
             }
-            let final_status = if row.get::<bool, _>("cancel_requested") {
-                "canceled"
-            } else {
-                requested
-            };
+            let final_status = if canceled { "canceled" } else { requested };
             if final_status == "succeeded" {
                 let complete: i64 = sqlx::query_scalar(
                     "SELECT count(*) FROM step_runs WHERE attempt_id=$1 AND status='succeeded'",

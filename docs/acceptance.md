@@ -154,6 +154,12 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 
 原始红 / 绿日志、源码及二进制摘要保存在 `.local/lease-node-fencing/`。首次新测试的 psql 连接参数错误另行保留，未算作产品竞态复现；修复前原有 35 项本机端到端验收通过。这里调整的是临时节点的数据库授权期限，没有将 TLS 证书实际老化，也没有替代真实 Worker / 实体宿主故障验收。CI 同时保留 `.local/protocol-live.log`，本次提交的远端结果按精确 SHA 的 [Actions](https://github.com/zhubby/artifact-kit/actions/workflows/ci.yml?query=branch%3Amain) 核验。
 
+### 控制事件等待锁期间的取消
+
+`TestLiveRustGoProtocolCancellationFencing` 使用真实 Rust / Go mTLS、PostgreSQL 和取消 API，分别让 accept / finished 等待本次 attempt 或节点的行锁，并用 `pg_blocking_pids` 确认已阻塞。四个未取消对照正常 start / 完成；另四项在释放锁前提交构建取消，检查 accept 不获得 start、finished 把原本的 failed 结果登记为 canceled，同时核对 attempt / job 状态、事件序号及事件条数。
+
+原实现的四个取消场景全部失败：两个 accept 仍转为 running，两个 finished 仍登记 failed。修复将取消标记从初始加锁查询移除，在所有锁等待结束后复用原有期限检查，从同一事务连接读取当前租约及取消状态。八项红 / 绿回归与全部 32 个协议回归场景、原始协议和两类真实 S3 阻塞续租检查在本机通过，无 skip，执行源码 / 二进制摘要匹配；证据在 `.local/lease-node-fencing/`。完整远端结果仍按当前提交的 CI 核验。
+
 ### 制品接口等待任务锁时的授权
 
 `TestLiveRustGoProtocolArtifactFencing` 使用真实 mTLS、PostgreSQL 和 S3，分别阻塞 `PrepareArtifact` 与 `CompleteArtifact` 对本次 attempt 的数据库访问，并用 `pg_blocking_pids` 证明请求确实等待。每个接口包含正常授权、节点吊销、数据库证书期限失效、构建取消和租约在等待期间实际到期五种场景；完成接口先把真实内容上传至私有 staging 对象。

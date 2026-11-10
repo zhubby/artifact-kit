@@ -31,6 +31,8 @@ worker: 收到 start grant 后才能执行
 
 执行开始前过期，旧 attempt 记为 lost、job 可重新排队；执行开始后过期，job 为 lost，必须显式重试生成新 attempt。中心重启保留 PostgreSQL 内的在途租约，不立即重派。心跳只续有效且未取消任务的租约，不能复活旧 attempt。
 
+任务事件等待 attempt / 节点行锁后，在同一事务连接上重新检查当前租约与构建取消标记。等待期间已提交的取消阻止新的 start 授权；finished 也按当前取消状态登记为 canceled。
+
 Agent 在租约内断线保持 Worker，重连后补报；无续租则本地终止进程树。父 Agent 退出 / 崩溃关闭 Worker 控制管道，Worker 终止正在运行的命令。Unix 使用进程组，Windows 在恢复挂起的初始进程前分配 Job Object，关闭 Job 时杀死所有后代。
 
 `started` 的保守定义是中心已提交 running 并准备发送 start；即使随后响应丢失，也不假定副作用未发生，因此不自动重跑。
