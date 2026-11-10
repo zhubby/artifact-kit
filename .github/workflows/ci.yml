@@ -19,7 +19,7 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler openssh-server rclone && sudo mkdir -p /run/sshd
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler openssh-server postgresql-client rclone && sudo mkdir -p /run/sshd
       - run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy && rustup default 1.95.0
       - run: sh scripts/local-services.sh
       - run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
@@ -58,7 +58,7 @@ jobs:
           export AK_LIVE_S3_CONTAINER=artifact-kit-s3-test
           export AK_LIVE_AGENT_CONFIG="$(python3 -c 'import json; print(json.load(open(".local/acceptance/latest.json"))["agent_config"])')"
           export AK_LIVE_PROJECT_ID="$(python3 -c 'import json; print(json.load(open(".local/acceptance/latest.json"))["project_id"])')"
-          (cd agent && go test -race -v ./internal/client -run TestLiveRustGoProtocol)
+          (cd agent && go test -race -v ./internal/client -run TestLiveRustGoProtocol | tee ../.local/protocol-live.log)
           (cd web && npm test)
           python3 -u scripts/ssh_acceptance.py --sudo-sshd
           cleanup
@@ -73,6 +73,7 @@ jobs:
           include-hidden-files: true
           path: |
             .local/acceptance-run.log
+            .local/protocol-live.log
             .local/web.log
             .local/acceptance/*/control.log
             .local/acceptance/*/agent.log

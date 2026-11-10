@@ -38,9 +38,13 @@ async fn identity<T>(state: &AppState, request: &Request<T>) -> Result<Uuid, Sta
         .ok_or_else(|| Status::unauthenticated("node certificate revoked, expired or unknown"))
 }
 
-async fn valid_node(state: &AppState, node: Uuid, session: Uuid) -> Result<(), Status> {
-    let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM nodes WHERE id=$1 AND active_session=$2 AND NOT revoked AND certificate_expires_at>now())")
-        .bind(node).bind(session).fetch_one(&state.pool).await.map_err(internal)?;
+async fn valid_node<'e>(
+    executor: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+    node: Uuid,
+    session: Uuid,
+) -> Result<(), Status> {
+    let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM nodes WHERE id=$1 AND active_session=$2 AND NOT revoked AND certificate_expires_at>clock_timestamp())")
+        .bind(node).bind(session).fetch_one(executor).await.map_err(internal)?;
     if valid {
         Ok(())
     } else {
@@ -48,6 +52,21 @@ async fn valid_node(state: &AppState, node: Uuid, session: Uuid) -> Result<(), S
             "node session revoked or superseded",
         ))
     }
+}
+
+async fn lock_authorized_node(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    node: Uuid,
+    session: Uuid,
+) -> Result<(), Status> {
+    // Acquire this after the attempt lock, then validate with a fresh clock and
+    // snapshot. Keep revocation/session replacement serialized with the write.
+    sqlx::query("SELECT id FROM nodes WHERE id=$1 FOR SHARE")
+        .bind(node)
+        .execute(&mut **transaction)
+        .await
+        .map_err(internal)?;
+    valid_node(&mut **transaction, node, session).await
 }
 
 async fn valid_attempt(
@@ -176,14 +195,14 @@ impl protocol::control_server::Control for AgentService {
                     let Some(event) = event else {
                         return Ok::<(), Status>(());
                     };
-                    valid_node(&state, node, session).await?;
+                    valid_node(&state.pool, node, session).await?;
                     if event.agent_id != node.to_string() {
                         return Err(Status::permission_denied("node ID mismatch"));
                     }
                     if event.kind == "heartbeat" {
                         heartbeat(&state, node, session, &event, &sender).await?;
                     } else {
-                        apply_event(&state, node, &event, &sender).await?;
+                        apply_event(&state, node, session, &event, &sender).await?;
                     }
                 }
             }
@@ -389,7 +408,7 @@ async fn heartbeat(
     event: &AgentEvent,
     sender: &mpsc::Sender<Result<Command, Status>>,
 ) -> Result<(), Status> {
-    valid_node(state, node, session).await?;
+    valid_node(&state.pool, node, session).await?;
     if event.payload_json.len() > 65536 {
         return Err(Status::invalid_argument("oversized heartbeat"));
     }
@@ -424,8 +443,9 @@ async fn heartbeat(
                 .execute(&mut *transaction)
                 .await
                 .map_err(internal)?;
-            let row=sqlx::query("UPDATE attempts a SET lease_expires_at=clock_timestamp()+interval '90 seconds' FROM jobs j,builds b WHERE a.id=$1 AND a.node_id=$2 AND a.lease_token=$3 AND a.status IN ('leased','running') AND a.lease_expires_at>clock_timestamp() AND j.id=a.job_id AND b.id=j.build_id AND NOT b.cancel_requested RETURNING a.status")
-                .bind(id).bind(node).bind(token).fetch_optional(&mut *transaction).await.map_err(internal)?;
+            lock_authorized_node(&mut transaction, node, session).await?;
+            let row=sqlx::query("UPDATE attempts a SET lease_expires_at=clock_timestamp()+interval '90 seconds' FROM jobs j,builds b,nodes n WHERE a.id=$1 AND a.node_id=$2 AND a.lease_token=$3 AND a.status IN ('leased','running') AND a.lease_expires_at>clock_timestamp() AND j.id=a.job_id AND b.id=j.build_id AND NOT b.cancel_requested AND n.id=a.node_id AND n.active_session=$4 AND NOT n.revoked AND n.certificate_expires_at>clock_timestamp() RETURNING a.status")
+                .bind(id).bind(node).bind(token).bind(session).fetch_optional(&mut *transaction).await.map_err(internal)?;
             transaction.commit().await.map_err(internal)?;
             let command = Command {
                 command_id: Uuid::new_v4().to_string(),
@@ -453,6 +473,7 @@ async fn heartbeat(
 async fn apply_event(
     state: &AppState,
     node: Uuid,
+    session: Uuid,
     event: &AgentEvent,
     sender: &mpsc::Sender<Result<Command, Status>>,
 ) -> Result<(), Status> {
@@ -465,6 +486,7 @@ async fn apply_event(
     let row=sqlx::query("SELECT a.*,b.cancel_requested,j.target_config FROM attempts a JOIN jobs j ON j.id=a.job_id JOIN builds b ON b.id=j.build_id WHERE a.id=$1 AND a.node_id=$2 AND a.lease_token=$3 AND a.lease_expires_at>now() FOR UPDATE OF a,j")
         .bind(id).bind(node).bind(&event.lease_token).fetch_optional(&mut *transaction).await.map_err(internal)?
         .ok_or_else(|| Status::failed_precondition("attempt lease expired or unknown"))?;
+    lock_authorized_node(&mut transaction, node, session).await?;
     let current: bool =
         sqlx::query_scalar("SELECT lease_expires_at>clock_timestamp() FROM attempts WHERE id=$1")
             .bind(id)

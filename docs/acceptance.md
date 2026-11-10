@@ -93,7 +93,7 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 
 原生矩阵增加 `ubuntu-24.04-arm`（Linux arm64）与 `macos-15-intel`（macOS amd64），补齐五个 Agent 二进制目标的原生运行覆盖。标签来自 [GitHub 官方 runner 列表](https://github.com/actions/runner-images#available-images)。五种组合均执行 Go vet / race，以及显式启用的专用账户服务安装、在途任务重启 / 停止、进程树与工作目录清理、后续任务和卸载验收。
 
-服务测试在任何系统变更前核对 CI 预期平台、测试进程实际 `runtime.GOOS/GOARCH` 与 `RUNNER_OS/RUNNER_ARCH`，记录镜像版本；真实 Agent 的 mTLS hello 另行核对相同 OS / 架构。预期平台缺失或不匹配立即失败，原有 GitHub 托管临时 VM 限制继续生效。本提交新增两类 runner 的实际结果以精确提交的 [Actions](https://github.com/zhubby/artifact-kit/actions/workflows/ci.yml?query=branch%3Amain) 为准；原生 CI 不代替实体机重启、真实应用工具链或发行签名验收。
+服务测试在任何系统变更前核对 CI 预期平台、测试进程实际 `runtime.GOOS/GOARCH` 与 `RUNNER_OS/RUNNER_ARCH`，记录镜像版本；真实 Agent 的 mTLS hello 另行核对相同 OS / 架构。预期平台缺失或不匹配立即失败，原有 GitHub 托管临时 VM 限制继续生效。[42777333982](https://github.com/zhubby/artifact-kit/actions/runs/42777333982) 在 `fe2f0932e6cdb5c98de15513665f6139bea66914` 上的五类原生作业全部通过，每类均实际核对两次在途进程树 / 工作目录清理及两次后续任务成功；完整七作业 CI 也全部成功。原生 CI 不代替实体机重启、真实应用工具链或发行签名验收。
 
 ### 完整 Compose / TLS 隔离联测
 
@@ -139,6 +139,16 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 - 显式指定独立测试 S3 容器时，分别暂停实际 S3，让日志上传、制品校验请求处于等待中；同一 attempt 的独立控制流在 3 秒内仍获得续租授权，存储恢复后请求成功完成。
 
 最后一项有明确红 / 绿证据：修复前，暂停 S3 后日志上传持有 attempt 行锁，独立心跳在 3 秒内无法续租；修复后两种存储暂停探针均通过。日志先写摘要绑定的独立对象，再用短事务检查租约、序号和摘要并登记索引；不在等待网络时持有租约锁，迟到对象不会登记为有效日志。
+
+### 控制消息等待任务锁时的节点授权
+
+独立 Go / mTLS 客户端新增 `TestLiveRustGoProtocolLeaseFencing` 与 `TestLiveRustGoProtocolEventFencing`。测试使用真实 Rust 中心和 PostgreSQL，持有本次 attempt 行锁，以 `pg_blocking_pids` 确认控制请求确实在等待，再提交节点吊销、数据库证书期限失效或新认证会话替换，最后释放行锁并核对持久状态和 RPC 结果。
+
+修复前分别实跑复现三类失效授权仍可延长租约、把 leased 任务改为 running，以及写入完成状态 / 事件记录。修复后，在拿到任务锁后持有节点共享锁，并在同一事务用当前数据库时钟、节点授权和 active_session 重新检查；节点吊销 / 会话替换与该次写入串行化，续租 UPDATE 也直接检查当前授权和期限。三类控制消息各含一个正常授权对照和三个失效场景，本机全部 12 项通过；完成事件使用受控 failed 结果，并核对 attempt / job 状态、租约、事件序号及记录数。
+
+`TestLiveRustGoProtocolReplayedCompletion` 另行验证显式重试后的旧完成事件：实际失败并重试 job，在持有该节点行锁时重放旧事件，确认请求确实等待；释放后只确认旧序号，不改写 queued job 或旧 attempt，随后由真实调度器分配不同 attempt 并取得开始授权。该项及上述 12 项本机联测全部通过。调度器的节点及候选 job 查询使用 `SKIP LOCKED`，可跳过被事件持有的 job。
+
+原始红 / 绿日志、源码及二进制摘要保存在 `.local/lease-node-fencing/`。首次新测试的 psql 连接参数错误另行保留，未算作产品竞态复现；修复前原有 35 项本机端到端验收通过。这里调整的是临时节点的数据库授权期限，没有将 TLS 证书实际老化，也没有替代真实 Worker / 实体宿主故障验收。CI 同时保留 `.local/protocol-live.log`，本次提交的远端结果按精确 SHA 的 [Actions](https://github.com/zhubby/artifact-kit/actions/workflows/ci.yml?query=branch%3Amain) 核验。
 
 ### 真实端到端记录
 
@@ -192,9 +202,9 @@ Linux CI 的 S3 启动问题也有真实红 / 绿验证：0600 配置由宿主 U
 | 对象 | 编译 / 配置 | 实际运行 | 未完成门槛 |
 |---|---|---|---|
 | macOS arm64 Agent | Go 原生与交叉二进制均已生成 | 本机前台 Agent / Worker 与故障联测；临时 VM 的 launchd 在途任务重启 / 停止、清理及后续任务通过 | 实体机重启自启、正式升级与真实工具链 / 签名环境验收 |
-| macOS amd64 Agent | CGO=0 二进制已生成 | 已接入 `macos-15-intel` 的原生 Go / launchd 验收，精确提交结果见上节 Actions | Intel 实体 Mac、重启、真实工具链及应用验收 |
+| macOS amd64 Agent | CGO=0 二进制已生成 | `macos-15-intel` 的原生 Go / launchd 在途任务重启 / 停止、清理及后续任务通过 | Intel 实体 Mac、重启、真实工具链及应用验收 |
 | Linux amd64 Agent | CGO=0 ELF 已生成 | 临时 VM 的 systemd 在途任务重启 / 停止、清理及后续任务通过；CI 最小原生闭环通过 | 实体机重启自启、SDK 与真实项目应用验收 |
-| Linux arm64 Agent | CGO=0 ELF 已生成 | 已接入 `ubuntu-24.04-arm` 的原生 Go / systemd 验收，精确提交结果见上节 Actions | arm64 实体 Linux、重启、真实工具链及应用验收 |
+| Linux arm64 Agent | CGO=0 ELF 已生成 | `ubuntu-24.04-arm` 的原生 Go / systemd 在途任务重启 / 停止、清理及后续任务通过 | arm64 实体 Linux、重启、真实工具链及应用验收 |
 | Windows amd64 Agent | PE 已生成；Job Object 测试已交叉编译 | 临时 VM 的 Go race、Job Object 及 SCM 在途任务重启 / 停止、清理及后续任务通过 | Windows 实体宿主、重启自启、真实工具链 / 应用与故障验收 |
 | Linux 应用 | Rust 配置模板已解析 | 尚未构建真实项目应用 | Linux 宿主、项目依赖、原生运行或安装验收 |
 | macOS 应用 | Xcode 模板已解析；最小 C 可执行文件实际编译 | arm64 C CLI + ad-hoc 签名 / 校验通过 | 完整 Xcode `.app`、发行证书、notarization / 安装验收 |
