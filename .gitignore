@@ -1,0 +1,16 @@
+/target/
+/web/node_modules/
+/web/.next/
+/web/playwright-report/
+/web/test-results/
+/.local/
+/.deploy/
+/.context/
+/.env
+/agent/bin/
+/scripts/__pycache__/
+*.log
+*.pem
+*.key
+*.tsbuildinfo
+.DS_Store

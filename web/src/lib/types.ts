@@ -1,0 +1,14 @@
+export interface User { id: string; username: string; role: "admin" | "operator" | "viewer" }
+export interface Project { id: string; name: string; repository_url: string; credential_id: string | null; pool_ids: string[]; signing_profiles: string[]; build_count: number; last_build: { id: string; status: string; created_at: string } | null }
+export interface StepRun { step_index: number; name: string; phase: string; status: string; exit_code: number | null; started_at: string; finished_at: string | null }
+export interface Attempt { id: string; node_id: string; node_name: string; status: string; lease_expires_at: string; error: string | null; started_at: string | null; finished_at: string | null; steps: StepRun[] }
+export interface Job { id: string; target: string; status: string; target_config: { os: string; arch: string; steps: { name: string; phase: string }[] }; attempts: Attempt[] }
+export interface Artifact { id: string; path: string; size: number; sha256: string; target: string; created_at: string; project_name?: string; build_id?: string; attempt_status?: string }
+export interface Build { id: string; project_id: string; project_name: string; requested_ref: string; commit_sha: string | null; status: string; publish_status: string; publish_error: string | null; error: string | null; release_version: string | null; created_at: string; finished_at: string | null; jobs?: Job[]; targets?: { id: string; target: string; status: string }[]; artifacts?: Artifact[]; config_yaml?: string; publish_attempts?: { id: string; status: string; error: string | null }[] }
+export interface Node { id: string; name: string; os: string; arch: string; pool_id: string; pool_name: string; labels: Record<string,string>; capabilities: string[]; signing_profiles: string[]; slots: number; active_jobs: number; draining: boolean; revoked: boolean; online: boolean; last_seen: string | null; certificate_expires_at: string; diagnostics: { agent_version?: string; configured_signing_profiles?: string[]; buffered_log_bytes?: number; metrics?: { logical_cpus?: number; agent_heap_bytes?: number; managed_free_bytes?: number }; tools?: Record<string,{available:boolean;path?:string;version?:string}> } }
+export interface Release { id: string; project_id: string; project_name: string; version: string; build_id: string; commit_sha: string; created_at: string; artifact_count: number; artifacts?: Artifact[] }
+export interface Pool { id: string; name: string }
+export interface Credential { id: string; name: string; kind: string; created_at: string }
+export interface Token { id: string; name: string; scopes: string[]; project_ids: string[]; expires_at: string; revoked: boolean }
+export interface Audit { id: number; actor: string; action: string; resource_id: string; created_at: string }
+export interface Overview { projects: number; nodes_online: number; running: number; queued: number; releases: number; builds_today: number }

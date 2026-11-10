@@ -1,0 +1,68 @@
+use anyhow::{Context, Result, ensure};
+use base64::{Engine, engine::general_purpose::STANDARD};
+use std::{env, path::PathBuf};
+
+#[derive(Clone)]
+pub struct Settings {
+    pub database_url: String,
+    pub http_bind: String,
+    pub grpc_bind: String,
+    pub public_url: String,
+    pub insecure_dev: bool,
+    pub pki_dir: PathBuf,
+    pub data_dir: PathBuf,
+    pub master_key: [u8; 32],
+    pub s3_endpoint: String,
+    pub s3_public_endpoint: String,
+    pub s3_bucket: String,
+    pub s3_region: String,
+    pub s3_access_key: String,
+    pub s3_secret_key: String,
+}
+
+impl Settings {
+    pub fn from_env() -> Result<Self> {
+        let required = |name: &str| env::var(name).with_context(|| format!("{name} is required"));
+        let insecure_dev = env::var("AK_INSECURE_DEV").as_deref() == Ok("true");
+        let public_url = required("AK_PUBLIC_URL")?;
+        let s3_endpoint = required("AK_S3_ENDPOINT")?;
+        let s3_public_endpoint =
+            env::var("AK_S3_PUBLIC_ENDPOINT").unwrap_or_else(|_| s3_endpoint.clone());
+        for endpoint in [&public_url, &s3_endpoint, &s3_public_endpoint] {
+            let url = url::Url::parse(endpoint)?;
+            ensure!(
+                url.host_str().is_some()
+                    && (url.scheme() == "https" || (insecure_dev && url.scheme() == "http")),
+                "HTTPS is required outside explicit development mode"
+            );
+            ensure!(
+                url.username().is_empty() && url.password().is_none(),
+                "endpoint must not contain credentials"
+            );
+        }
+        let decoded = STANDARD.decode(required("AK_MASTER_KEY")?)?;
+        let master_key: [u8; 32] = decoded
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("AK_MASTER_KEY must contain 32 base64-encoded bytes"))?;
+        Ok(Self {
+            database_url: required("DATABASE_URL")?,
+            http_bind: env::var("AK_HTTP_BIND").unwrap_or_else(|_| "127.0.0.1:8080".into()),
+            grpc_bind: env::var("AK_GRPC_BIND").unwrap_or_else(|_| "127.0.0.1:8443".into()),
+            public_url: public_url.trim_end_matches('/').into(),
+            insecure_dev,
+            pki_dir: env::var("AK_PKI_DIR")
+                .unwrap_or_else(|_| ".local/pki".into())
+                .into(),
+            data_dir: env::var("AK_DATA_DIR")
+                .unwrap_or_else(|_| ".local/control".into())
+                .into(),
+            master_key,
+            s3_endpoint,
+            s3_public_endpoint,
+            s3_bucket: env::var("AK_S3_BUCKET").unwrap_or_else(|_| "artifact-kit".into()),
+            s3_region: env::var("AK_S3_REGION").unwrap_or_else(|_| "us-east-1".into()),
+            s3_access_key: required("AK_S3_ACCESS_KEY")?,
+            s3_secret_key: required("AK_S3_SECRET_KEY")?,
+        })
+    }
+}

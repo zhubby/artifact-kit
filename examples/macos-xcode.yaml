@@ -1,0 +1,18 @@
+version: 1
+release: {enabled: true}
+targets:
+  macos-arm64:
+    os: darwin
+    arch: arm64
+    capabilities: [xcodebuild, codesign]
+    signing_profiles: [apple-release]
+    steps:
+      - name: build
+        run: xcodebuild -scheme MyApp -configuration Release -derivedDataPath .build build CODE_SIGNING_ALLOWED=NO && mkdir -p dist && ditto .build/Build/Products/Release/MyApp.app dist/MyApp.app
+      - name: sign
+        phase: sign
+        run: ./ci/sign-macos.sh dist/MyApp.app
+      - name: verify and package
+        phase: verify
+        run: codesign --verify --deep --strict --verbose=2 dist/MyApp.app && ditto -c -k --keepParent dist/MyApp.app dist/MyApp.zip
+    artifacts: [dist/MyApp.zip]

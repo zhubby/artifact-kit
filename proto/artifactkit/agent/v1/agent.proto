@@ -1,0 +1,108 @@
+syntax = "proto3";
+package artifactkit.agent.v1;
+option go_package = "github.com/artifact-kit/agent/gen/agentv1";
+
+service Enrollment {
+  rpc Enroll(EnrollRequest) returns (EnrollReply);
+}
+
+service Control {
+  rpc Connect(stream AgentEvent) returns (stream Command);
+  rpc UploadLogs(stream LogChunk) returns (LogAck);
+  rpc PrepareArtifact(ArtifactRequest) returns (UploadTicket);
+  rpc CompleteArtifact(CompleteArtifactRequest) returns (ArtifactRecord);
+}
+
+message EnrollRequest {
+  string token = 1;
+  string name = 2;
+  string os = 3;
+  string arch = 4;
+  string csr_pem = 5;
+  uint32 protocol_major = 6;
+}
+message EnrollReply {
+  string agent_id = 1;
+  string certificate_pem = 2;
+  string ca_pem = 3;
+  uint32 heartbeat_seconds = 4;
+  uint32 lease_seconds = 5;
+}
+message AgentEvent {
+  string agent_id = 1;
+  string kind = 2;
+  string attempt_id = 3;
+  string lease_token = 4;
+  uint64 sequence = 5;
+  string command_id = 6;
+  string payload_json = 7;
+  uint32 protocol_major = 8;
+}
+message Step {
+  string name = 1;
+  string phase = 2;
+  string shell = 3;
+  string run = 4;
+  uint32 timeout_seconds = 5;
+}
+message GitCredential {
+  string kind = 1;
+  string username = 2;
+  string secret = 3;
+  string known_hosts = 4;
+}
+message Assignment {
+  string job_id = 1;
+  string build_id = 2;
+  string target = 3;
+  string repository_url = 4;
+  string commit_sha = 5;
+  repeated Step steps = 6;
+  repeated string artifacts = 7;
+  map<string, string> environment = 8;
+  repeated string signing_profiles = 9;
+  GitCredential git_credential = 10;
+  uint32 timeout_seconds = 11;
+}
+message Command {
+  string command_id = 1;
+  string kind = 2;
+  string attempt_id = 3;
+  string lease_token = 4;
+  uint32 lease_seconds = 5;
+  Assignment assignment = 6;
+  string message = 7;
+  string request_id = 8;
+  uint64 ack_sequence = 9;
+}
+message LogChunk {
+  string attempt_id = 1;
+  string lease_token = 2;
+  uint64 sequence = 3;
+  string step = 4;
+  bytes data = 5;
+}
+message LogAck { uint64 through_sequence = 1; }
+message ArtifactRequest {
+  string attempt_id = 1;
+  string lease_token = 2;
+  string path = 3;
+  uint64 size = 4;
+  string sha256 = 5;
+}
+message UploadTicket {
+  string upload_id = 1;
+  string url = 2;
+  uint32 expires_seconds = 3;
+}
+message CompleteArtifactRequest {
+  string attempt_id = 1;
+  string lease_token = 2;
+  string upload_id = 3;
+}
+message ArtifactRecord {
+  string artifact_id = 1;
+  string path = 2;
+  string sha256 = 3;
+  uint64 size = 4;
+}

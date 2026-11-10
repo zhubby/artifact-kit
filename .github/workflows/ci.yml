@@ -1,0 +1,69 @@
+name: platform-contracts
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  linux-end-to-end:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AK_TEST_DATABASE_URL: postgres://artifact:local-test-only@127.0.0.1:15432/artifact
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.27.x
+          cache-dependency-path: agent/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy && rustup default 1.95.0
+      - run: sh scripts/local-services.sh
+      - run: cargo fmt --all --check && cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked --all-targets -- --include-ignored
+      - run: go vet ./... && go test -race ./... && CGO_ENABLED=0 go build -o bin/artifact-agent ./cmd/artifact-agent
+        working-directory: agent
+      - run: sh scripts/cross-build-agent.sh
+      - run: npm ci && npm run typecheck && npm run build && npx playwright install --with-deps chromium
+        working-directory: web
+      - run: cargo build --locked --bin artifact-control
+      - name: Real Rust / Go / PostgreSQL / private S3 / browser
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a; source .local/env; set +a
+          python3 -u scripts/acceptance.py --keep-alive > .local/acceptance-run.log 2>&1 &
+          harness_pid=$!
+          (cd web && npm run start -- --hostname 127.0.0.1) > .local/web.log 2>&1 &
+          web_pid=$!
+          trap 'kill -INT "$harness_pid"; kill "$web_pid" || true' EXIT
+          for attempt in $(seq 1 360); do
+            if grep -q 'ACCEPTANCE READY' .local/acceptance-run.log; then break; fi
+            if ! kill -0 "$harness_pid" 2>/dev/null; then cat .local/acceptance-run.log; exit 1; fi
+            sleep 1
+          done
+          test -f .local/acceptance/latest.json
+          export AK_LIVE_TESTS=1
+          export AK_LIVE_S3_CONTAINER=artifact-kit-s3-test
+          export AK_LIVE_AGENT_CONFIG="$(python3 -c 'import json; print(json.load(open(".local/acceptance/latest.json"))["agent_config"])')"
+          export AK_LIVE_PROJECT_ID="$(python3 -c 'import json; print(json.load(open(".local/acceptance/latest.json"))["project_id"])')"
+          (cd agent && go test -race -v ./internal/client -run TestLiveRustGoProtocol)
+          (cd web && npm test)
+  native-agent:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.27.x
+          cache-dependency-path: agent/go.sum
+      - run: go vet ./...
+        working-directory: agent
+      - run: go test -race ./...
+        working-directory: agent

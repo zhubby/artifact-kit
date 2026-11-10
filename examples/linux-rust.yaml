@@ -1,0 +1,14 @@
+version: 1
+release: {enabled: true}
+targets:
+  linux-amd64:
+    os: linux
+    arch: amd64
+    capabilities: [cargo]
+    steps:
+      - name: build
+        run: cargo build --release --locked && mkdir -p dist && cp target/release/myapp dist/myapp
+      - name: verify
+        phase: verify
+        run: ./dist/myapp --version
+    artifacts: [dist/myapp]

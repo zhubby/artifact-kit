@@ -1,0 +1,10 @@
+{$AK_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy web:3000 {
+        flush_interval -1
+    }
+}
+
+{$AK_S3_DOMAIN} {
+    reverse_proxy s3:8333
+}

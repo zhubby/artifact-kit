@@ -1,0 +1,22 @@
+version: 1
+release: {enabled: true}
+targets:
+  windows-amd64:
+    os: windows
+    arch: amd64
+    capabilities: [cargo, signtool]
+    signing_profiles: [windows-release]
+    steps:
+      - name: build
+        run: |
+          cargo build --release --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/myapp.exe dist/myapp.exe
+      - name: sign
+        phase: sign
+        run: signtool sign /fd SHA256 /td SHA256 /tr "$env:AK_TIMESTAMP_URL" /sha1 "$env:AK_WINDOWS_CERT_THUMBPRINT" dist/myapp.exe
+      - name: verify
+        phase: verify
+        run: signtool verify /pa /all /v dist/myapp.exe
+    artifacts: [dist/myapp.exe]

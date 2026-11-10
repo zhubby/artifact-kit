@@ -1,0 +1,18 @@
+version: 1
+release: {enabled: true}
+targets:
+  ios-ipa:
+    os: darwin
+    arch: arm64
+    capabilities: [xcodebuild, codesign, security]
+    signing_profiles: [ios-internal]
+    steps:
+      - name: prepare unsigned archive
+        run: ./ci/build-ios.sh
+      - name: sign and export IPA
+        phase: sign
+        run: ./ci/export-ios.sh "$AK_IOS_EXPORT_OPTIONS" dist
+      - name: verify IPA
+        phase: verify
+        run: ./ci/verify-ios.sh dist/MyApp.ipa
+    artifacts: [dist/MyApp.ipa]
