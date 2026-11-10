@@ -18,7 +18,7 @@ else
   docker start artifact-kit-postgres-test >/dev/null
 fi
 if ! docker inspect artifact-kit-s3-test >/dev/null 2>&1; then
-  docker run -d --name artifact-kit-s3-test -p 127.0.0.1:19000:8333 -v "$(pwd)/.local/s3:/data" -v "$(pwd)/.local/s3.json:/etc/seaweed/s3.json:ro" "${AK_S3_IMAGE:-chrislusf/seaweedfs:4.53}" mini -dir=/data -s3.port=8333 -s3.config=/etc/seaweed/s3.json -s3.iam.readOnly=true -admin.ui=false -ip.bind=0.0.0.0 >/dev/null
+  docker run -d --name artifact-kit-s3-test -p 127.0.0.1:19000:8333 -v "$(pwd)/.local/s3:/data" -v "$(pwd)/.local/s3.json:/etc/seaweed/s3.json:ro" -v "$(pwd)/deploy/seaweed-entrypoint.sh:/run/artifact-s3-entrypoint.sh:ro" --entrypoint /bin/sh "${AK_S3_IMAGE:-chrislusf/seaweedfs:4.53}" /run/artifact-s3-entrypoint.sh mini -dir=/data -s3.port=8333 -s3.config=/run/artifact-s3/s3.json -s3.iam.readOnly=true -admin.ui=false -ip.bind=0.0.0.0 >/dev/null
 else
   docker start artifact-kit-s3-test >/dev/null
 fi
