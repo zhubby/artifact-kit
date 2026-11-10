@@ -87,6 +87,20 @@ export AK_LIVE_PROJECT_ID="$(python3 -c 'import json; print(json.load(open(".loc
 
 `AK_LIVE_S3_CONTAINER` 会短暂暂停指定的 S3 容器，以验证存储阻塞不影响心跳续租；只允许填写本次独立测试环境的容器，不要指向生产或共享存储。不做该故障检查时不要设置此变量。
 
+在上述验收中心和 Agent 仍运行时，可继续验证 SSH Git。需要本机 OpenSSH server / `git-shell`；脚本创建仅监听 loopback 的临时 sshd、密钥和带空格路径的 Git 仓库，并验证正确密钥构建、错误主机指纹和未授权密钥拒绝：
+
+```sh
+python3 -u scripts/ssh_acceptance.py
+```
+
+随后 Ctrl-C 停止验收中心，并停止控制台，即可运行冷备份隔离恢复演练。需要 rclone；最近一次成功的 SSH 测试配置和仓库必须仍在原路径。脚本复制数据库、对象、主密钥和 PKI，在全新、带归属标签的 Docker 卷中恢复，验证旧 Release 下载和使用恢复的 SSH 凭据重新构建 / 发布：
+
+```sh
+python3 -u scripts/recovery_acceptance.py
+```
+
+两个命令都需要加载 `.local/env`。Linux 临时 CI runner 使用 `--sudo-sshd` 并准备 `/run/sshd`，仅隔离 sshd 通过无密码 sudo 启动。本地恢复脚本仅接受固定的 loopback 开发环境，清理本次新建的容器 / 卷，保留私有备份与证据。备份包含明文秘密，不能上传为 CI artifact；此演练不代替生产加密、异地备份和灾难恢复验收。
+
 ## 仓库导航
 
 | 目录 | 内容 |

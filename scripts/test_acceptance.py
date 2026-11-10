@@ -64,8 +64,14 @@ class ControlStartupTests(unittest.TestCase):
             with socket.socket() as listener:
                 listener.bind(("127.0.0.1", 0))
                 port = listener.getsockname()[1]
+            wait_for = acceptance.wait_for
+
+            def wait_after_process_started(probe, timeout):
+                wait_for(marker.exists, timeout=5)
+                return wait_for(probe, timeout)
+
             try:
-                with patch.multiple(acceptance, ROOT=root, DIRECTORY=evidence, BASE=f"http://127.0.0.1:{port}"):
+                with patch.multiple(acceptance, ROOT=root, DIRECTORY=evidence, BASE=f"http://127.0.0.1:{port}"), patch.object(acceptance, 'wait_for', side_effect=wait_after_process_started):
                     with self.assertRaises(TimeoutError):
                         acceptance.start_control(timeout=0.5)
                 self.assertTrue(marker.exists(), "the control process must actually have started")

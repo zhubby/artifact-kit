@@ -39,13 +39,16 @@
 | Rust 测试 | 17 项通过：9 项配置 / 加密 / 权限 / 匹配测试，8 项显式启用的真实 PostgreSQL 测试 |
 | Go 检查 | `go vet ./...`、`go test -race ./... -count=1` 通过；不启用实时环境时协议联测会显式跳过 |
 | 验收启动回归 | 3 项真实子进程测试通过：提前退出立即报告状态与日志、就绪超时终止进程、健康检查成功后保留运行进程 |
+| 备份保护回归 | 3 项通过：复制前拒绝目录内及根目录符号链接，备份缺失主密钥 / 数据库配置时不得继承当前进程秘密 |
 | 跨语言协议 | 独立 Go 客户端与真实 Rust TLS / gRPC 服务的注册、身份、事件、日志及制品联测通过；实际暂停 S3 验证日志 / 制品存储阻塞不阻断续租 |
 | 原生端到端 | `scripts/acceptance.py --keep-alive` 35 项检查通过，详细边界见下节 |
+| SSH Git | 10 项检查通过：真实 OpenSSH、Rust 源解析、Go Worker 拉取 / 编译 / 下载 / 发布，错误指纹及未授权密钥拒绝 |
+| 隔离冷恢复 | `8efa99ec0523` 16 项通过：21 张表及序列、784 个对象（3,037,785 字节）、私有配置 / PKI、旧 Release 下载执行、恢复后的 SSH 新构建 / 发布 |
 | 前端 | TypeScript 检查、生产构建和 Docker 镜像构建通过；容器运行的控制台通过 10 项真实后台浏览器测试 |
 | Agent 编译 | Linux amd64 / arm64、Darwin amd64 / arm64、Windows amd64 五个目标二进制生成成功 |
 | Windows 原生回归 | GitHub `windows-latest` 上 `go vet ./...` 与 `go test -race ./...` 通过，实际执行 Job Object 子进程树终止回归；未验收系统服务与真实 Windows 应用 |
 | 配置与部署文件 | 五个示例通过真实 Rust Recipe 解析；JSON schema 语法、shell 脚本语法、Compose 配置校验通过 |
-| 远端 CI | [首次运行 42735894958](https://github.com/zhubby/artifact-kit/actions/runs/42735894958) 的 Linux / macOS / Windows 原生 Agent 检查通过；Linux 完整端到端控制面启动超时，正在定位，**整体 CI 尚未通过** |
+| 远端 CI | Linux / macOS / Windows 原生 Agent 检查通过；[诊断运行 42746144635](https://github.com/zhubby/artifact-kit/actions/runs/42746144635) 确认 Linux S3 配置权限错误，已本地复现并修复；完整流水线现包含 SSH 与冷恢复，最新结果见 [main Actions](https://github.com/zhubby/artifact-kit/actions/workflows/ci.yml?query=branch%3Amain) |
 
 普通 `cargo test --all-targets` 会跳过需要数据库的 8 项测试；本次另外设置 `AK_TEST_DATABASE_URL` 并使用 `--ignored` 执行。测试为每次运行创建隔离 schema，不能以默认命令中的 ignored 项冒充数据库验收。
 
@@ -77,7 +80,7 @@
 
 ### 真实端到端记录
 
-最终修复后的完整运行：`e85df4be20b7`，35 项通过；测试 Git 提交为 `4a2528945915febdfc0879815d1fa3c3899673a5`。此前通过的运行还包括 `7f8d8b60fce5`、`2089db7ceec6`。生成的完整运行清单保存在忽略版本控制的 `.local/acceptance/<run_id>/evidence.json`，最近一次结果另存 `.local/acceptance/latest.json`。证据中的 `commit` 是测试 Git 仓库的提交，不是当前平台仓库提交。
+最近一次完整本机运行：`c4032f9f5461`，35 项通过；测试 Git 提交为 `1154016965ec486d1f9a1b45d92fccfd64133905`。此前通过的运行还包括 `e85df4be20b7`、`7f8d8b60fce5`、`2089db7ceec6`。生成的完整运行清单保存在忽略版本控制的 `.local/acceptance/<run_id>/evidence.json`，最近一次结果另存 `.local/acceptance/latest.json`。证据中的 `commit` 是测试 Git 仓库的提交，不是当前平台仓库提交。
 
 中途运行 `b2220d8fa962` 在 Agent 崩溃后等待 lost 超时，没有记录为成功。其完整原始日志仍保留；排查期间稳定复现并修复了上述存储等待持锁问题，但不足以证明历史超时的唯一原因。后续完整复跑通过，生产环境仍需进行持续负载 / 故障演练，不能删除失败现场后宣称从未失败。
 
@@ -95,6 +98,18 @@
 10. 取消以及 Agent SIGKILL 后，Worker / 子进程实际终止；不依赖进程枚举或模拟 ACK 宣称清理成功。
 
 **35 项是脚本检查点数，其中包含预期失败 / lost / canceled 的结果检查；不是 35 个操作系统或签名目标。**
+
+### SSH 与隔离冷恢复
+
+`scripts/ssh_acceptance.py` 最近一次运行 `1607261e4bc0`，10 项通过。临时 OpenSSH 服务仅监听 loopback，使用生成的主机公钥建立可信 `known_hosts`；密码、TTY 和转发均关闭，远端命令限制为 Git。真实 Rust 控制面加密保存私钥并解析提交，Go Worker 用同一固定提交编译 C，下载后执行并发布 Release；错误主机指纹与未授权密钥在分配 Worker 前失败。该测试不是对外部 Git 服务或生产网络的验收。
+
+冷恢复运行 `8efa99ec0523`，16 项通过。停止本机控制面后，备份 PostgreSQL、S3、环境主密钥和 PKI，在独立标签、全新 Docker 卷及随机 loopback 端口上恢复；21 张 public 表的行摘要和序列状态一致，784 个对象、3,037,785 字节通过实际下载逐字节校验。恢复后既有 Release 下载摘要正确且可执行，新登记的真实 Agent 能用恢复的加密 SSH 凭据构建并发布新 Release，原 Release 保持不变。演练前后源数据库摘要一致，临时容器和卷全部清理，私有备份与证据保留。
+
+演练曾复现真实路径缺陷：控制面 / Worker 的数据目录含空格时，OpenSSH 会再次解析 `UserKnownHostsFile`，外层 shell 引号被移除后主机信任文件路径被拆开。修复同时保留 OpenSSH 与 shell 所需的引号；最终冷恢复使用含空格和单引号的数据目录通过。失败运行 `4241b532629f` 以及之后已完成构建但验收脚本误读发布响应的 `a40240c2d147` 均保留为失败记录。
+
+Linux CI 的 S3 启动问题也有真实红 / 绿验证：0600 配置由宿主 UID 4242 持有时，原入口降为 UID 1000 后读取失败；新入口保留宿主原权限 / 归属，在容器内生成 UID 1000 的 0600 私有副本，S3 就绪、匿名请求被拒绝，主进程以 UID 1000 运行。完整生产 Compose / TLS 验收仍待完成。
+
+冷恢复只验证本地私有明文备份及隔离还原；生产备份加密、异地保存和灾难恢复目标仍需另行验收。CI 只保留明确列出的日志 / evidence，不上传备份目录、环境文件、私钥、PKI 或 Agent 配置。
 
 ### 浏览器与视觉验证
 
@@ -130,7 +145,7 @@
 - PostgreSQL 与认证 S3 实际在本地 Linux 容器运行；开发端口仅绑定 `127.0.0.1`。
 - 前端 standalone Docker 镜像已构建；使用真实中心完成 10 项浏览器测试，非仅检查 HTTP 200。
 - Rust Linux 控制面镜像已成功构建；隔离 Linux amd64 容器中完成 7 项检查：非 root / 只读根文件系统启动、迁移及私有 S3、内置登录、真实 Linux Go Agent 注册、mTLS 心跳、排空、中心容器重启后的项目 / 节点状态及证书重连。过程使用独立数据库和对象 bucket，没有启动第二个中心操作主验收数据库。
-- 尚未在正式 Linux 主机运行完整生产 Compose / Caddy / 公网 TLS、远程 Agent 上传和备份恢复演练；配置解析成功不能代替部署验收。
+- 尚未在正式 Linux 主机运行完整生产 Compose / Caddy / 公网 TLS、远程 Agent 上传和生产备份恢复演练；配置解析成功不能代替部署验收。
 - 三类服务安装 / 卸载 / 手动排空升级命令已经实现并记录，但本次没有在宿主安装系统服务或修改开机启动。
 - Linux 容器运行和 Agent 交叉编译都不能代替用户要求的三类实体机验收。
 
@@ -145,10 +160,10 @@
 交付前仍需提供环境并完成：
 
 1. Linux、macOS、Windows 三类实体机的系统服务安装 / 运行 / 重启 / 卸载、槽位与进程树故障验收。
-2. 五种实际应用项目、相应 SDK / 工具链和 CPU 架构的完整构建记录，不能用本仓库模板解析替代；SSH Git 需额外进行真实 SSH 服务、主机指纹和密钥联测，本次真实 Git 闭环使用 HTTPS。
+2. 五种实际应用项目、相应 SDK / 工具链和 CPU 架构的完整构建记录，不能用本仓库模板解析替代；本机 HTTPS / SSH 最小 C 闭环已通过，外部 Git 网络仍需现场验收。
 3. 各目标发行签名、原生校验及分发 / 安装；iOS 必须明确证书与 profile 对应的分发方式。
 4. 生产域名、TLS / 证书信任、跨机器 Git / gRPC / 私有对象存储连通性、上传容量与磁盘容量测试。
-5. 加密密钥 / PKI / 数据库 / 对象的一致备份、隔离恢复演练、持续负载 / 故障演练、日志容量和人工保留策略。
+5. 将已验证的本地密钥 / PKI / 数据库 / 对象一致恢复扩展到生产加密与异地备份，完成持续负载 / 故障演练、日志容量和人工保留策略。
 
 本版不支持不可信代码沙箱、容器执行器、OCI 发布、官方商店、Webhook、OIDC、多实例 HA、自动证书续期或自动垃圾回收。节点证书到期处理、手动升级和恢复约束见运维手册。
 
