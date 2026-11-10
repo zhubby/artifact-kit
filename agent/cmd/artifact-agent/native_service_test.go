@@ -26,6 +26,7 @@ import (
 
 	pb "github.com/artifact-kit/agent/gen/agentv1"
 	"github.com/artifact-kit/agent/internal/config"
+	"github.com/kardianos/service"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -75,6 +76,37 @@ type nativeServiceState struct {
 	User      string `json:"user"`
 }
 
+func TestServiceStopsAuthenticatedAgent(test *testing.T) {
+	private := test.TempDir()
+	endpoint, peer := startServicePeer(test, private)
+	path := filepath.Join(private, "agent.json")
+	if err := config.Save(path, config.Config{
+		Endpoint: endpoint, CAFile: filepath.Join(private, "ca.pem"),
+		CertificateFile: filepath.Join(private, "client.pem"), KeyFile: filepath.Join(private, "client-key.pem"),
+		AgentID: "native-service-test", Root: filepath.Join(private, "managed"),
+	}); err != nil {
+		test.Fatal(err)
+	}
+	program := &agentService{configPath: path}
+	instance, err := service.New(program, &service.Config{Name: "artifact-kit-agent"})
+	if err != nil {
+		test.Fatal(err)
+	}
+	if err := program.Start(instance); err != nil {
+		test.Fatal(err)
+	}
+	test.Cleanup(func() {
+		if err := program.Stop(instance); err != nil {
+			test.Error(err)
+		}
+	})
+	connection := awaitServiceConnection(test, peer)
+	if err := program.Stop(instance); err != nil {
+		test.Fatal(err)
+	}
+	awaitServiceDisconnect(test, connection)
+}
+
 // This test changes system services and creates a local account. It is opt-in
 // and restricted to disposable GitHub-hosted VMs, never the developer's host.
 func TestNativeServiceLifecycle(test *testing.T) {
@@ -87,12 +119,17 @@ func TestNativeServiceLifecycle(test *testing.T) {
 	if state := inspectNativeService(test); state.Installed {
 		test.Fatal("refusing to replace an existing artifact-kit-agent service")
 	}
-	if _, err := user.Lookup(serviceTestUser); err == nil {
-		test.Fatal("refusing to reuse an existing service test account")
-	} else {
-		var unknown user.UnknownUserError
-		if !errors.As(err, &unknown) {
-			test.Fatalf("cannot verify test account absence: %v", err)
+	// Windows reports an absent local account as ERROR_NONE_MAPPED, not
+	// user.UnknownUserError. Its account script checks Get-LocalUser directly
+	// before creation, with SID-bound cleanup if creation only partly succeeds.
+	if runtime.GOOS != "windows" {
+		if _, err := user.Lookup(serviceTestUser); err == nil {
+			test.Fatal("refusing to reuse an existing service test account")
+		} else {
+			var unknown user.UnknownUserError
+			if !errors.As(err, &unknown) {
+				test.Fatalf("cannot verify test account absence: %v", err)
+			}
 		}
 	}
 	base := "/tmp"
@@ -174,6 +211,9 @@ func TestNativeServiceLifecycle(test *testing.T) {
 	// Preflight proved the name absent; clean up a partially successful install
 	// as well, while preserving test failures and cleanup diagnostics.
 	test.Cleanup(func() {
+		if test.Failed() {
+			logNativeServiceFailure(test)
+		}
 		if state := inspectNativeService(test); state.Installed {
 			_, _ = nativeCommand(nil, true, binary, "service", "--action", "stop", "--config", configPath)
 			if output, err := nativeCommand(nil, true, binary, "service", "--action", "uninstall", "--config", configPath); err != nil {
@@ -445,4 +485,21 @@ func inspectNativeService(test *testing.T) nativeServiceState {
 		}
 	}
 	return state
+}
+
+func logNativeServiceFailure(test *testing.T) {
+	test.Helper()
+	var commands [][]string
+	switch runtime.GOOS {
+	case "linux":
+		commands = [][]string{{"systemctl", "status", "artifact-kit-agent.service", "--no-pager"}, {"journalctl", "-u", "artifact-kit-agent.service", "-n", "80", "--no-pager"}}
+	case "darwin":
+		commands = [][]string{{"launchctl", "print", "system/artifact-kit-agent"}, {"tail", "-n", "80", "/var/log/artifact-kit-agent.err.log"}}
+	case "windows":
+		commands = [][]string{{"powershell.exe", "-NoProfile", "-NonInteractive", "-Command", `Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='artifact-kit-agent'} -MaxEvents 15 -ErrorAction SilentlyContinue | Select-Object TimeCreated,Id,Message | Format-List`}}
+	}
+	for _, arguments := range commands {
+		output, err := nativeCommand(nil, true, arguments...)
+		test.Logf("native service failure diagnostics (%s, %v):\n%s", arguments[0], err, output)
+	}
 }
