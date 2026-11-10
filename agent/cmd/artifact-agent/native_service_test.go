@@ -144,7 +144,7 @@ func TestNativeServiceLifecycle(test *testing.T) {
 		test.Fatal(err)
 	}
 	// The executable path and private configuration both contain spaces.
-	binaryDirectory := filepath.Join(directory, "agent bin")
+	binaryDirectory := filepath.Join(directory, "agent bin %i $HOME {{literal}}")
 	private := filepath.Join(directory, "private data")
 	for _, path := range []string{directory, binaryDirectory} {
 		if err := os.MkdirAll(path, 0755); err != nil {

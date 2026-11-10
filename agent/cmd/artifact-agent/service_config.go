@@ -48,7 +48,7 @@ EnvironmentFile=-/etc/sysconfig/artifact-kit-agent
 
 [Install]
 WantedBy=multi-user.target
-`, strings.Join(values, " "), strconv.Quote(strings.ReplaceAll(settings.UserName, "%", "%%")))
+`, strings.Join(values, " "), strings.ReplaceAll(settings.UserName, "%", "%%"))
 	// kardianos/service parses SystemdScript as a Go template. Emit a literal
 	// string so braces in filesystem paths cannot become template syntax.
 	settings.Option["SystemdScript"] = "{{" + strconv.Quote(unit) + "}}"
