@@ -81,6 +81,7 @@ jobs:
             web/test-results/
             web/playwright-report/
   native-agent:
+    timeout-minutes: 15
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
@@ -95,3 +96,8 @@ jobs:
         working-directory: agent
       - run: go test -race ./...
         working-directory: agent
+      - name: Native service lifecycle on a disposable VM
+        run: go test -race ./cmd/artifact-agent -run '^TestNativeServiceLifecycle$' -count=1 -v -timeout=10m
+        working-directory: agent
+        env:
+          AK_NATIVE_SERVICE_TESTS: '1'

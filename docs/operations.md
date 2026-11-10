@@ -77,6 +77,16 @@ artifact-agent.exe service --action start --config C:\ArtifactKit\agent.json
 
 三类系统均支持 `service --action stop|restart|uninstall`。本轮未向用户宿主安装任何系统服务。
 
+Agent 启动后若发生不可恢复的本地错误（例如配置从未注册），服务进程会记录错误并以非零状态退出，让系统服务管理器看到失败；网络中断仍由 Agent 重连。系统是否自动重启失败服务取决于实际服务管理器及其恢复策略。
+
+### 临时 CI 原生服务验收
+
+`native-agent` 作业在三种 GitHub 托管临时 VM 上显式启用 `TestNativeServiceLifecycle`。测试创建专用非管理员账户和临时私有配置，通过实际 systemd / launchd / SCM 安装 Agent，核对自动启动配置和真实进程账户，并连接仅监听 loopback、要求客户端证书的 Go 测试控制端；重启必须产生新的认证连接及 PID，停止后连接必须关闭，卸载后服务记录必须消失。二进制及配置路径均含空格，测试结束卸载服务、删除其创建的账户和目录。
+
+普通 `go test` 会明确跳过此项；只设置 `AK_NATIVE_SERVICE_TESTS=1` 也不允许在开发机运行，必须同时处于 GitHub 托管临时 VM。Windows 临时账户只单独授予 `SeServiceLogonRight`，不改写既有登录权限策略；私有目录 ACL 限该账户、当前测试进程身份、SYSTEM 与管理员。
+
+这项测试只验收原生服务管理链路。其 Go 测试控制端不代替真实 Rust / PostgreSQL / S3 联测；检查自动启动配置不证明真实重启后恢复，空闲服务启停也不证明服务内真实应用、SDK、签名环境及在途构建的停止行为。
+
 ## 本机签名配置
 
 在 Agent 的私有 JSON 中增加引用到环境变量的映射，例如：
