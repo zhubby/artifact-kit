@@ -107,7 +107,7 @@ python3 -u scripts/recovery_acceptance.py
 python3 -u scripts/compose_acceptance.py
 ```
 
-需要 Unix 非 root Docker 账户及 Go、Git、Python 3.12+、OpenSSL。覆盖生产五服务、真实 HTTPS / mTLS、原生 Linux C 构建、运行中 SSE、私有制品与中心重启；保留现有开发服务，不修改宿主信任库。输入、证据和正式环境验收边界见 [运维手册](docs/operations.md#隔离-compose--tls-验收)。
+需要 Unix 非 root Docker 账户及 Go、Git、Python 3.12+、OpenSSL。覆盖生产五服务、真实 HTTPS / mTLS、原生 Linux C 构建、运行中 SSE、私有制品、中心重启，以及 S3 暂停时的日志缓冲耗尽与恢复；保留现有开发服务，不修改宿主信任库。输入、证据和正式环境验收边界见 [运维手册](docs/operations.md#隔离-compose--tls-验收)。
 
 ## 仓库导航
 

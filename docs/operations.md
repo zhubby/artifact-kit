@@ -43,6 +43,8 @@ python3 -u scripts/compose_acceptance.py
 
 脚本从当前 Git HEAD 创建私有源码快照，构建实际控制面与控制台镜像；以独立项目名、卷、网络和随机 loopback 端口运行生产清单的全部五个服务。测试覆盖使用 Caddy 内部 CA 的真实 HTTPS、Secure Cookie / CSRF、运行中 SSE、mTLS Agent、HTTPS Git 原生 C 构建、私有 S3 上传下载与中心重启。CA 只注入测试客户端与独立控制面进程，不修改宿主信任库。默认不加载已有 `.local/env` 或 `.deploy/env`，运行后仅清理归属标签匹配本次 run 的容器、网络与卷。
 
+日志故障测试把验收 Agent 缓冲设为 1 MiB，仅暂停本次归属标签匹配的 S3，再让真实 Worker 输出超过缓冲上限。脚本核对子进程终止、磁盘缓冲边界及独立心跳，恢复 S3 后检查明确失败原因、无制品 / Release、日志按序确认和清理，并使用同一 Agent 再构建原生 C 程序。缓存块的大小 / SHA-256 同时与真实 PostgreSQL 索引及 HTTPS SSE 内容比较。测试容器使用 Docker init 回收孤儿子进程；失败清理也会先恢复本次暂停的 S3。执行的 controller 副本及 controller / probe 摘要随本地证据保留。
+
 `--image-prefix` 可指定拉取镜像所用的 registry 镜像源；输入变更、各镜像的实际平台与 ID 随证据记录，不修改默认部署镜像或全局 Docker 配置。可选 `--control-image` / `--web-image` 仅复用 `org.opencontainers.image.revision` 与当前 HEAD、`artifact-kit.dockerfile.sha256` 与对应 Dockerfile 均匹配的镜像。`--probe-image` 可复用包含 python3、Git、cc、OpenSSL 的 Linux 测试工具镜像；Agent 二进制仍从本次源码快照重新编译，验收脚本也由本次 run 单独挂载。
 
 日志和证据保存在 `.local/compose-tls/<run>/`。其中源码快照含本次部署的主密钥、数据库 / S3 密码和测试 PKI，必须保持私有；CI 仅上传显式列出的诊断日志和证据文件，不上传快照、生成的 Compose 配置或 Agent 私钥。专用 probe 容器只承载该验收的原生 Linux 进程，不属于产品的容器执行器，也不证明实体 Agent 服务、五类真实应用、发行签名或公网 DNS / ACME 已验收。

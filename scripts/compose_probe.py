@@ -92,6 +92,22 @@ def main():
     repository.mkdir(parents=True)
     command(['git', 'init', '-b', 'main', str(repository)])
     (repository / 'main.c').write_text('#include <stdio.h>\nint main(void) { puts("artifact-kit-compose-tls-ok"); return 0; }\n')
+    (repository / 'descendant.py').write_text('''import pathlib, time
+path = pathlib.Path('/acceptance/buffer-child-alive')
+while True:
+    path.write_text(str(time.monotonic()))
+    time.sleep(0.1)
+''')
+    (repository / 'flood.py').write_text('''import pathlib, subprocess, sys, time
+directory = pathlib.Path('/acceptance')
+child = subprocess.Popen([sys.executable, 'descendant.py'])
+(directory / 'buffer-child.pid').write_text(str(child.pid))
+while not (directory / 'begin-log-flood').exists():
+    time.sleep(0.05)
+for index in range(1024):
+    print('buffer-fault-%04d:' % index + 'x' * 4096, flush=True)
+time.sleep(180)
+''')
     arch = 'arm64' if platform.machine() in ('aarch64', 'arm64') else 'amd64'
     (repository / 'artifact-kit.yaml').write_text(f'''version: 1
 release: {{enabled: true}}
@@ -115,6 +131,16 @@ targets:
       - name: verify
         phase: verify
         run: ./dist/app
+    artifacts: [dist/app]
+  log-buffer:
+    os: linux
+    arch: {arch}
+    capabilities: [cc]
+    timeout_seconds: 180
+    steps:
+      - name: flood
+        timeout_seconds: 150
+        run: python3 flood.py
     artifacts: [dist/app]
 ''')
     command(['git', '-C', str(repository), 'add', '.'])
@@ -188,6 +214,7 @@ targets:
         command([str(DIRECTORY / 'artifact-agent'), 'register', '--config', str(config_file), '--endpoint', 'control:8443', '--ca', str(DIRECTORY / 'grpc-ca.pem'), '--root', str(DIRECTORY / 'agent-data'), '--name', 'compose-tls-probe'], env=dict(environment, AK_ENROLLMENT_TOKEN=enrollment))
         config = json.loads(config_file.read_text())
         config['git_ca_file'] = str(DIRECTORY / 'grpc-ca.pem')
+        config['log_buffer_bytes'] = 1024 * 1024
         config_file.write_text(json.dumps(config))
         check('Agent keeps HTTPS-only artifact uploads enabled', not config.get('allow_http_uploads', False))
         with (DIRECTORY / 'agent.log').open('ab') as log:
@@ -196,7 +223,7 @@ targets:
         wait(lambda: next((node for node in api('/nodes') if node['id'] == node_id and node['online'] and 'cc' in node['capabilities']), None))
         check('real Go Agent authenticates with mTLS and reports its compiler', True)
         project = api('/projects', {'name': 'Compose TLS acceptance', 'repository_url': 'https://probe:19443/fixture.git', 'credential_id': credential, 'pool_ids': [pool]})['id']
-        build_id = api(f'/projects/{project}/builds', {'ref': 'main', 'release_version': 'compose-tls'})['id']
+        build_id = api(f'/projects/{project}/builds', {'ref': 'main', 'targets': ['native'], 'release_version': 'compose-tls'})['id']
         wait(lambda: api('/builds/' + build_id)['status'] == 'running', 60)
         with client.open(base + '/api/v1/builds/' + build_id + '/events', timeout=15) as response:
             found = False
@@ -240,7 +267,7 @@ targets:
         binary.chmod(0o700)
         check('downloaded native application executes', command([str(binary)]) == 'artifact-kit-compose-tls-ok')
         (DIRECTORY / 'finish-build').unlink()
-        second = api(f'/projects/{project}/builds', {'ref': 'main'})['id']
+        second = api(f'/projects/{project}/builds', {'ref': 'main', 'targets': ['native']})['id']
 
         def running_build():
             value = api('/builds/' + second)
@@ -263,8 +290,67 @@ targets:
         resumed = build_result(second)
         attempts = resumed['jobs'][0]['attempts']
         check('center restart preserves the same active build attempt', len(attempts) == 1 and attempts[0]['id'] == attempt_id and resumed['commit_sha'] == commit)
-        third = api(f'/projects/{project}/builds', {'ref': 'main'})['id']
+        third = api(f'/projects/{project}/builds', {'ref': 'main', 'targets': ['native']})['id']
         check('persisted Git credential decrypts for a new build after restart', build_result(third)['commit_sha'] == commit)
+
+        overflow = api(f'/projects/{project}/builds', {'ref': 'main', 'targets': ['log-buffer'], 'release_version': 'must-not-publish'})['id']
+        wait(lambda: (DIRECTORY / 'buffer-child-alive').is_file() and (DIRECTORY / 'buffer-child.pid').is_file(), 60)
+        child_pid = int((DIRECTORY / 'buffer-child.pid').read_text())
+        os.kill(child_pid, 0)
+        running = api('/builds/' + overflow)
+        check('log fault starts a real running build and descendant', running['status'] == 'running')
+        overflow_attempt = running['jobs'][0]['attempts'][-1]['id']
+        (DIRECTORY / 'pause-log-storage').touch()
+        wait(lambda: (DIRECTORY / 'log-storage-paused').is_file(), 30)
+        (DIRECTORY / 'begin-log-flood').touch()
+
+        def descendant_stopped():
+            try:
+                os.kill(child_pid, 0)
+                return False
+            except ProcessLookupError:
+                return True
+
+        wait(descendant_stopped, 30)
+        wait(lambda: not (DIRECTORY / 'agent-data/work' / overflow_attempt).exists(), 10)
+        check('log-buffer exhaustion terminates the real Worker descendant before storage recovery', True)
+        spool = DIRECTORY / 'agent-data/spool' / overflow_attempt
+        files = sorted(spool.glob('*.json'))
+        records = [json.loads(path.read_text()) for path in files]
+        buffered_bytes = sum(path.stat().st_size for path in files)
+        check('actual on-disk log buffer stays within its configured bound', config['log_buffer_bytes'] * 3 // 4 < buffered_bytes <= config['log_buffer_bytes'])
+        sequences = [record['sequence'] for record in records]
+        check('overflow retains consecutive unacknowledged log sequences', sequences == list(range(sequences[0], sequences[-1] + 1)))
+        tail = [{'sequence': record['sequence'], 'size': len(base64.b64decode(record['data'])), 'sha256': hashlib.sha256(base64.b64decode(record['data'])).hexdigest()} for record in records]
+        previous_seen = next(node for node in api('/nodes') if node['id'] == node_id)['last_seen']
+        wait(lambda: next((node for node in api('/nodes') if node['id'] == node_id and node['last_seen'] > previous_seen and node['online']), None), 20)
+        check('independent Agent heartbeat continues while S3 and log delivery are stopped', agent.poll() is None and api('/builds/' + overflow)['status'] == 'running')
+        evidence['log_buffer_fault'] = {'build_id': overflow, 'attempt_id': overflow_attempt, 'buffer_limit': config['log_buffer_bytes'], 'buffered_bytes': buffered_bytes, 'retained_chunks': tail}
+        (DIRECTORY / 'resume-log-storage').touch()
+        wait(lambda: (DIRECTORY / 'log-storage-resumed').is_file(), 30)
+        failed = build_result(overflow, 'failed')
+        attempts = failed['jobs'][0]['attempts']
+        published = any(release['build_id'] == overflow for release in api('/releases?project_id=' + project))
+        check('buffer exhaustion reports an explicit failure without artifacts or release', len(attempts) == 1 and 'log buffer exhausted' in (attempts[0].get('error') or '') and not failed['artifacts'] and failed['publish_status'] != 'succeeded' and not published)
+        check('acknowledged buffered chunks are removed after storage recovery', not list(spool.glob('*.json')))
+        replayed = []
+        with client.open(base + '/api/v1/builds/' + overflow + '/events', timeout=15) as response:
+            event = b''
+            while len(replayed) < sequences[-1]:
+                line = response.readline()
+                if not line:
+                    break
+                if line.startswith(b'event:'):
+                    event = line.removeprefix(b'event:').strip()
+                if event == b'log' and line.startswith(b'data:'):
+                    value = json.loads(line.removeprefix(b'data:'))
+                    if value['attempt_id'] == overflow_attempt:
+                        replayed.append(value['text'].encode())
+        recovered = replayed[sequences[0] - 1:]
+        check('HTTPS SSE replays every retained log chunk with its original bytes and order', len(replayed) == sequences[-1] and [(len(value), hashlib.sha256(value).hexdigest()) for value in recovered] == [(item['size'], item['sha256']) for item in tail])
+        recovery = api(f'/projects/{project}/builds', {'ref': 'main', 'targets': ['native']})['id']
+        check('same Agent builds successfully after recovering from log-buffer exhaustion', agent.poll() is None and build_result(recovery)['commit_sha'] == commit)
+        evidence['log_buffer_fault']['recovery_build_id'] = recovery
         evidence.update({'project_id': project, 'node_id': node_id, 'build_id': build_id, 'restart_build_id': second, 'post_restart_build_id': third, 'release_id': release['id'], 'fixture_commit': commit, 'artifact_sha256': artifact['sha256']})
     except BaseException as error:
         evidence['failure'] = str(error)

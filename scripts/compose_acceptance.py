@@ -64,7 +64,8 @@ def main():
     probe = directory / 'probe'
     probe.mkdir()
     shutil.copyfile(ROOT / 'scripts/compose_probe.py', probe / 'probe.py')
-    evidence = {'kind': 'isolated-compose-tls', 'run_id': run_id, 'project': project, 'source_sha': source_sha, 'probe_sha256': hashlib.sha256((probe / 'probe.py').read_bytes()).hexdigest(), 'image_prefix': options.image_prefix, 'checks': []}
+    shutil.copyfile(Path(__file__), directory / 'executed-controller.py')
+    evidence = {'kind': 'isolated-compose-tls', 'run_id': run_id, 'project': project, 'source_sha': source_sha, 'controller_sha256': hashlib.sha256((directory / 'executed-controller.py').read_bytes()).hexdigest(), 'probe_sha256': hashlib.sha256((probe / 'probe.py').read_bytes()).hexdigest(), 'image_prefix': options.image_prefix, 'checks': []}
     print('COMPOSE RUN', run_id, str(directory), flush=True)
 
     def check(name, condition):
@@ -207,29 +208,57 @@ def main():
             bindings = details['HostConfig'].get('PortBindings') or {}
             check(service + ' exposes no non-loopback host ports', all(binding['HostIp'] == '127.0.0.1' for values in bindings.values() for binding in values))
         worker_environment = dict(environment, AK_BOOTSTRAP_PASSWORD=settings['AK_BOOTSTRAP_PASSWORD'], AK_COMPOSE_CONSOLE_URL='https://' + console, AK_COMPOSE_S3_URL='https://' + objects, SSL_CERT_FILE='/acceptance/https-ca.pem')
-        arguments = ['docker', 'run', '--platform', evidence['image_platforms']['probe'], '--name', worker_name, '--label', LABEL + '=' + run_id, '--network', manifest['networks']['default']['name'], '--network-alias', 'probe', '--user', f'{os.getuid()}:{os.getgid()}', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--tmpfs', '/tmp:mode=1777', '--mount', 'type=bind,src=' + str(probe) + ',dst=/acceptance', '--workdir', '/acceptance']
+        arguments = ['docker', 'run', '--init', '--platform', evidence['image_platforms']['probe'], '--name', worker_name, '--label', LABEL + '=' + run_id, '--network', manifest['networks']['default']['name'], '--network-alias', 'probe', '--user', f'{os.getuid()}:{os.getgid()}', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--tmpfs', '/tmp:mode=1777', '--mount', 'type=bind,src=' + str(probe) + ',dst=/acceptance', '--workdir', '/acceptance']
         for name in ('AK_BOOTSTRAP_PASSWORD', 'AK_COMPOSE_CONSOLE_URL', 'AK_COMPOSE_S3_URL', 'SSL_CERT_FILE'):
             arguments += ['--env', name]
         with (directory / 'probe.log').open('w') as log:
             worker = subprocess.Popen(arguments + ['--entrypoint', 'python3', probe_image, '/acceptance/probe.py'], env=worker_environment, stdout=log, stderr=log)
             restarted = False
+            storage_paused = storage_resumed = False
             deadline = time.monotonic() + 360
             while worker.poll() is None:
                 if (probe / 'ready-for-restart').is_file() and not restarted:
                     execute(compose + ['restart', 'control'], stdout=log, stderr=log, timeout=60)
                     (probe / 'control-restarted').touch()
                     restarted = True
+                if (probe / 'pause-log-storage').is_file() and not storage_paused:
+                    storage = capture(compose + ['ps', '-aq', 's3'])
+                    assert_owned('container', storage)
+                    execute(compose + ['pause', 's3'], stdout=log, stderr=log, timeout=30)
+                    check('log fault pauses only this run-owned S3 container', json.loads(capture(['docker', 'inspect', storage]))[0]['State']['Paused'])
+                    (probe / 'log-storage-paused').touch()
+                    storage_paused = True
+                if (probe / 'resume-log-storage').is_file() and storage_paused and not storage_resumed:
+                    storage = capture(compose + ['ps', '-aq', 's3'])
+                    assert_owned('container', storage)
+                    execute(compose + ['unpause', 's3'], stdout=log, stderr=log, timeout=30)
+                    check('run-owned S3 resumes after the real log-buffer fault', not json.loads(capture(['docker', 'inspect', storage]))[0]['State']['Paused'])
+                    (probe / 'log-storage-resumed').touch()
+                    storage_resumed = True
                 if time.monotonic() > deadline:
                     raise TimeoutError('Compose traffic probe exceeded six minutes')
                 time.sleep(1)
         evidence['probe'] = json.loads((probe / 'probe-evidence.json').read_text()) if (probe / 'probe-evidence.json').is_file() else {}
-        check('full HTTPS / mTLS / S3 / SSE / restart traffic probe passed', worker.returncode == 0 and 'failure' not in evidence['probe'] and restarted)
+        check('full HTTPS / mTLS / S3 / SSE / restart / log-buffer traffic probe passed', worker.returncode == 0 and 'failure' not in evidence['probe'] and restarted and storage_resumed)
+        fault = evidence['probe']['log_buffer_fault']
+        attempt = str(uuid.UUID(fault['attempt_id']))
+        query = f"SELECT coalesce(json_agg(json_build_object('sequence',sequence,'size',size,'sha256',sha256) ORDER BY sequence),'[]'::json) FROM log_chunks WHERE attempt_id='{attempt}'"
+        chunks = json.loads(capture(compose + ['exec', '-T', 'postgres', 'psql', '-U', 'artifact', '-d', 'artifact', '-tA', '-c', query]))
+        check('PostgreSQL confirms consecutive delivered log sequences after overflow', [chunk['sequence'] for chunk in chunks] == list(range(1, len(chunks) + 1)))
+        expected = fault['retained_chunks']
+        check('PostgreSQL log sizes and hashes match the retained unacknowledged chunks', chunks[expected[0]['sequence'] - 1:] == expected)
     except BaseException as error:
         evidence['failure'] = str(error)
         raise
     finally:
         cleanup_errors = []
         if started:
+            try:
+                storage = capture(compose + ['ps', '-aq', 's3'])
+                if storage and assert_owned('container', storage) and json.loads(capture(['docker', 'inspect', storage]))[0]['State']['Paused']:
+                    execute(compose + ['unpause', 's3'], capture_output=True, timeout=30)
+            except Exception as error:
+                cleanup_errors.append('resume owned storage before teardown: ' + str(error))
             try:
                 with (directory / 'services.log').open('w') as log:
                     execute(compose + ['logs', '--no-color'], stdout=log, stderr=log, timeout=30)

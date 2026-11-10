@@ -54,6 +54,7 @@
 | 配置与部署文件 | 五个示例通过真实 Rust Recipe 解析；JSON schema 语法、shell 脚本语法、Compose 配置校验通过 |
 | 生产 tmpfs 回归 | 实际 Compose 解析与 Docker daemon 先复现未加引号的挂载被拆成两项并拒绝启动；修复后解析为一个挂载，真实非 root / read-only 容器核对 1777 并写入 `/tmp`；Python 回归现共 8 项 |
 | 完整 Compose / TLS | 产品源码 `1dae112` 的本机运行 `1e38068d0dea`：外层 23 项、实际流量 21 项通过，全部五服务、受信 HTTPS / mTLS、运行中 SSE、私有 S3、在途构建中重启及凭据持久化均已实跑 |
+| 日志缓冲真实故障 | 产品源码 `325dea7` 的本机运行 `4c9038b3043c`：外层 27 项、流量 30 项通过，真实 S3 暂停、1 MiB 缓冲耗尽、子进程终止、心跳继续、日志恢复及下一构建成功 |
 | 远端 CI | Linux / macOS / Windows 原生 Agent 检查通过；[诊断运行 42746144635](https://github.com/zhubby/artifact-kit/actions/runs/42746144635) 确认 Linux S3 配置权限错误，已本地复现并修复；完整流水线现包含 SSH 与冷恢复，最新结果见 [main Actions](https://github.com/zhubby/artifact-kit/actions/workflows/ci.yml?query=branch%3Amain) |
 
 普通 `cargo test --all-targets` 会跳过需要数据库的 8 项测试；本次另外设置 `AK_TEST_DATABASE_URL` 并使用 `--include-ignored` 执行。测试为每次运行创建隔离 schema，不能以默认命令中的 ignored 项冒充数据库验收。
@@ -93,6 +94,19 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 证据及日志在 `.local/compose-tls/1e38068d0dea/`。本机使用镜像源和已有 Docker 网络设置，控制面 / Web / PostgreSQL / S3 / probe 为 Linux amd64，Caddy 为 Linux arm64/v8；各服务显式采用实际镜像平台，未覆盖原缓存镜像或全局默认平台。控制面和 Web 均验证源码 revision 与 Dockerfile 标签；probe 的测试工具镜像可复用，本次 Go Agent 从相同源码快照重新编译。诊断白名单扫描未发现生成的部署密码、主密钥、S3 secret 或私钥内容。
 
 早期失败保留原状：`7501a32f5242` 是缓存 Caddy 平台与进程默认平台冲突，`ab074741b6d8` 发现生产 tmpfs YAML 拆项，`d011d2795e6a` 是重启测试在 HTTP 就绪前查询节点。对应修正后使用新建资源重新运行。测试 CA 仅存在于独立栈和客户端；完整 Compose 成功不证明公网 DNS / ACME、正式部署主机、实体 Agent 服务重启、五类实际应用或发行签名已经验收。
+
+### 日志缓冲耗尽与恢复
+
+原设计要求日志缓冲有界、耗尽后明确失败。原有 Go 单测核对了 spool 方法的容量与序号；新增整栈故障测试实际运行 Go Agent / Worker、Rust 中心、PostgreSQL 和私有 S3。运行 `4c9038b3043c` 的产品源码为 `325dea72ac0d6ab8964c6197059802b89be92759`，27 项外围检查与 30 项流量检查全部通过，包含原有 HTTPS / mTLS / SSE / 重启链路。
+
+- 先启动会持续写存活标记的真实后代进程，仅暂停归属本次运行的 S3，随后让 Worker 输出超过 1 MiB 的日志。验收 Agent 使用 1 MiB 缓冲，产品默认配置为 256 MiB。
+- S3 暂停期间，实际磁盘 spool 未越界，Worker 工作目录清理、后代 PID 消失；仍观察到新心跳，构建保持在等待日志确认的运行态。
+- 保存未确认块的连续序号、大小与 SHA-256，再恢复 S3。构建以 `log buffer exhausted or unavailable` 明确失败，既没有制品，也没有 Release 记录；确认后的 spool 文件被删除。
+- HTTPS SSE 实际返回的缓存块与原始字节 / 顺序一致，真实 PostgreSQL 的完整序号连续、大小与摘要相同。随后同一个 Agent 再次完成 HTTPS Git 原生 C 构建，证明容量释放后可以继续工作。
+
+证据在 `.local/compose-tls/4c9038b3043c/`；执行的 controller 副本及 controller / probe 摘要用于核对测试代码。外围 27 项包含复用镜像的两个 revision 检查和已有两个开发容器的保留检查，不能与无此环境的 CI 检查点数直接比较。该测试仍使用隔离 Linux 容器与测试应用；生产持续负载、实体服务、真实应用和发行签名门槛继续开放。
+
+另对运行 `44d3abff77c5` 在 S3 已暂停时强制终止测试容器。控制脚本按预期以状态 1 失败，Docker daemon 的 `unpause` 事件证明失败清理先恢复了本次 S3，随后容器 / 卷 / 网络全部移除，原开发服务身份 / 启动时间 / 重启次数保持。`interruption-regression.json` 和原始 Docker 事件保留在该运行目录；此运行保留为预期失败记录。
 
 ### 跨语言协议联测
 
