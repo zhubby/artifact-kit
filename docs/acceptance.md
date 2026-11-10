@@ -150,6 +150,8 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 
 `TestLiveRustGoProtocolReplayedCompletion` 另行验证显式重试后的旧完成事件：实际失败并重试 job，在持有该节点行锁时重放旧事件，确认请求确实等待；释放后只确认旧序号，不改写 queued job 或旧 attempt，随后由真实调度器分配不同 attempt 并取得开始授权。该项及上述 12 项本机联测全部通过。调度器的节点及候选 job 查询使用 `SKIP LOCKED`，可跳过被事件持有的 job。
 
+协议探针没有真实 Worker 响应取消。完成授权断言后，清理通过 API 取消本次构建，仅将本次仍活跃的 attempt 租约设为过期，再等待真实调度器将该构建及 job 终结。`42786554877` 的协议、浏览器与 SSH 通过后，冷恢复预检发现旧清理仍留下活跃记录；新增清理终态断言也已独立复现此问题。后续修正保持冷恢复的无活跃任务要求，并保留原失败记录。
+
 原始红 / 绿日志、源码及二进制摘要保存在 `.local/lease-node-fencing/`。首次新测试的 psql 连接参数错误另行保留，未算作产品竞态复现；修复前原有 35 项本机端到端验收通过。这里调整的是临时节点的数据库授权期限，没有将 TLS 证书实际老化，也没有替代真实 Worker / 实体宿主故障验收。CI 同时保留 `.local/protocol-live.log`，本次提交的远端结果按精确 SHA 的 [Actions](https://github.com/zhubby/artifact-kit/actions/workflows/ci.yml?query=branch%3Amain) 核验。
 
 ### 真实端到端记录

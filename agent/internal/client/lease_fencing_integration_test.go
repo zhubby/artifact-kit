@@ -399,9 +399,15 @@ func newLeaseFencingProbe(test *testing.T) *leaseFencingProbe {
 		jobStatus := probe.query("SELECT status FROM jobs WHERE build_id='" + build + "'")
 		if jobStatus == "queued" || jobStatus == "leased" || jobStatus == "running" {
 			probe.api("POST", "/builds/"+build+"/cancel", map[string]any{})
+			// This protocol-only peer has no Worker to acknowledge cancellation.
+			// Expire only its own leases; let the real scheduler finish cancellation.
+			probe.query("UPDATE attempts a SET lease_expires_at=clock_timestamp()-interval '1 second' FROM jobs j WHERE j.id=a.job_id AND j.build_id='" + build + "' AND a.status IN ('leased','running')")
 		}
 		probe.settings["revoked"] = true
 		probe.api("PATCH", "/nodes/"+probe.config.AgentID, probe.settings)
+		probe.await("owned protocol probe has no active build or jobs after cleanup", func() bool {
+			return probe.query("SELECT b.status IN ('succeeded','failed','lost','canceled') AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.build_id=b.id AND j.status IN ('queued','leased','running')) FROM builds b WHERE b.id='"+build+"'") == "t"
+		})
 	})
 	return probe
 }
