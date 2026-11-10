@@ -7,7 +7,7 @@
 | 阶段 | 本次交付 | 状态 |
 |---|---|---|
 | M0 | 已确认设计、设计自审、版本化 Protobuf、v1 JSON schema、两次数据库迁移、状态机文档 | 已交付 |
-| M1 | 内置登录、三类角色、项目范围 Token、一次性注册、节点证书认证、心跳、能力、排空、诊断与服务管理 CLI | 软件实现与本机协议联测通过；三类系统服务实机待验 |
+| M1 | 内置登录、三类角色、项目范围 Token、一次性注册、节点证书认证、心跳、能力、排空、诊断与服务管理 CLI | 本机协议及三类临时原生 VM 服务生命周期通过；实体机重启与业务负载待验 |
 | M2 | Git 引用解析及不可变快照、事务调度、独立 Worker、进程树清理、SSE 日志、私有制品校验与下载 | macOS arm64 真实原生闭环通过 |
 | M3 | 项目 / 节点 / 本机签名引用授权、sign / verify 阶段、不可变内部 Release、幂等发布重试、审计 | 本机 ad-hoc 签名与发布通过；发行签名待验 |
 | M4 | Compose、镜像、服务安装说明、运维手册、故障自动化、浏览器测试、二进制交叉构建、兼容性矩阵 | 部分交付，外部验收尚未完成 |
@@ -39,7 +39,7 @@
 | Rust 测试 | 17 项通过：9 项配置 / 加密 / 权限 / 匹配测试，8 项显式启用的真实 PostgreSQL 测试 |
 | Go 检查 | `go vet ./...`、`go test -race ./... -count=1` 通过；不启用实时环境时协议联测会显式跳过 |
 | 服务启动失败回归 | 真实 `service-run` 子进程在未注册配置下报错后必须以非零状态退出；修复前进程存活并在 5 秒后触发测试超时，修复后通过 |
-| 原生服务生命周期 | 已加入三类 GitHub 托管临时 VM 的显式安装 / 专用账户 / mTLS / 重启 / 停止 / 卸载测试，当前新增作业尚待对应提交的 CI 运行核验；不在用户开发机安装服务 |
+| 原生服务生命周期 | [42756742531](https://github.com/zhubby/artifact-kit/actions/runs/42756742531) 在 `23ab4ac` 上的 Linux amd64、macOS arm64、Windows amd64 三个 native-agent 作业全部通过：真实服务管理器、专用账户、mTLS、重启 / 停止 / 卸载及私有配置权限；完整 Linux 流水线另行核验，不由服务结果推断 |
 | 验收启动回归 | 3 项真实子进程测试通过：提前退出立即报告状态与日志、就绪超时终止进程、健康检查成功后保留运行进程 |
 | 构建失败诊断回归 | 意外终态保留构建及 attempt 错误，并验证诊断不包含租约令牌；与启动及备份保护共 7 项 Python 回归 |
 | 备份保护回归 | 3 项通过：复制前拒绝目录内及根目录符号链接，备份缺失主密钥 / 数据库配置时不得继承当前进程秘密 |
@@ -49,7 +49,7 @@
 | 隔离冷恢复 | `8efa99ec0523` 16 项通过：21 张表及序列、784 个对象（3,037,785 字节）、私有配置 / PKI、旧 Release 下载执行、恢复后的 SSH 新构建 / 发布 |
 | 前端 | TypeScript 检查、生产构建和 Docker 镜像构建通过；容器运行的控制台通过 10 项真实后台浏览器测试 |
 | Agent 编译 | Linux amd64 / arm64、Darwin amd64 / arm64、Windows amd64 五个目标二进制生成成功 |
-| Windows 原生回归 | GitHub `windows-latest` 上 `go vet ./...` 与 `go test -race ./...` 通过，实际执行 Job Object 子进程树终止回归；未验收系统服务与真实 Windows 应用 |
+| Windows 原生回归 | GitHub `windows-latest` 上 vet / race 与 Job Object 子进程树终止回归通过，SCM 空闲服务生命周期通过；真实 Windows 应用及在途构建的服务停止仍待验 |
 | 配置与部署文件 | 五个示例通过真实 Rust Recipe 解析；JSON schema 语法、shell 脚本语法、Compose 配置校验通过 |
 | 远端 CI | Linux / macOS / Windows 原生 Agent 检查通过；[诊断运行 42746144635](https://github.com/zhubby/artifact-kit/actions/runs/42746144635) 确认 Linux S3 配置权限错误，已本地复现并修复；完整流水线现包含 SSH 与冷恢复，最新结果见 [main Actions](https://github.com/zhubby/artifact-kit/actions/workflows/ci.yml?query=branch%3Amain) |
 
@@ -66,6 +66,14 @@
 - Unix Worker 的父管道关闭、单调租约到期实际终止子进程树；有界日志缓冲溢出明确失败且不跳过序号。
 - 重复 assign 不重建 Worker；延迟到达的续租授权以请求发送时刻为锚点，不能延长本地有效期。
 - 诊断使用 Go 的 `version` 子命令；探测失败的 Xcode 占位程序及自定义工具不进入调度能力集合。
+
+### 三类原生服务生命周期
+
+运行 `42756742531` 在 `23ab4ac3feb5381b5ba5a1936b83928f31cbe696` 上，三类原生作业及 `TestNativeServiceLifecycle` 都通过：Ubuntu 26.04 amd64 的 systemd、macOS 26 arm64 的 launchd、Windows amd64 的 SCM。测试先拒绝既有同名账户 / 服务，再创建专用非管理员账户，注册真实 Agent 二进制为自动启动服务，以 loopback mTLS Go 测试控制端观察认证连接；核对服务进程确实属于该账户，重启后 PID 和认证连接均更换，停止后旧连接关闭，卸载后服务记录消失，测试创建的服务、账户和目录清理完成。Windows 使用实际 NTFS DACL 与单独的服务登录权限；Unix 核对 0700 私有目录和 0600 配置 / 私钥。可执行文件及配置路径含空格、百分号、美元符及模板花括号。
+
+真实红 / 绿记录包括：Agent 报错后外层服务仍存活、没有 HOME / APPDATA 时提前拒绝显式配置、服务库将 systemd 执行参数转义误用于路径条件、launchd 普通账户无法创建默认 `/var/log` 输出文件。对应修复后均有子进程或原生服务结果。systemd 还分别处理可执行文件和参数的美元符规则；launchd 日志移到专用账户的私有配置目录。早期失败运行保留为失败；部分旧流水线被后续提交替代后取消，未计作成功。
+
+此项没有在用户的 Mac 上安装系统服务，没有执行 VM / 实体机重启，没有给服务分配真实应用或发行签名任务。Go 测试控制端只验证服务管理链路，不代替 Rust 协议联测。自动启动配置存在不等于重启后恢复已验证，空闲服务启停不等于在途构建及子进程终止已验收。
 
 ### 跨语言协议联测
 
@@ -132,11 +140,11 @@ Linux CI 的 S3 启动问题也有真实红 / 绿验证：0600 配置由宿主 U
 
 | 对象 | 编译 / 配置 | 实际运行 | 未完成门槛 |
 |---|---|---|---|
-| macOS arm64 Agent | Go 原生与交叉二进制均已生成 | 本机前台 Agent / Worker、实际进程树和故障联测 | launchd 安装、重启、自启及正式升级流程实机验收 |
+| macOS arm64 Agent | Go 原生与交叉二进制均已生成 | 本机前台 Agent / Worker 与故障联测；GitHub 临时原生 VM 的 launchd 安装 / 启停 / 重启 / 卸载 | 实体机重启自启、在途构建的服务停止、正式升级与签名环境验收 |
 | macOS amd64 Agent | CGO=0 二进制已生成 | 未运行 | Intel Mac 与对应工具链 |
-| Linux amd64 Agent | CGO=0 ELF 已生成 | Linux 容器中注册 / 心跳 / 续连通过；实体宿主未运行 | Linux 服务账户、systemd 安装 / 重启 / SDK 与原生应用构建 |
+| Linux amd64 Agent | CGO=0 ELF 已生成 | GitHub 原生 VM 的 systemd 专用账户服务生命周期通过；CI 最小原生闭环通过，实体宿主未运行 | 实体机重启自启、服务内在途构建、SDK 与真实项目应用验收 |
 | Linux arm64 Agent | CGO=0 ELF 已生成 | 未运行 | arm64 Linux 主机与工具链 |
-| Windows amd64 Agent | PE 已生成；Job Object 测试已交叉编译 | GitHub Windows runner 原生 Go race 与 Job Object 子进程终止回归通过 | Windows 实体宿主、SCM 服务安装 / 重启、真实构建与故障验收 |
+| Windows amd64 Agent | PE 已生成；Job Object 测试已交叉编译 | GitHub 原生 VM 的 Go race、Job Object 及 SCM 专用账户服务生命周期通过 | Windows 实体宿主、重启自启、服务内真实构建与故障验收 |
 | Linux 应用 | Rust 配置模板已解析 | 尚未构建真实项目应用 | Linux 宿主、项目依赖、原生运行或安装验收 |
 | macOS 应用 | Xcode 模板已解析；最小 C 可执行文件实际编译 | arm64 C CLI + ad-hoc 签名 / 校验通过 | 完整 Xcode `.app`、发行证书、notarization / 安装验收 |
 | Windows 应用 | Rust 配置模板已解析 | 尚未构建真实项目应用 | Windows 工具链、Authenticode 证书与安装验收 |
