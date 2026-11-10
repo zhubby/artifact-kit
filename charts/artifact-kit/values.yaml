@@ -1,0 +1,90 @@
+# The release name is the resource prefix. One scheduler per release.
+fullnameOverride: ""
+imagePullSecrets: []
+podAnnotations: {}
+
+images:
+  control:
+    repository: ghcr.io/zhubby/artifact-kit-control
+    tag: "" # Defaults to Chart.appVersion; set this to a published release tag.
+    pullPolicy: IfNotPresent
+  web:
+    repository: ghcr.io/zhubby/artifact-kit-web
+    tag: ""
+    pullPolicy: IfNotPresent
+  gateway:
+    repository: caddy
+    tag: 2-alpine
+    pullPolicy: IfNotPresent
+  postgres:
+    repository: postgres
+    tag: 17-alpine
+    pullPolicy: IfNotPresent
+  s3:
+    repository: chrislusf/seaweedfs
+    tag: "4.53"
+    pullPolicy: IfNotPresent
+
+# Created separately by scripts/init-helm.py, never generated during upgrades.
+# Empty names select <release>-credentials and <release>-pki.
+secrets:
+  credentials: ""
+  pki: ""
+
+console:
+  publicUrl: https://build.example.com
+  service:
+    type: ClusterIP
+    nodePort: null
+
+grpc:
+  service:
+    type: ClusterIP
+    nodePort: null
+
+s3:
+  # Production uses the reachable HTTPS endpoint, including from control pods.
+  # In development, an empty endpoint selects the internal HTTP service.
+  endpoint: ""
+  publicEndpoint: https://artifacts.example.com
+  bucket: artifact-kit
+  region: us-east-1
+  service:
+    type: ClusterIP
+    nodePort: null
+
+development:
+  insecureHttp: false
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  consoleHost: build.example.com
+  s3Host: artifacts.example.com
+  consoleTlsSecret: artifact-kit-console-tls
+  s3TlsSecret: artifact-kit-s3-tls
+
+# PVCs survive helm uninstall; removing a namespace still deletes its PVCs.
+persistence:
+  storageClass: "" # Use the cluster default; "-" disables dynamic provisioning.
+  control: 5Gi
+  postgres: 5Gi
+  s3: 20Gi
+
+resources:
+  control:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: "2", memory: 512Mi}
+  web:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: "1", memory: 512Mi}
+  gateway:
+    requests: {cpu: 10m, memory: 32Mi}
+    limits: {cpu: 500m, memory: 128Mi}
+  postgres:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: "1", memory: 512Mi}
+  s3:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 768Mi}

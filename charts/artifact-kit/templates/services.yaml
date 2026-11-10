@@ -1,0 +1,43 @@
+{{- range $component := list "postgres" "s3" "control" "web" "grpc" }}
+{{- $settings := dict "type" "ClusterIP" }}
+{{- $port := 5432 }}
+{{- $target := "postgres" }}
+{{- $selector := $component }}
+{{- if eq $component "s3" }}
+{{- $settings = $.Values.s3.service }}
+{{- $port = 8333 }}
+{{- $target = "s3" }}
+{{- else if eq $component "control" }}
+{{- $port = 8080 }}
+{{- $target = "http" }}
+{{- else if eq $component "web" }}
+{{- $settings = $.Values.console.service }}
+{{- $port = 80 }}
+{{- $target = "gateway" }}
+{{- else if eq $component "grpc" }}
+{{- $settings = $.Values.grpc.service }}
+{{- $port = 8443 }}
+{{- $target = "grpc" }}
+{{- $selector = "control" }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "artifact-kit.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "artifact-kit.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  type: {{ $settings.type }}
+  ports:
+    - port: {{ $port }}
+      targetPort: {{ $target }}
+      name: {{ $target }}
+      {{- if and (eq $settings.type "NodePort") $settings.nodePort }}
+      nodePort: {{ $settings.nodePort }}
+      {{- end }}
+  selector:
+    {{- include "artifact-kit.selector" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $selector }}
+{{- end }}

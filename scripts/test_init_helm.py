@@ -1,0 +1,57 @@
+import base64
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+SCRIPT = Path(__file__).with_name("init-helm.py")
+
+
+class HelmBootstrapTests(unittest.TestCase):
+    def test_persistent_secrets_and_certificate_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "private"
+            command = [sys.executable, str(SCRIPT), "--output", str(output),
+                       "--namespace", "test-builds", "--release", "test-kit",
+                       "--grpc-host", "127.0.0.1", "--grpc-host", "agents.example.com"]
+            subprocess.run(command, check=True, capture_output=True)
+            before = {str(path): path.read_bytes() for path in output.rglob("*") if path.is_file()}
+            secret = json.loads((output / "credentials.json").read_text())
+            data = secret["stringData"]
+            self.assertEqual(secret["metadata"]["namespace"], "test-builds")
+            self.assertEqual(len(base64.b64decode(data["master-key"])), 32)
+            self.assertIn(data["database-password"] + "@test-kit-postgres:5432/", data["database-url"])
+            self.assertEqual(json.loads((output / "access.json").read_text())["password"],
+                             data["bootstrap-password"])
+            identity = json.loads(data["s3.json"])["identities"][0]["credentials"][0]
+            self.assertEqual(identity["secretKey"], data["s3-secret-key"])
+            subprocess.run(["openssl", "verify", "-CAfile", str(output / "pki/ca.pem"),
+                            "-verify_hostname", "agents.example.com", str(output / "pki/server.pem")],
+                           check=True, capture_output=True)
+            subprocess.run(["openssl", "verify", "-CAfile", str(output / "pki/ca.pem"),
+                            "-verify_ip", "127.0.0.1", str(output / "pki/server.pem")],
+                           check=True, capture_output=True)
+            if os.name != "nt":
+                for path in output.rglob("*"):
+                    self.assertEqual(path.stat().st_mode & 0o077, 0, str(path))
+            repeated = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(repeated.returncode, 0)
+            self.assertIn("refusing to rotate", repeated.stderr)
+            self.assertEqual(before, {str(path): path.read_bytes()
+                                      for path in output.rglob("*") if path.is_file()})
+
+    def test_rejects_invalid_hosts_before_creating_secrets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "private"
+            result = subprocess.run([sys.executable, str(SCRIPT), "--output", str(output),
+                                     "--grpc-host", "bad.example.com,IP:1.2.3.4"], capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(output.exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

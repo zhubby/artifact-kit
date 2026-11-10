@@ -8,6 +8,8 @@
 
 ## Linux Compose
 
+Kubernetes 和本机 kind 的 Chart、凭据初始化、TLS、持久卷与升级说明见 [Helm 部署指南](helm.md)。
+
 在专用**非 root** 部署账户下准备：
 
 ```sh

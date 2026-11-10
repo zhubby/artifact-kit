@@ -51,6 +51,8 @@ bin/artifact-agent run --config ../.local/agent/agent.json
 
 生产部署、三类系统服务与签名节点设置见 [运维手册](docs/operations.md)。不要在已有生产配置旁运行本地验收脚本。
 
+Kubernetes / 本机 kind 使用 [Helm 部署指南](docs/helm.md)。GitHub Release 发布时自动构建并推送 control / web 的 AMD64、ARM64 镜像到 GHCR。
+
 ## 验证
 
 ```sh

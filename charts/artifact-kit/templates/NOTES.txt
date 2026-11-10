@@ -1,0 +1,12 @@
+Console: {{ .Values.console.publicUrl }}
+S3 signed URL endpoint: {{ .Values.s3.publicEndpoint }}
+gRPC TLS service: {{ include "artifact-kit.fullname" . }}-grpc:8443
+
+Credentials and PKI are external Secrets; Helm never rotates them.
+Back up all three PVCs, the credentials Secret, and the PKI Secret together.
+Control is a single scheduler; do not scale its Deployment above one replica.
+{{- if .Values.development.insecureHttp }}
+
+HTTP DEVELOPMENT MODE IS ENABLED. gRPC still requires the pinned private CA.
+Use --allow-http-uploads only for development Agents.
+{{- end }}

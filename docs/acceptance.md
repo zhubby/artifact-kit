@@ -251,6 +251,29 @@ Linux CI 的 S3 启动问题也有真实红 / 绿验证：0600 配置由宿主 U
 
 镜像下载存在本地网络限制，本次仅通过构建输入替换使用镜像源并传入本地网络代理，没有改写提交的默认基础镜像或全局 Docker 配置。生产应自行确认镜像来源、固定 digest、受信证书和服务账户权限。
 
+### 2026-11-10：本机 kind / Helm
+
+已在已有 `kind-substrate-orbstack` 集群的独立 `artifact-kit` 命名空间安装同名 Helm release。节点为 Kubernetes v1.37.0 / Linux arm64；control、PostgreSQL、SeaweedFS 和包含 Next.js / Caddy 的 web Deployment 全部就绪，三个 `standard` PVC 已绑定。控制台为 `http://192.168.97.2:31080`，私有对象存储签名地址为 `http://192.168.97.2:31333`，gRPC TLS 为 `192.168.97.2:31443`；这些是此次本机快照的节点地址。
+
+本轮 control / web 镜像的应用源码基线为 `48b9e72`，均实际构建为 `linux/arm64` 并推入已有本地 registry。control 镜像 ID 为 `sha256:260c821fcc7ba32f86a83e15fbb647b8f509823b2ce1910a03a2b163421f894c`，web 为 `sha256:d63905990f4f0b1e1a2b4a42d44f64180ab17acc65786207a7776ad329103746`。本机默认 Docker 镜像代理认证失败，构建输入使用显式镜像源、HTTPS 软件源及按 Cargo.lock 校验的公开依赖缓存；实际输入、摘要、平台与构建日志保留在 `.local/helm/`，默认 Dockerfile 和全局配置保持原样。
+
+原生联测运行 `acceptance-20261110-210556`，21 项检查通过：
+
+- 网关真实页面与 API、开发 Cookie 登录、匿名请求拒绝、CSRF 与外部 Origin 拒绝。
+- 本机 macOS arm64 Go Agent 经钉住的私有 CA 注册，使用 mTLS 报告真实 `cc` 能力。
+- Rust 中心与原生 Worker 使用 SSH 主机指纹和独立密钥访问同一固定 Git 提交，编译、执行最小 C 程序并登记制品。
+- SSE 在构建结束前经 Caddy 返回真实日志；Release 发布重试幂等。
+- 登录后取得 S3 签名下载，文件大小与 SHA-256 正确，下载程序可在本机执行；匿名对象访问被拒绝。
+- 使用同一 values 执行 Helm upgrade，随后重启 control；原会话、Release 与下载保持可用，凭据、CA 和三个 PVC 的身份保留。
+
+浏览器另行验证真实登录、六个列表 / 设置页面、重启后的构建日志回放及 Release 页面，8 项页面检查通过，并保存截图和不含凭据的检查记录。管理员初始密码已轮换，旧密码及旧会话失效；新的初始登录信息保存在私有 `.deploy/helm/kind/access.json`。主密钥、数据库 / S3 凭据和 PKI 保持一致。
+
+新增初始化脚本的密钥长度、证书 DNS / IP 身份、文件权限与拒绝覆盖测试通过；本机 Python 脚本测试共 10 项通过。两套 Chart profile 的 Helm lint 通过，生产 Ingress 清单通过 API Server dry-run。部署前后的 21 个原有 Pod 身份及重启计数一致，已有测试 PostgreSQL / S3 容器保持运行且未暂停。
+
+私有证据位于 `.local/helm/latest-acceptance.json`、对应运行目录的 `evidence.json`、`browser-evidence.json`、`cluster-preservation.json` 与 `password-rotation-evidence.json`。验收后临时 Agent / SSH fixture 进程已停止，控制台会如实显示该验收节点离线；应用服务和持久数据继续运行。
+
+本机 profile 显式使用 HTTP 开发模式，gRPC 仍使用私有 CA / mTLS。该轮不替代正式域名 / HTTPS、实体机重启、完整业务应用、发行签名或生产灾备验收。Release 镜像工作流通过静态检查；GHCR 的实际发布结果以之后的 GitHub Release `published` 运行记录为准，本轮未创建 Release。
+
 ## 复现与剩余验收
 
 快速启动及测试命令见根 README；测试需先启动 PostgreSQL / S3 并加载私有 `.local/env`。端到端脚本自行管理中心、Agent 和 Git 服务，不要在同一端口再启动另一个中心。协议和浏览器测试应在输出 `ACCEPTANCE READY` 后执行。

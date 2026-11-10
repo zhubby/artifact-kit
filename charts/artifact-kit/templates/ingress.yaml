@@ -1,0 +1,34 @@
+{{- if .Values.ingress.enabled }}
+{{- range $component := list "console" "s3" }}
+{{- $host := ternary $.Values.ingress.consoleHost $.Values.ingress.s3Host (eq $component "console") }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "artifact-kit.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "artifact-kit.labels" $ | nindent 4 }}
+  {{- with $.Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $.Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  tls:
+    - hosts: [{{ $host | quote }}]
+      secretName: {{ ternary $.Values.ingress.consoleTlsSecret $.Values.ingress.s3TlsSecret (eq $component "console") }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "artifact-kit.fullname" $ }}-{{ ternary "web" "s3" (eq $component "console") }}
+                port:
+                  number: {{ ternary 80 8333 (eq $component "console") }}
+{{- end }}
+{{- end }}
