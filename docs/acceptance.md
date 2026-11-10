@@ -108,6 +108,8 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 
 另对运行 `44d3abff77c5` 在 S3 已暂停时强制终止测试容器。控制脚本按预期以状态 1 失败，Docker daemon 的 `unpause` 事件证明失败清理先恢复了本次 S3，随后容器 / 卷 / 网络全部移除，原开发服务身份 / 启动时间 / 重启次数保持。`interruption-regression.json` 和原始 Docker 事件保留在该运行目录；此运行保留为预期失败记录。
 
+远端 `42766169439` 的 Compose 运行 `5288d46f5b1d` 在原有 21 项流量检查通过后，遇到故障 fixture 的就绪检查竞态：Worker 已开始执行，而构建总状态由调度器下一轮按秒汇总。原检查立即读取总状态，可能仍为 queued；可控复现使用“子进程标记已就绪、API 先 queued 后 running”的时序，修复前失败，改为复用 running 等待及意外终态检查后通过。随后本机运行 `39256b4483b3` 的 25 项外围与 30 项流量检查再次通过；25 项包含两个现有开发容器保留检查，该轮重新构建产品镜像。原远端失败及清理证据保留，新增修正的远端结果以对应提交 Actions 为准。
+
 ### 跨语言协议联测
 
 `agent/internal/client/protocol_integration_test.go` 在 `AK_LIVE_TESTS=1` 时连接实际 Rust 中心，使用真实登记证书和对象存储，覆盖：

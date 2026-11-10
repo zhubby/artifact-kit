@@ -269,14 +269,14 @@ targets:
         (DIRECTORY / 'finish-build').unlink()
         second = api(f'/projects/{project}/builds', {'ref': 'main', 'targets': ['native']})['id']
 
-        def running_build():
-            value = api('/builds/' + second)
+        def running_build(build_id):
+            value = api('/builds/' + build_id)
             if value['status'] in ('failed', 'canceled', 'lost', 'succeeded'):
                 evidence['unexpected_build'] = value
-                raise AssertionError('restart fixture did not remain in progress')
+                raise AssertionError('build fixture did not remain in progress')
             return value if value['status'] == 'running' else None
 
-        running = wait(running_build, 60)
+        running = wait(lambda: running_build(second), 60)
         attempt_id = running['jobs'][0]['attempts'][-1]['id']
         previous_seen = next(item for item in api('/nodes') if item['id'] == node_id)['last_seen']
         (DIRECTORY / 'ready-for-restart').touch()
@@ -297,7 +297,7 @@ targets:
         wait(lambda: (DIRECTORY / 'buffer-child-alive').is_file() and (DIRECTORY / 'buffer-child.pid').is_file(), 60)
         child_pid = int((DIRECTORY / 'buffer-child.pid').read_text())
         os.kill(child_pid, 0)
-        running = api('/builds/' + overflow)
+        running = wait(lambda: running_build(overflow), 60)
         check('log fault starts a real running build and descendant', running['status'] == 'running')
         overflow_attempt = running['jobs'][0]['attempts'][-1]['id']
         (DIRECTORY / 'pause-log-storage').touch()
