@@ -124,7 +124,9 @@ func (workload *serviceWorkload) awaitTree(test *testing.T, connection serviceCo
 		}
 		select {
 		case event := <-connection.finished:
-			test.Fatalf("task ended before a live descendant: %s\nWorker logs:\n%s", event.PayloadJson, connection.peer.taskLogs(id))
+			if event.AttemptId == id {
+				test.Fatalf("task %s ended before a live descendant: %s\nWorker logs:\n%s", id, event.PayloadJson, connection.peer.taskLogs(id))
+			}
 		default:
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -190,21 +192,29 @@ func (workload *serviceWorkload) awaitTree(test *testing.T, connection serviceCo
 
 func (workload *serviceWorkload) awaitSuccess(test *testing.T, connection serviceConnection, id string) {
 	test.Helper()
-	select {
-	case event := <-connection.finished:
-		var result struct{ Status string }
-		if event.AttemptId != id || json.Unmarshal([]byte(event.PayloadJson), &result) != nil || result.Status != "succeeded" {
-			test.Fatalf("task after service restart did not succeed: %+v\nWorker logs:\n%s", event, connection.peer.taskLogs(id))
+	timer := time.NewTimer(45 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case event := <-connection.finished:
+			if event.AttemptId != id {
+				continue
+			}
+			var result struct{ Status string }
+			if json.Unmarshal([]byte(event.PayloadJson), &result) != nil || result.Status != "succeeded" {
+				test.Fatalf("task after service restart did not succeed: %+v\nWorker logs:\n%s", event, connection.peer.taskLogs(id))
+			}
+			workload.mutex.Lock()
+			report := workload.reports[id]["success"]
+			workload.mutex.Unlock()
+			if report.PID <= 0 {
+				test.Fatal("successful terminal event has no real workload execution")
+			}
+			test.Log("fresh Agent/Worker completed another pinned Git task after service restart")
+			return
+		case <-timer.C:
+			test.Fatal("task after restart never completed")
 		}
-		workload.mutex.Lock()
-		report := workload.reports[id]["success"]
-		workload.mutex.Unlock()
-		if report.PID <= 0 {
-			test.Fatal("successful terminal event has no real workload execution")
-		}
-		test.Log("fresh Agent/Worker completed another pinned Git task after service restart")
-	case <-time.After(45 * time.Second):
-		test.Fatal("task after restart never completed")
 	}
 }
 

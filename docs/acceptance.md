@@ -89,6 +89,8 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 
 `TestNativeServiceLifecycle` 同时增加受控在途任务的真实服务重启 / 停止、OS 进程账户与归属、工作目录清理和后续任务成功检查。[42773543511](https://github.com/zhubby/artifact-kit/actions/runs/42773543511) 在 `2ae03c150a88db965d15c8889625e74ce1db8796` 上的 Linux amd64、macOS arm64、Windows amd64 三个原生作业全部通过：每类 VM 均实际清理两次在途 Worker / 步骤 / 后代及其工作目录，并成功执行两次后续任务，最终服务、账户及目录清理通过。该精确 SHA 的完整五作业 CI 也全部成功；原三类空闲服务结果仍按上节历史运行记录。固定 Git 测试程序不代表真实应用、实体机重启、SDK 或发行签名。
 
+后续 [42786554877](https://github.com/zhubby/artifact-kit/actions/runs/42786554877) 的 macOS arm64 服务作业暴露验收观察器的消息归属错误：前一成功任务的完成事件在确认到达 Agent 前重复传递，等待下一任务时被误读。两项前台 Agent 回归明确插入已完成任务的重复通知，修复前分别误判当前进程树结束和下一任务失败；按 attempt ID 筛选后两项通过，仍核对当前任务实际运行、进程树终止和目录清理。等待完成结果使用固定总超时，重复消息不延长等待；该失败运行保留为失败，最终结果以最新提交的完整 CI 为准。
+
 ### 五种宿主系统与架构的原生 CI
 
 原生矩阵增加 `ubuntu-24.04-arm`（Linux arm64）与 `macos-15-intel`（macOS amd64），补齐五个 Agent 二进制目标的原生运行覆盖。标签来自 [GitHub 官方 runner 列表](https://github.com/actions/runner-images#available-images)。五种组合均执行 Go vet / race，以及显式启用的专用账户服务安装、在途任务重启 / 停止、进程树与工作目录清理、后续任务和卸载验收。

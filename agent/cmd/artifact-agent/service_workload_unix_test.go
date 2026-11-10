@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	pb "github.com/artifact-kit/agent/gen/agentv1"
 	"github.com/artifact-kit/agent/internal/config"
 )
 
@@ -22,7 +23,7 @@ func TestForegroundAgentStopsActiveProcessTree(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	for _, scenario := range []string{"interrupt", "agent-crash", "worker-sigterm"} {
+	for _, scenario := range []string{"interrupt", "agent-crash", "worker-sigterm", "replayed-before-tree", "replayed-before-success"} {
 		test.Run(scenario, func(test *testing.T) {
 			private, err := filepath.EvalSymlinks(test.TempDir())
 			if err != nil {
@@ -55,6 +56,17 @@ func TestForegroundAgentStopsActiveProcessTree(test *testing.T) {
 				}
 			})
 			connection := awaitServiceConnection(test, peer)
+			if scenario == "replayed-before-tree" || scenario == "replayed-before-success" {
+				completed := workload.assign(test, connection, 2, "success")
+				workload.awaitSuccess(test, connection, completed)
+				// Terminal events may be replayed before their acknowledgment reaches
+				// the Agent. Deliver a duplicate at the observer boundary deterministically.
+				connection.finished <- &pb.AgentEvent{Kind: "finished", AttemptId: completed, PayloadJson: `{"status":"succeeded"}`}
+				if scenario == "replayed-before-success" {
+					completed = workload.assign(test, connection, 3, "success")
+					workload.awaitSuccess(test, connection, completed)
+				}
+			}
 			id := workload.assign(test, connection, 1, "parent")
 			treeStopped, workerPID := workload.awaitTree(test, connection, id, command.Process.Pid, owner.Username, root)
 			if scenario == "worker-sigterm" {
