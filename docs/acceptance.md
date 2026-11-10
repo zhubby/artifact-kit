@@ -36,7 +36,8 @@
 | 检查 | 结果与证据 |
 |---|---|
 | Rust 格式与静态检查 | `cargo fmt --all --check`、`cargo clippy --all-targets -- -D warnings` 通过 |
-| Rust 测试 | 17 项通过：9 项配置 / 加密 / 权限 / 匹配测试，8 项显式启用的真实 PostgreSQL 测试 |
+| Rust 测试 | 9 项配置 / 加密 / 权限 / 匹配测试、8 项显式启用的真实 PostgreSQL 测试、1 项真实 HTTPS 信任回归通过；TLS 测试另有一个子进程辅助入口 |
+| S3 TLS 信任 | 实际 `Storage::initialize` 在独立子进程加载指定的 CA 信任文件，受信 CA 连接成功、无关 CA 和错误主机名均被拒绝；独立 Python HTTPS 客户端验证同一证书链 |
 | Go 检查 | `go vet ./...`、`go test -race ./... -count=1` 通过；不启用实时环境时协议联测会显式跳过 |
 | 服务启动失败回归 | 真实 `service-run` 子进程在未注册配置下报错后必须以非零状态退出；修复前进程存活并在 5 秒后触发测试超时，修复后通过 |
 | 原生服务生命周期 | [42756742531](https://github.com/zhubby/artifact-kit/actions/runs/42756742531) 在 `23ab4ac` 上的 Linux amd64、macOS arm64、Windows amd64 三个 native-agent 作业全部通过：真实服务管理器、专用账户、mTLS、重启 / 停止 / 卸载及私有配置权限；完整 Linux 流水线另行核验，不由服务结果推断 |
@@ -53,7 +54,9 @@
 | 配置与部署文件 | 五个示例通过真实 Rust Recipe 解析；JSON schema 语法、shell 脚本语法、Compose 配置校验通过 |
 | 远端 CI | Linux / macOS / Windows 原生 Agent 检查通过；[诊断运行 42746144635](https://github.com/zhubby/artifact-kit/actions/runs/42746144635) 确认 Linux S3 配置权限错误，已本地复现并修复；完整流水线现包含 SSH 与冷恢复，最新结果见 [main Actions](https://github.com/zhubby/artifact-kit/actions/workflows/ci.yml?query=branch%3Amain) |
 
-普通 `cargo test --all-targets` 会跳过需要数据库的 8 项测试；本次另外设置 `AK_TEST_DATABASE_URL` 并使用 `--ignored` 执行。测试为每次运行创建隔离 schema，不能以默认命令中的 ignored 项冒充数据库验收。
+普通 `cargo test --all-targets` 会跳过需要数据库的 8 项测试；本次另外设置 `AK_TEST_DATABASE_URL` 并使用 `--include-ignored` 执行。测试为每次运行创建隔离 schema，不能以默认命令中的 ignored 项冒充数据库验收。
+
+TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同一证书链在独立 Python 客户端通过，但实际 Storage 客户端使用 WebPKI 根证书、忽略指定的 CA 信任文件并报 `UnknownIssuer`。切换为系统根证书后通过受信、错误 CA 和错误主机名三种请求。该 loopback HTTPS 服务只验证真实产品客户端的 TLS 行为，不代替完整 S3、正式域名或生产部署验收。
 
 ### 数据库与本机回归
 
