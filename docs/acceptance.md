@@ -38,13 +38,14 @@
 | Rust 格式与静态检查 | `cargo fmt --all --check`、`cargo clippy --all-targets -- -D warnings` 通过 |
 | Rust 测试 | 17 项通过：9 项配置 / 加密 / 权限 / 匹配测试，8 项显式启用的真实 PostgreSQL 测试 |
 | Go 检查 | `go vet ./...`、`go test -race ./... -count=1` 通过；不启用实时环境时协议联测会显式跳过 |
+| 验收启动回归 | 3 项真实子进程测试通过：提前退出立即报告状态与日志、就绪超时终止进程、健康检查成功后保留运行进程 |
 | 跨语言协议 | 独立 Go 客户端与真实 Rust TLS / gRPC 服务的注册、身份、事件、日志及制品联测通过；实际暂停 S3 验证日志 / 制品存储阻塞不阻断续租 |
 | 原生端到端 | `scripts/acceptance.py --keep-alive` 35 项检查通过，详细边界见下节 |
 | 前端 | TypeScript 检查、生产构建和 Docker 镜像构建通过；容器运行的控制台通过 10 项真实后台浏览器测试 |
 | Agent 编译 | Linux amd64 / arm64、Darwin amd64 / arm64、Windows amd64 五个目标二进制生成成功 |
-| Windows 测试编译 | executor 测试可生成 Windows amd64 `.test.exe`，**未在 Windows 执行** |
+| Windows 原生回归 | GitHub `windows-latest` 上 `go vet ./...` 与 `go test -race ./...` 通过，实际执行 Job Object 子进程树终止回归；未验收系统服务与真实 Windows 应用 |
 | 配置与部署文件 | 五个示例通过真实 Rust Recipe 解析；JSON schema 语法、shell 脚本语法、Compose 配置校验通过 |
-| 远端 CI | 已提供 GitHub Actions 工作流，**没有运行远端 CI，不声称 CI 已通过** |
+| 远端 CI | [首次运行 42735894958](https://github.com/zhubby/artifact-kit/actions/runs/42735894958) 的 Linux / macOS / Windows 原生 Agent 检查通过；Linux 完整端到端控制面启动超时，正在定位，**整体 CI 尚未通过** |
 
 普通 `cargo test --all-targets` 会跳过需要数据库的 8 项测试；本次另外设置 `AK_TEST_DATABASE_URL` 并使用 `--ignored` 执行。测试为每次运行创建隔离 schema，不能以默认命令中的 ignored 项冒充数据库验收。
 
@@ -115,7 +116,7 @@
 | macOS amd64 Agent | CGO=0 二进制已生成 | 未运行 | Intel Mac 与对应工具链 |
 | Linux amd64 Agent | CGO=0 ELF 已生成 | Linux 容器中注册 / 心跳 / 续连通过；实体宿主未运行 | Linux 服务账户、systemd 安装 / 重启 / SDK 与原生应用构建 |
 | Linux arm64 Agent | CGO=0 ELF 已生成 | 未运行 | arm64 Linux 主机与工具链 |
-| Windows amd64 Agent | PE 已生成；Job Object 测试已交叉编译 | 未运行 | Windows Server / Windows、SCM 服务、Job Object 取消 / 崩溃测试 |
+| Windows amd64 Agent | PE 已生成；Job Object 测试已交叉编译 | GitHub Windows runner 原生 Go race 与 Job Object 子进程终止回归通过 | Windows 实体宿主、SCM 服务安装 / 重启、真实构建与故障验收 |
 | Linux 应用 | Rust 配置模板已解析 | 尚未构建真实项目应用 | Linux 宿主、项目依赖、原生运行或安装验收 |
 | macOS 应用 | Xcode 模板已解析；最小 C 可执行文件实际编译 | arm64 C CLI + ad-hoc 签名 / 校验通过 | 完整 Xcode `.app`、发行证书、notarization / 安装验收 |
 | Windows 应用 | Rust 配置模板已解析 | 尚未构建真实项目应用 | Windows 工具链、Authenticode 证书与安装验收 |

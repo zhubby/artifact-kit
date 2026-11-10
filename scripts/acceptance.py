@@ -197,27 +197,52 @@ def terminal(build_id, status):
     return wait_for(complete, 120)
 
 
-def start_control():
+def stop_process(process):
+    if process is not None:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+        process.wait(timeout=5)
+
+
+def start_control(timeout=30):
+    endpoint = urllib.parse.urlsplit(BASE)
     try:
-        with socket.create_connection(('127.0.0.1', 8080), timeout=1):
-            raise RuntimeError('Port 8080 is already occupied; stop the manually started control plane first.')
+        with socket.create_connection((endpoint.hostname, endpoint.port), timeout=1):
+            raise RuntimeError(f'Port {endpoint.port} is already occupied; stop the manually started control plane first.')
     except ConnectionRefusedError:
         pass
-    log = open(DIRECTORY / 'control.log', 'ab')
-    process = subprocess.Popen([str(ROOT / 'target/debug/artifact-control')], cwd=ROOT, env=dict(os.environ, GIT_SSL_CAINFO=str(ROOT / '.local/pki/ca.pem')), stdout=log, stderr=log)
-    log.close()
-    wait_for(lambda: urllib.request.urlopen(BASE + '/healthz', timeout=2).status == 200, 30)
-    return process
+    log_path = DIRECTORY / 'control.log'
+    with log_path.open('ab') as log:
+        process = subprocess.Popen([str(ROOT / 'target/debug/artifact-control')], cwd=ROOT, env=dict(os.environ, GIT_SSL_CAINFO=str(ROOT / '.local/pki/ca.pem')), stdout=log, stderr=log)
+
+    def ready():
+        status = process.poll()
+        if status is not None:
+            details = log_path.read_text(errors='replace')[-8192:]
+            raise RuntimeError(f'control plane exited with status {status}; see {log_path}\n{details}')
+        with urllib.request.urlopen(BASE + '/healthz', timeout=2) as response:
+            return response.status == 200
+
+    try:
+        wait_for(ready, timeout)
+        return process
+    except BaseException:
+        stop_process(process)
+        raise
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--keep-alive', action='store_true')
     options = parser.parse_args()
-    server, git_password, commit, signing = create_fixture()
-    control = start_control()
-    agent = None
+    server = control = agent = agent_log = None
     try:
+        server, git_password, commit, signing = create_fixture()
+        control = start_control()
         api('/auth/login', {'username': os.environ['AK_BOOTSTRAP_USERNAME'], 'password': os.environ['AK_BOOTSTRAP_PASSWORD']})
         credential = api('/credentials', {'name': 'acceptance-' + RUN_ID, 'kind': 'https', 'username': 'fixture', 'secret': git_password})['id']
         check('credential response redacts secret', git_password not in json.dumps(api('/credentials')))
@@ -368,14 +393,12 @@ def main():
                 time.sleep(1)
     finally:
         for process in (agent, control):
-            if process is not None and process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
-        server.shutdown()
+            stop_process(process)
+        if agent_log is not None:
+            agent_log.close()
+        if server is not None:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == '__main__':

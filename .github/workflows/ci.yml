@@ -22,6 +22,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy && rustup default 1.95.0
       - run: sh scripts/local-services.sh
+      - run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
       - run: cargo fmt --all --check && cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked --all-targets -- --include-ignored
       - run: go vet ./... && go test -race ./... && CGO_ENABLED=0 go build -o bin/artifact-agent ./cmd/artifact-agent
@@ -39,12 +40,19 @@ jobs:
           harness_pid=$!
           (cd web && npm run start -- --hostname 127.0.0.1) > .local/web.log 2>&1 &
           web_pid=$!
-          trap 'kill -INT "$harness_pid"; kill "$web_pid" || true' EXIT
+          cleanup() {
+            kill -INT "$harness_pid" 2>/dev/null || true
+            kill "$web_pid" 2>/dev/null || true
+            wait "$harness_pid" 2>/dev/null || true
+            wait "$web_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
           for attempt in $(seq 1 360); do
             if grep -q 'ACCEPTANCE READY' .local/acceptance-run.log; then break; fi
             if ! kill -0 "$harness_pid" 2>/dev/null; then cat .local/acceptance-run.log; exit 1; fi
             sleep 1
           done
+          grep -q 'ACCEPTANCE READY' .local/acceptance-run.log
           test -f .local/acceptance/latest.json
           export AK_LIVE_TESTS=1
           export AK_LIVE_S3_CONTAINER=artifact-kit-s3-test
@@ -52,6 +60,21 @@ jobs:
           export AK_LIVE_PROJECT_ID="$(python3 -c 'import json; print(json.load(open(".local/acceptance/latest.json"))["project_id"])')"
           (cd agent && go test -race -v ./internal/client -run TestLiveRustGoProtocol)
           (cd web && npm test)
+      - name: Preserve acceptance diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-acceptance-diagnostics
+          retention-days: 7
+          include-hidden-files: true
+          path: |
+            .local/acceptance-run.log
+            .local/web.log
+            .local/acceptance/*/control.log
+            .local/acceptance/*/agent.log
+            .local/acceptance/*/evidence.json
+            web/test-results/
+            web/playwright-report/
   native-agent:
     strategy:
       matrix:

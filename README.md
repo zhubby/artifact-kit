@@ -54,6 +54,7 @@ bin/artifact-agent run --config ../.local/agent/agent.json
 ## 验证
 
 ```sh
+python3 -m unittest discover -s scripts -p 'test_*.py' -v
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
