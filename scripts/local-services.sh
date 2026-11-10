@@ -22,4 +22,5 @@ if ! docker inspect artifact-kit-s3-test >/dev/null 2>&1; then
 else
   docker start artifact-kit-s3-test >/dev/null
 fi
+python3 scripts/wait_local_services.py
 printf '%s\n' 'Local PostgreSQL: 127.0.0.1:15432; authenticated S3: 127.0.0.1:19000.'
