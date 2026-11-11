@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const evidence = JSON.parse(readFileSync(resolve(process.cwd(), "../.local/acceptance/latest.json"), "utf8")) as { build_id: string; project_id: string; release_id: string; partial_build_id?: string; failed_build_id?: string; collision_build_id?: string };
+const evidence = JSON.parse(readFileSync(process.env.ARTIFACTORY_BROWSER_EVIDENCE || resolve(process.cwd(), "../.local/acceptance/latest.json"), "utf8")) as { build_id: string; project_id: string; release_id: string; partial_build_id?: string; failed_build_id?: string; collision_build_id?: string };
 const username = process.env.ARTIFACTORY_BOOTSTRAP_USERNAME;
 const password = process.env.ARTIFACTORY_BOOTSTRAP_PASSWORD;
 if (!username || !password) throw new Error("Load .local/env and run scripts/acceptance.py --keep-alive first.");
@@ -129,6 +129,9 @@ test("readonly identity cannot trigger builds or modify nodes", async ({ page })
   await expect(page.getByRole("button", { name: "发起构建" })).toHaveCount(0);
   const denied = await page.request.post(`/api/v1/projects/${evidence.project_id}/builds`, { headers: { "x-artifactory-csrf": "1" }, data: { ref: "main" } });
   expect(denied.status()).toBe(403);
+  await page.goto("/builds/new");
+  await expect(page.getByText("当前账号没有发起构建的权限。", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "继续", exact: true })).toHaveCount(0);
   await page.goto("/nodes");
   await expect(page.getByRole("heading", { name: "构建节点", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "接入节点" })).toHaveCount(0);
@@ -154,7 +157,7 @@ test("SSE reconnect and failed publication never imply overall success", async (
   }
 });
 
-test("project and AI build forms report missing model configuration", async ({ page }, testInfo) => {
+test("real repository references and the build wizard preserve model configuration errors", async ({ page }, testInfo) => {
   await login(page);
   const response = await page.request.get(`/api/v1/projects/${evidence.project_id}`);
   const source = await response.json() as { repository_url: string; credential_id: string; signing_profiles: string[] };
@@ -168,9 +171,20 @@ test("project and AI build forms report missing model configuration", async ({ p
   await page.getByRole("dialog").getByRole("button", { name: "保存", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.getByRole("link", { name: projectName, exact: true }).click();
+  const referenceResponse = page.waitForResponse(response => new URL(response.url()).pathname.endsWith("/refs"));
   await page.getByRole("button", { name: "发起构建", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/builds/new\\?project=`));
+  const references = await referenceResponse;
+  expect(references.status()).toBe(200);
+  expect(await references.json()).toMatchObject({
+    default_ref: "refs/heads/main", branches: [{ name: "main", ref: "refs/heads/main" }], tags: [],
+  });
+  await expect(page.getByRole("radio", { name: "分支 main", exact: true })).toBeChecked();
+  await page.getByRole("button", { name: "继续", exact: true }).click();
   await page.locator('textarea[name="goal"]').fill("Build the native C application and collect dist/app");
-  await page.getByRole("dialog").getByRole("button", { name: "发起构建", exact: true }).click();
+  await page.getByRole("button", { name: "继续", exact: true }).click();
+  await page.getByRole("button", { name: "继续", exact: true }).click();
+  await page.getByRole("button", { name: "发起构建", exact: true }).click();
   // This regression server seeds pre-migration builds and has no model key.
   // Real-provider execution is covered by scripts/ai_acceptance.py.
   await expect(page).toHaveURL(/\/builds\/[^/]+$/);

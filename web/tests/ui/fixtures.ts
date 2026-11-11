@@ -29,6 +29,14 @@ export const project: Project = {
   build_count: 1234,
   last_build: { id: "build-main", status: "running", created_at: created },
 };
+export const repositoryRefs = {
+  default_ref: "refs/heads/main",
+  branches: [
+    { name: "main", ref: "refs/heads/main", oid: "a".repeat(40) },
+    { name: "release/v1", ref: "refs/heads/release/v1", oid: "b".repeat(40) },
+  ],
+  tags: [{ name: "v1.2.0", ref: "refs/tags/v1.2.0", oid: "c".repeat(40) }],
+};
 export const build: Build = {
   id: "build-main",
   project_id: project.id,
@@ -198,6 +206,7 @@ export async function fixtureAPI(page: Page, role: User["role"] = "admin") {
       "/auth/me": { id: "user-main", username: "alex", role },
       "/projects": [project],
       [`/projects/${project.id}`]: project,
+      [`/projects/${project.id}/refs`]: repositoryRefs,
       "/builds": [
         build,
         {

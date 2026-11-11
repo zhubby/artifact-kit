@@ -60,10 +60,14 @@ test("invalid JSON is a localized form error and never reaches the backend", asy
   const events = await fixtureAPI(page);
   await page.goto("/");
   await page.getByRole("button", { name: "发起构建", exact: true }).click();
+  await expect(page.getByRole("radio", { name: "分支 main", exact: true })).toBeChecked();
+  await page.getByRole("button", { name: "继续", exact: true }).click();
   await page.locator('textarea[name="goal"]').fill("Build the desktop executable");
+  await page.getByRole("button", { name: "继续", exact: true }).click();
+  await page.getByRole("button", { name: "继续", exact: true }).click();
+  await page.getByText("高级参数（可选）", { exact: true }).click();
   await page.locator('textarea[name="parameters"]').fill('{"unfinished":');
   await page
-    .getByRole("dialog")
     .getByRole("button", { name: "发起构建", exact: true })
     .click();
   await expect(page.locator(".error-box")).toContainText(

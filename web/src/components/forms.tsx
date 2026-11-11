@@ -3,7 +3,6 @@
 import { useUI } from "@/components/providers";
 
 import { useState, type FormEvent, type ReactNode } from "react";
-import { useRouter } from "next/navigation";
 import { CopyButton, ErrorBox, Field } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
@@ -191,80 +190,6 @@ export function ProjectForm({
         </div>)}
         <Button type="button" variant="secondary" onClick={() => setBindings([...bindings, {repository_url: "", credential_id: ""}])}>{t("ai.addBinding")}</Button>
       </fieldset>
-    </SubmitForm>
-  );
-}
-
-export function BuildForm({
-  projects,
-  projectID,
-  done,
-}: {
-  projects: Project[];
-  projectID?: string;
-  done: () => void;
-}) {
-  const { t } = useUI();
-  const router = useRouter();
-  return (
-    <SubmitForm
-      label={t("builds.start")}
-      onCancel={done}
-      onSubmit={async (form) => {
-        const result = await mutation<{ id: string }>(
-          `/projects/${string(form, "project_id")}/builds`,
-          {
-            ref: string(form, "ref"),
-            parameters: JSON.parse(string(form, "parameters") || "{}"),
-            goal: string(form, "goal"),
-            target_requirements: form.getAll("target_platform").map((value) => { const [os, arch] = String(value).split("/"); return {os, arch}; }),
-            release_version: string(form, "release_version") || null,
-          },
-        );
-        done();
-        router.push(`/builds/${result.id}`);
-      }}
-    >
-      <Field label={t("projects.project")}>
-        <select
-          name="project_id"
-          className="input"
-          required
-          defaultValue={projectID || projects[0]?.id}
-        >
-          {projects.map((project) => (
-            <option value={project.id} key={project.id}>
-              {project.name}
-            </option>
-          ))}
-        </select>
-      </Field>
-      <Field label={t("builds.ref")} hint={t("builds.refHint")}>
-        <Input
-          name="ref"
-          defaultValue="HEAD"
-          required
-          placeholder="main / refs/tags/v1.0.0 / commit"
-        />
-      </Field>
-      <Field label={t("ai.goal")} hint={t("ai.goalHint")}>
-        <Textarea name="goal" required maxLength={16000} placeholder={t("ai.goalPlaceholder")} />
-      </Field>
-      <fieldset>
-        <legend className="mb-3 text-sm font-medium">{t("builds.platforms")}</legend>
-        <div className="flex flex-wrap gap-4">{["darwin/arm64", "darwin/amd64", "linux/amd64", "linux/arm64", "windows/amd64"].map((platform) => <label key={platform} className="flex items-center gap-2 text-xs"><input type="checkbox" name="target_platform" value={platform} />{platform.replace("darwin", "macOS")}</label>)}</div>
-        <p className="mt-2 text-xs leading-5 text-muted-foreground">{t("ai.platformHint")}</p>
-      </fieldset>
-      <Field label={t("builds.parameters")} hint={t("builds.parametersHint")}>
-        <Textarea name="parameters" defaultValue="{}" spellCheck={false} />
-      </Field>
-      <Field label={t("builds.releaseOptional")} hint={t("builds.releaseHint")}>
-        <Input
-          name="release_version"
-          maxLength={100}
-          placeholder={t("builds.releasePlaceholder")}
-        />
-      </Field>
     </SubmitForm>
   );
 }

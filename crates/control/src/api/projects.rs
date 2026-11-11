@@ -1,7 +1,7 @@
 use crate::{
     auth::Auth,
     error::{ApiError, Result},
-    source,
+    source, source_cache,
     state::AppState,
 };
 use axum::{
@@ -10,6 +10,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sqlx::Row;
 use uuid::Uuid;
 
 pub async fn list(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
@@ -31,6 +32,29 @@ pub async fn detail(
             .fetch_one(&state.pool)
             .await?,
     ))
+}
+
+pub async fn refs(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path(id): Path<Uuid>,
+) -> Result<Json<source_cache::RepositoryRefs>> {
+    auth.project(id, "read")?;
+    let project = sqlx::query("SELECT repository_url,credential_id FROM projects WHERE id=$1")
+        .bind(id)
+        .fetch_one(&state.pool)
+        .await?;
+    source_cache::list_refs(
+        &state,
+        &project.get::<String, _>("repository_url"),
+        project.get("credential_id"),
+    )
+    .await
+    .map(Json)
+    .map_err(|error| match error {
+        source_cache::RefQueryError::Timeout => ApiError::GatewayTimeout(error.to_string()),
+        _ => ApiError::BadGateway(error.to_string()),
+    })
 }
 
 #[derive(Deserialize)]

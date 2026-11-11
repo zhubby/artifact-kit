@@ -19,6 +19,8 @@ use uuid::Uuid;
 
 #[path = "database/registration.rs"]
 mod registration;
+#[path = "database/source_refs.rs"]
+mod source_refs;
 
 #[tokio::test]
 #[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL and git-lfs"]

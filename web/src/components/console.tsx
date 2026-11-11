@@ -6,8 +6,8 @@ import SpotlightCard from "@/components/react-bits/SpotlightCard";
 import { useUI } from "@/components/providers";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { Suspense, useEffect, useRef, useState } from "react";
 import {
   Activity,
   ArrowRight,
@@ -50,7 +50,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/dialog";
 import {
-  BuildForm,
   NodeForm,
   ProjectForm,
   SecretDialog,
@@ -58,6 +57,7 @@ import {
 } from "@/components/forms";
 import { BuildDetail } from "@/components/build-detail";
 import { BuildTable } from "@/components/build-table";
+import { BuildWizard } from "@/components/build-wizard";
 import { NodeOTA } from "@/components/agent-ota";
 import { Settings } from "@/components/settings";
 import { mutation, useRemote } from "@/lib/api";
@@ -91,6 +91,7 @@ export function Console() {
     { path: "/releases", label: t("navigation.releases"), icon: Package },
   ];
   const pathname = usePathname();
+  const router = useRouter();
   const pieces = pathname.split("/").filter(Boolean);
   const userRemote = useRemote<User>("/auth/me", 60000);
   const user = userRemote.data;
@@ -113,7 +114,6 @@ export function Console() {
   const [mobile, setMobile] = useState(false);
   const [newProject, setNewProject] = useState(false);
   const [editingProject, setEditingProject] = useState<Project>();
-  const [newBuild, setNewBuild] = useState(false);
   const [editingNode, setEditingNode] = useState<Node>();
   const [enrolling, setEnrolling] = useState(false);
   const [secret, setSecret] = useState<string>();
@@ -331,7 +331,7 @@ export function Console() {
                 {user.role !== "viewer" && (
                   <Button
                     disabled={!projects.data?.length}
-                    onClick={() => setNewBuild(true)}
+                    onClick={() => router.push("/builds/new")}
                   >
                     <Play />
                     {t("builds.start")}
@@ -497,7 +497,7 @@ export function Console() {
                   </Button>
                 )}
                 {project && user.role !== "viewer" && (
-                  <Button onClick={() => setNewBuild(true)}>
+                  <Button onClick={() => router.push(`/builds/new?project=${project.id}`)}>
                     <Play />
                     {t("builds.start")}
                   </Button>
@@ -630,7 +630,9 @@ export function Console() {
               )}
             </>
           ) : pieces[0] === "builds" ? (
-            pieces[1] ? (
+            pieces[1] === "new" ? (
+              projects.data ? <Suspense fallback={<Loading />}><BuildWizard projects={projects.data} user={user} /></Suspense> : <Loading />
+            ) : pieces[1] ? (
               <BuildDetail id={pieces[1]} user={user} />
             ) : (
               <>
@@ -642,7 +644,7 @@ export function Console() {
                   {user.role !== "viewer" && (
                     <Button
                       disabled={!projects.data?.length}
-                      onClick={() => setNewBuild(true)}
+                      onClick={() => router.push("/builds/new")}
                     >
                       <Play />
                       {t("builds.start")}
@@ -997,23 +999,6 @@ export function Console() {
             done={() => {
               setNewProject(false);
               setEditingProject(undefined);
-              void refresh();
-            }}
-          />
-        )}
-      </Modal>
-      <Modal
-        open={newBuild}
-        onOpenChange={setNewBuild}
-        title={t("builds.dialogTitle")}
-        description={t("builds.dialogDetail")}
-      >
-        {newBuild && (
-          <BuildForm
-            projects={projects.data || []}
-            projectID={project?.id}
-            done={() => {
-              setNewBuild(false);
               void refresh();
             }}
           />

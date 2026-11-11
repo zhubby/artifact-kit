@@ -19,6 +19,10 @@ pub enum ApiError {
     NotFound,
     #[error("{0}")]
     Conflict(String),
+    #[error("{0}")]
+    BadGateway(String),
+    #[error("{0}")]
+    GatewayTimeout(String),
     #[error("too many requests")]
     TooManyRequests(u64),
     #[error(transparent)]
@@ -51,13 +55,15 @@ impl IntoResponse for ApiError {
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::BadGateway(_) => StatusCode::BAD_GATEWAY,
+            Self::GatewayTimeout(_) => StatusCode::GATEWAY_TIMEOUT,
             Self::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
             Self::Internal(error) => {
                 tracing::error!(error = %error, "request failed");
                 StatusCode::INTERNAL_SERVER_ERROR
             }
         };
-        let message = if status.is_server_error() {
+        let message = if matches!(&self, Self::Internal(_)) {
             "internal server error".to_owned()
         } else {
             self.to_string()

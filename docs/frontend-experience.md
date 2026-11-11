@@ -18,6 +18,14 @@ React Bits 源码版本、完整许可证与适配说明见 `web/THIRD_PARTY_NOT
 
 AnimatedContent 使用 450ms 入场、60ms 组内错开，只在首次进入或路由变化时播放；轮询、SSE、语言及主题变化不重播。SpotlightCard 只在鼠标移动时按帧更新，不为触屏启动持续循环。
 
+## 对话式构建引导
+
+`/builds/new` 在控制台内展示独立的选项式对话，一次只显示一个当前问题，保留之前的回答。桌面端右侧展示配置摘要，较窄屏幕改为单列；所有选项使用原生单选或复选控件，进入新问题时管理标题焦点，并遵循现有减少动效偏好，不播放打字动画。
+
+项目与源码的初始选择、返回编辑、异步引用查询和提交状态由独立 `BuildWizard` 管理，不再使用构建弹窗。引用只在项目切换或显式刷新时查询，旧请求取消且迟到的响应不会覆盖当前项目。未确认前不创建构建、不调用模型；取消、刷新或离开页面后不保存草稿。详细接口及边界见 `docs/ai-builds.md`。
+
+`web/tests/ui/build-wizard.spec.ts` 覆盖入口、对话、引用搜索与失败降级、迟到响应、目标模板、平台约束、发布、参数校验、重复提交、角色权限、偏好切换及多尺寸双语主题截图。`build-source-edge.spec.ts` 补充大量引用时的默认项与当前选择可见性、连续方向键导航，以及手动输入与迟到响应的竞态。真实 HTTPS/SSH Git、凭据与信任验证位于控制端数据库测试，需显式提供隔离测试数据库；UI fixtures 不替代这些验证。
+
 ## 验证
 
 ```sh
@@ -33,6 +41,8 @@ ARTIFACTORY_UI_PRODUCTION=1 rtk npm run test:ui
 截图保存到忽略的 `.local/frontend-evidence/`，trace 与报告位于 `web/test-results/ui/`、`web/playwright-report/ui/`。真实后台验收继续运行原有 `rtk npm test`，需要按 README 启动 `scripts/acceptance.py --keep-alive` 并加载 `.local/env`。fixtures 不能代替真实构建、SSE、下载、发布和权限验收。
 
 两套测试的输出目录相互独立：真实后台用例使用 `web/test-results/live/`、`web/playwright-report/live/`，避免清理其他套件的 trace。
+
+隔离运行真实后台时，可通过 `ARTIFACTORY_BROWSER_EVIDENCE` 指定该运行独立的 evidence JSON，通过 `ARTIFACTORY_BROWSER_URL` 指定浏览器地址，不需要覆盖已有的 `.local/acceptance/latest.json`。
 
 ## 2026-11-10 本地验收记录
 
@@ -51,3 +61,23 @@ ARTIFACTORY_UI_PRODUCTION=1 rtk npm run test:ui
 真实后台用例验证原生构建、日志、制品下载、不可变发布、SSE 重连、部分目标失败与发布失败的独立状态、只读角色后端拒绝，以及从项目／构建表单交付实际制品。
 
 已检查深浅主题的登录、总览、构建详情及项目弹窗，并检查英文长文案、手机表格横向滚动、弹窗内部滚动、焦点与文本层次。原始截图索引为 `.local/frontend-evidence/screenshots.md`，摘要与哈希为 `manifest.json`，双主题预览为 `comparison.png`。截图使用 API fixtures；真实后台截图另存于 `web/test-results/live/`。浏览器验收使用 Chromium，手机为设备模拟，未包含实体 iOS Safari 验收。
+
+## 2026-11-12 构建引导验收记录
+
+| 验收项 | 结果 |
+| --- | --- |
+| TypeScript / Next.js 生产构建 | 通过 |
+| 独立 UI 全量套件 | 141 项通过；桌面、平板、手机各 47 项，其中构建引导共 54 项 |
+| 控制端常规测试 | 27 项通过；需显式环境的数据库用例另行执行 |
+| 隔离 PostgreSQL 数据库套件 | 显式执行全部 29 项，全部通过、无忽略项 |
+| 真实 Git HTTPS / SSH | 8 个访问与信任场景通过，包含错误凭据、错误主机及环境凭据隔离；远端引用保持不变 |
+| 真实后台浏览器回归 | 12 项通过；桌面与手机各 6 项，包含真实引用查询、引导提交及 viewer 直接访问保护 |
+| 原生后台验收准备 | 35 项检查通过 |
+| 格式与静态检查 | Rust fmt、Clippy（拒绝 warnings）、`git diff --check` 通过 |
+| 双语词条 | 中英各 521 项，键集合一致 |
+
+已检查桌面深色和手机浅色的构建确认界面。大列表测试确认默认分支及当前选择可见，连续方向键不会因选择后排序而反复跳回前一项；迟到响应不会覆盖手动输入或新项目的引用。
+
+独立 UI 用例使用 API fixtures；真实后台浏览器用例使用隔离的控制端、数据库、对象存储桶及受控 Git 仓库，验证真实引用读取、创建请求和缺少模型配置时的错误保留，不代表真实模型服务的成功执行。原生后台检查验证既有执行、日志、下载与发布行为，与引导提交后的 AI 执行验收分开记录。手机仍为 Chromium 设备模拟，不代表实体 iOS Safari 验收。
+
+隔离测试服务和临时数据库容器已停止，专用对象存储桶已清理；原有本地服务、私有配置和 `.local/acceptance/latest.json` 保留。本节仅记录实现阶段的本地验证，不代表部署验收。

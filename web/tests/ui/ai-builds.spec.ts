@@ -45,6 +45,9 @@ for (const locale of ["zh-CN", "en"] as const) {
     await page.keyboard.press("Escape");
     await page.goto("/projects/project-main");
     await page.getByRole("button", {name: locale === "en" ? "Start build" : "发起构建", exact: true}).click();
+    await expect(page).toHaveURL(/\/builds\/new\?project=project-main$/);
+    await expect(page.getByRole("radio", {name: locale === "en" ? "Branch main" : "分支 main", exact: true})).toBeChecked();
+    await page.getByRole("button", {name: locale === "en" ? "Continue" : "继续", exact: true}).click();
     await expect(page.locator('textarea[name="goal"]')).toBeVisible();
     await page.locator('textarea[name="goal"]').fill("Build a signed desktop release");
     await expect(page.getByText(/artifactory.yaml/)).toHaveCount(0);

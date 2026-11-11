@@ -17,6 +17,9 @@ use tokio::{
 };
 use uuid::Uuid;
 
+mod refs;
+pub use refs::{GitRef, RefQueryError, RepositoryRefs, list_refs};
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct LfsObject {
     pub path: String,

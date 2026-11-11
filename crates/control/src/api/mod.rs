@@ -125,6 +125,7 @@ pub fn router(state: AppState) -> Router {
             get(projects::detail).patch(projects::update),
         )
         .route("/api/v1/projects/{id}/builds", post(builds::create))
+        .route("/api/v1/projects/{id}/refs", get(projects::refs))
         .route("/api/v1/builds", get(builds::list))
         .route("/api/v1/builds/{id}", get(builds::detail))
         .route("/api/v1/builds/{id}/cancel", post(builds::cancel))
