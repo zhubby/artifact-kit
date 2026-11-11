@@ -58,10 +58,13 @@ import {
 } from "@/components/forms";
 import { BuildDetail } from "@/components/build-detail";
 import { BuildTable } from "@/components/build-table";
+import { NodeOTA } from "@/components/agent-ota";
 import { Settings } from "@/components/settings";
 import { mutation, useRemote } from "@/lib/api";
 import { asError } from "@/lib/errors";
 import type {
+  AgentRelease,
+  AgentUpdate,
   Artifact,
   Build,
   Credential,
@@ -94,6 +97,8 @@ export function Console() {
   const projects = useRemote<Project[]>(user ? "/projects" : null);
   const builds = useRemote<Build[]>(user ? "/builds" : null, 5000);
   const nodes = useRemote<Node[]>(user ? "/nodes" : null);
+  const agentReleases = useRemote<AgentRelease[]>(user ? "/agent-releases" : null);
+  const agentUpdates = useRemote<AgentUpdate[]>(user ? "/agent-updates" : null, 3000);
   const overview = useRemote<Overview>(user ? "/overview" : null);
   const releases = useRemote<Release[]>(user ? "/releases" : null);
   const artifacts = useRemote<Artifact[]>(
@@ -769,6 +774,7 @@ export function Console() {
                             {node.signing_profiles.join(", ")}
                           </div>
                         )}
+                        <NodeOTA node={node} user={user} releases={agentReleases.data || []} updates={agentUpdates.data || []} reload={async () => { await Promise.all([nodes.reload(), agentUpdates.reload()]); }} />
                         <details className="mt-4 text-[11px] text-muted-foreground">
                           <summary className="cursor-pointer">
                             {t("nodes.diagnostics")}

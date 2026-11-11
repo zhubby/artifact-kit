@@ -70,6 +70,13 @@ impl Storage {
             .to_string()
     }
 
+    pub fn agent_download_url(&self, key: &str) -> String {
+        self.public_bucket
+            .get_object(Some(&self.credentials), key)
+            .sign(Duration::from_secs(900))
+            .to_string()
+    }
+
     pub async fn put(&self, key: &str, body: Vec<u8>) -> Result<()> {
         let url = self
             .bucket

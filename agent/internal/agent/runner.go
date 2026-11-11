@@ -18,6 +18,7 @@ import (
 	pb "github.com/artifact-kit/agent/gen/agentv1"
 	"github.com/artifact-kit/agent/internal/client"
 	"github.com/artifact-kit/agent/internal/config"
+	"github.com/artifact-kit/agent/internal/ota"
 	"github.com/artifact-kit/agent/internal/worker"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -59,6 +60,9 @@ type Runner struct {
 	spoolBytes   int64
 	diagnostics  map[string]any
 	capabilities []string
+	workers      int
+	otaSession   string
+	otaHealthAt  time.Time
 }
 
 func Run(ctx context.Context, cfg config.Config) error {
@@ -69,6 +73,9 @@ func Run(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	diagnostics, capabilities := Doctor(cfg)
+	if os.Getenv("AK_OTA_DIRECTORY") != "" {
+		capabilities = append(capabilities, "agent-ota-v1")
+	}
 	runner := &Runner{config: cfg, tasks: map[string]*task{}, anchors: map[string]time.Time{}, notify: make(chan struct{}, 1), diagnostics: diagnostics, capabilities: capabilities}
 	_ = filepath.WalkDir(filepath.Join(cfg.Root, "spool"), func(_ string, entry os.DirEntry, err error) error {
 		if err == nil && !entry.IsDir() {
@@ -136,7 +143,8 @@ func (runner *Runner) heartbeat(kind string) *pb.AgentEvent {
 	runner.spoolMutex.Lock()
 	diagnostics["buffered_log_bytes"] = runner.spoolBytes
 	runner.spoolMutex.Unlock()
-	data, _ := json.Marshal(map[string]any{"active_attempts": active, "capabilities": runner.capabilities, "diagnostics": diagnostics})
+	diagnostics["agent_commit"] = Commit
+	data, _ := json.Marshal(map[string]any{"active_attempts": active, "capabilities": runner.capabilities, "diagnostics": diagnostics, "ota": runner.otaSnapshot()})
 	request := identifier()
 	runner.anchors[request] = time.Now()
 	for key, value := range runner.anchors {
@@ -153,6 +161,10 @@ func (runner *Runner) session(ctx context.Context, control pb.ControlClient) err
 	stream, err := control.Connect(ctx)
 	if err != nil {
 		return err
+	}
+	runner.otaSession = identifier()
+	if directory := os.Getenv("AK_OTA_DIRECTORY"); directory != "" {
+		_ = ota.Confirm(directory, runner.otaSession, "")
 	}
 	if err = stream.Send(runner.heartbeat("hello")); err != nil {
 		return err
@@ -239,6 +251,9 @@ func (runner *Runner) sendPending(stream pb.Control_ConnectClient) error {
 }
 
 func (runner *Runner) command(command *pb.Command) error {
+	if handled, err := runner.otaCommand(command); handled {
+		return err
+	}
 	runner.mutex.Lock()
 	current := runner.tasks[command.AttemptId]
 	if command.Kind == "assign" {
@@ -342,6 +357,9 @@ func (runner *Runner) launch(current *task, leaseSeconds uint32) {
 		runner.failedStart(current)
 		return
 	}
+	runner.mutex.Lock()
+	runner.workers++
+	runner.mutex.Unlock()
 	current.pipeMutex.Lock()
 	current.pipe = input
 	current.encoder = json.NewEncoder(input)
@@ -370,6 +388,7 @@ func (runner *Runner) launch(current *task, leaseSeconds uint32) {
 		}
 		_ = command.Wait()
 		runner.mutex.Lock()
+		runner.workers--
 		finished := current.finished
 		runner.mutex.Unlock()
 		if !finished {

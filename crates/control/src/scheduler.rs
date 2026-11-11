@@ -108,6 +108,9 @@ pub async fn tick(state: &AppState) -> Result<()> {
     expire(state).await?;
     let connections = state.connections.read().await.clone();
     for (node_id, connection) in connections {
+        if let Some(command) = crate::ota::next(state, node_id, connection.session).await? {
+            let _ = connection.sender.try_send(Ok(command));
+        }
         if let Some(command) = assign(state, node_id, connection.session).await? {
             let _ =
                 tokio::time::timeout(Duration::from_secs(2), connection.sender.send(Ok(command)))
@@ -161,7 +164,7 @@ pub async fn expire(state: &AppState) -> Result<()> {
 
 async fn assign(state: &AppState, node_id: Uuid, session: Uuid) -> Result<Option<Command>> {
     let mut transaction = state.pool.begin().await?;
-    let Some(node)=sqlx::query("SELECT * FROM nodes WHERE id=$1 AND active_session=$2 AND NOT revoked AND NOT draining AND last_seen>now()-interval '30 seconds' FOR UPDATE SKIP LOCKED")
+    let Some(node)=sqlx::query("SELECT * FROM nodes WHERE id=$1 AND active_session=$2 AND NOT revoked AND NOT draining AND NOT ota_draining AND certificate_expires_at>clock_timestamp() AND last_seen>now()-interval '30 seconds' FOR UPDATE SKIP LOCKED")
         .bind(node_id).bind(session).fetch_optional(&mut *transaction).await? else { return Ok(None); };
     let active:i64=sqlx::query_scalar("SELECT count(*) FROM attempts WHERE node_id=$1 AND status IN ('leased','running') AND lease_expires_at>now()")
         .bind(node_id).fetch_one(&mut *transaction).await?;

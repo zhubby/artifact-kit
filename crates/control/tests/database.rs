@@ -442,3 +442,244 @@ async fn node_revocation_audit_records_effective_irreversible_state() {
     assert_eq!(states, vec![true, true]);
     database.close().await;
 }
+
+#[tokio::test]
+#[ignore = "requires AK_TEST_DATABASE_URL"]
+async fn ota_uses_node_lock_and_pool_limit_and_never_changes_admin_drain() {
+    let database = Database::new().await;
+    let (_, _, _job) = database.fixture().await;
+    let first = database.node().await;
+    let second = database.node().await;
+    let release = Uuid::new_v4();
+    sqlx::query("INSERT INTO agent_releases(id,version,manifest,signature,manifest_hash) VALUES($1,'v-next',$2,'test','hash')")
+        .bind(release).bind(serde_json::json!({"assets":[{"os":"linux","arch":"amd64","name":"artifact-agent-linux-amd64"}]}).to_string()).execute(&database.state.pool).await.unwrap();
+    sqlx::query("UPDATE nodes SET capabilities=capabilities || '[\"agent-ota-v1\"]'::jsonb,agent_current_version='v-old',agent_launcher_version='v-old',draining=true").execute(&database.state.pool).await.unwrap();
+    sqlx::query("UPDATE node_pools SET agent_target_release=$1")
+        .bind(release)
+        .execute(&database.state.pool)
+        .await
+        .unwrap();
+    let (a, b) = tokio::join!(
+        scheduler::tick(&database.state),
+        scheduler::tick(&database.state)
+    );
+    a.unwrap();
+    b.unwrap();
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM agent_updates WHERE status='offered'")
+            .fetch_one(&database.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        count, 1,
+        "pool concurrency must be one across racing schedulers"
+    );
+    let updates: Vec<Uuid> = sqlx::query_scalar("SELECT node_id FROM agent_updates")
+        .fetch_all(&database.state.pool)
+        .await
+        .unwrap();
+    assert!(updates[0] == first || updates[0] == second);
+    let attempts: i64 = sqlx::query_scalar("SELECT count(*) FROM attempts")
+        .fetch_one(&database.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(attempts, 0);
+    let drained: i64 = sqlx::query_scalar("SELECT count(*) FROM nodes WHERE draining")
+        .fetch_one(&database.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(drained, 2, "OTA must preserve administrator drain");
+    database.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires AK_TEST_DATABASE_URL"]
+async fn ota_management_rejects_operator_and_project_tokens() {
+    let database = Database::new().await;
+    let (project, _, _) = database.fixture().await;
+    let user = Uuid::new_v4();
+    sqlx::query("INSERT INTO users(id,username,password_hash,role) VALUES($1,'ota-operator','unused','operator')").bind(user).execute(&database.state.pool).await.unwrap();
+    sqlx::query("INSERT INTO sessions VALUES($1,$2,now()+interval '1 hour')")
+        .bind(crypto::hash("ota-session"))
+        .bind(user)
+        .execute(&database.state.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO api_tokens(id,user_id,name,token_hash,project_ids,scopes,expires_at) VALUES($1,$2,'scoped',$3,$4,'{read,build,release}',now()+interval '1 hour')").bind(Uuid::new_v4()).bind(user).bind(crypto::hash("ota-token")).bind(vec![project]).execute(&database.state.pool).await.unwrap();
+    let router = api::router(database.state.clone());
+    for (method, path, body) in [
+        (
+            "POST",
+            "/api/v1/agent-releases".to_string(),
+            r#"{"tag":"v-next"}"#.to_string(),
+        ),
+        (
+            "PATCH",
+            format!("/api/v1/nodes/{}/agent-update", Uuid::new_v4()),
+            r#"{"release_id":null}"#.to_string(),
+        ),
+        (
+            "PATCH",
+            "/api/v1/pools/00000000-0000-0000-0000-000000000001/agent-update".into(),
+            r#"{"release_id":null}"#.into(),
+        ),
+        (
+            "POST",
+            format!("/api/v1/agent-updates/{}/retry", Uuid::new_v4()),
+            "{}".into(),
+        ),
+        (
+            "POST",
+            format!("/api/v1/agent-updates/{}/cancel", Uuid::new_v4()),
+            "{}".into(),
+        ),
+    ] {
+        for token in [false, true] {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(&path)
+                .header("content-type", "application/json")
+                .header("origin", "http://localhost:3000")
+                .header("x-artifact-csrf", "1");
+            request = if token {
+                request.header("authorization", "Bearer ota-token")
+            } else {
+                request.header("cookie", "ak_session=ota-session")
+            };
+            assert_eq!(
+                router
+                    .clone()
+                    .oneshot(request.body(Body::from(body.clone())).unwrap())
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::FORBIDDEN,
+                "{method} {path} token={token}"
+            );
+        }
+    }
+    database.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires AK_TEST_DATABASE_URL"]
+async fn ota_failed_activation_pauses_pool_and_fences_stale_sessions() {
+    let database = Database::new().await;
+    let node = database.node().await;
+    let release = Uuid::new_v4();
+    sqlx::query("INSERT INTO agent_releases(id,version,manifest,signature,manifest_hash) VALUES($1,'v-next',$2,'test','hash')").bind(release).bind(serde_json::json!({"assets":[{"os":"linux","arch":"amd64","name":"artifact-agent-linux-amd64"}]}).to_string()).execute(&database.state.pool).await.unwrap();
+    sqlx::query("UPDATE nodes SET capabilities=capabilities || '[\"agent-ota-v1\"]'::jsonb,agent_current_version='v-old',agent_target_release=$1,draining=true WHERE id=$2").bind(release).bind(node).execute(&database.state.pool).await.unwrap();
+    scheduler::tick(&database.state).await.unwrap();
+    let id: Uuid = sqlx::query_scalar("SELECT id FROM agent_updates WHERE node_id=$1")
+        .bind(node)
+        .fetch_one(&database.state.pool)
+        .await
+        .unwrap();
+    let session = database.state.connections.read().await[&node].session;
+    let payload = serde_json::json!({"diagnostics":{"agent_version":"v-old"},"ota":{"update_id":id,"phase":"rolled_back","launcher_version":"v-old","error":"candidate crashed"}});
+    assert!(
+        artifact_control::ota::report(&database.state, node, Uuid::new_v4(), &payload)
+            .await
+            .is_err()
+    );
+    let status: String = sqlx::query_scalar("SELECT status FROM agent_updates WHERE id=$1")
+        .bind(id)
+        .fetch_one(&database.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "offered");
+    assert!(
+        artifact_control::ota::report(&database.state, node, session, &payload)
+            .await
+            .unwrap()
+    );
+    let flags:(bool,bool,bool)=sqlx::query_as("SELECT n.draining,n.ota_draining,p.agent_updates_paused FROM nodes n JOIN node_pools p ON p.id=n.pool_id WHERE n.id=$1").bind(node).fetch_one(&database.state.pool).await.unwrap();
+    assert_eq!(flags, (true, false, true));
+    scheduler::tick(&database.state).await.unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM agent_updates")
+        .fetch_one(&database.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "failed release must never loop automatically");
+    // Revocation and certificate expiry are enforced within the status transaction.
+    sqlx::query("UPDATE nodes SET revoked=true WHERE id=$1")
+        .bind(node)
+        .execute(&database.state.pool)
+        .await
+        .unwrap();
+    assert!(
+        artifact_control::ota::report(&database.state, node, session, &payload)
+            .await
+            .is_err()
+    );
+    sqlx::query("UPDATE nodes SET revoked=false,certificate_expires_at=now()-interval '1 minute' WHERE id=$1").bind(node).execute(&database.state.pool).await.unwrap();
+    assert!(
+        artifact_control::ota::report(&database.state, node, session, &payload)
+            .await
+            .is_err()
+    );
+    database.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires AK_TEST_DATABASE_URL"]
+async fn ota_retry_after_pool_move_respects_new_pool_capacity() {
+    let database = Database::new().await;
+    let node = database.node().await;
+    let other = database.node().await;
+    let release = Uuid::new_v4();
+    let prior = Uuid::new_v4();
+    let new_pool = Uuid::new_v4();
+    sqlx::query("INSERT INTO agent_releases(id,version,manifest,signature,manifest_hash) VALUES($1,'v-next','{}','test','hash')").bind(release).execute(&database.state.pool).await.unwrap();
+    sqlx::query("INSERT INTO agent_updates(id,node_id,pool_id,release_id,status,finished_at) VALUES($1,$2,'00000000-0000-0000-0000-000000000001',$3,'failed',now())").bind(prior).bind(node).bind(release).execute(&database.state.pool).await.unwrap();
+    sqlx::query("INSERT INTO node_pools(id,name) VALUES($1,'new pool')")
+        .bind(new_pool)
+        .execute(&database.state.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE nodes SET pool_id=$1")
+        .bind(new_pool)
+        .execute(&database.state.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO agent_updates(id,node_id,pool_id,release_id) VALUES($1,$2,$3,$4)")
+        .bind(Uuid::new_v4())
+        .bind(other)
+        .bind(new_pool)
+        .bind(release)
+        .execute(&database.state.pool)
+        .await
+        .unwrap();
+    let user = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO users(id,username,password_hash,role) VALUES($1,'admin','unused','admin')",
+    )
+    .bind(user)
+    .execute(&database.state.pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO sessions VALUES($1,$2,now()+interval '1 hour')")
+        .bind(crypto::hash("admin-session"))
+        .bind(user)
+        .execute(&database.state.pool)
+        .await
+        .unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/agent-updates/{prior}/retry"))
+        .header("content-type", "application/json")
+        .header("cookie", "ak_session=admin-session")
+        .header("x-artifact-csrf", "1")
+        .header("origin", "http://localhost:3000")
+        .body(Body::from("{}"))
+        .unwrap();
+    assert_eq!(
+        api::router(database.state.clone())
+            .oneshot(request)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::CONFLICT
+    );
+    database.close().await;
+}

@@ -53,3 +53,7 @@ curl --fail-with-body -X POST 'https://build.example.com/api/v1/projects/PROJECT
 发布版本的请求与会重新启用自动发布的 retry 均需要 release scope。更改项目仓库不会改变已经创建的构建源地址。凭据轮换应创建新的引用并修改项目；历史构建不静默切换凭据。
 
 当前列表为内部小团队规模的有界查询，并未提供全量导出、复杂分页或外部商店发布 API；Webhook / OIDC / 多实例并非隐藏开启的功能。
+
+## Agent 版本与升级
+
+版本目录、节点 / 节点池目标、执行记录、重试及取消见 [Agent OTA 管理接口](agent-ota.md#管理接口)。这些管理写操作只允许管理员会话，项目 API Token 不获得升级权限。

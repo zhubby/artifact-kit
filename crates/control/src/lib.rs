@@ -3,6 +3,7 @@ pub mod auth;
 pub mod crypto;
 pub mod error;
 pub mod grpc;
+pub mod ota;
 pub mod pki;
 pub mod recipe;
 pub mod scheduler;

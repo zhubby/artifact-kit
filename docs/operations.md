@@ -134,6 +134,8 @@ doctor 报告路径、版本命令是否成功、实际 OS/CPU、可发现工具
 
 ## 排空、升级、续证
 
+常规 Agent 升级使用 [Agent OTA](agent-ota.md)。下面的手动流程用于首次安装启动器、旧节点迁移或管理员恢复。
+
 1. 控制台设置 draining，不分配新任务，等待 active_jobs 为 0。
 2. 停止 Agent 服务，备份私有配置、证书与签名环境；按目标 OS/CPU 替换二进制。
 3. 使用同一账户运行 version / doctor，再启动，验证能力、标签、slots 和一次实际构建。

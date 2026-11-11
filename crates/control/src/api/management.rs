@@ -158,7 +158,7 @@ pub async fn create_pool(
         return Err(ApiError::BadRequest("invalid pool name".into()));
     }
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO node_pools VALUES($1,$2)")
+    sqlx::query("INSERT INTO node_pools(id,name) VALUES($1,$2)")
         .bind(id)
         .bind(input.name)
         .execute(&state.pool)
@@ -197,7 +197,7 @@ pub async fn enrollment_token(
 
 pub async fn nodes(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
     auth.session_role("viewer")?;
-    Ok(Json(sqlx::query_scalar("SELECT (to_jsonb(n)-'certificate_hash'-'active_session') || jsonb_build_object('pool_name',p.name,'online',NOT n.revoked AND n.last_seen>now()-interval '30 seconds','active_jobs',(SELECT count(*) FROM attempts a WHERE a.node_id=n.id AND a.status IN ('leased','running') AND a.lease_expires_at>now())) FROM nodes n JOIN node_pools p ON p.id=n.pool_id ORDER BY n.created_at DESC").fetch_all(&state.pool).await?))
+    Ok(Json(sqlx::query_scalar("SELECT (to_jsonb(n)-'certificate_hash'-'active_session') || jsonb_build_object('agent_desired_release',coalesce(n.agent_target_release,p.agent_target_release),'agent_pool_paused',p.agent_updates_paused,'pool_name',p.name,'online',NOT n.revoked AND n.last_seen>now()-interval '30 seconds','active_jobs',(SELECT count(*) FROM attempts a WHERE a.node_id=n.id AND a.status IN ('leased','running') AND a.lease_expires_at>now())) FROM nodes n JOIN node_pools p ON p.id=n.pool_id ORDER BY n.created_at DESC").fetch_all(&state.pool).await?))
 }
 
 #[derive(Deserialize)]
@@ -225,7 +225,25 @@ pub async fn update_node(
     {
         return Err(ApiError::BadRequest("invalid node settings".into()));
     }
-    let revoked=sqlx::query_scalar::<_,bool>("UPDATE nodes SET draining=$2,revoked=revoked OR $3,slots=$4,labels=$5,signing_profiles=$6,pool_id=$7 WHERE id=$1 RETURNING revoked").bind(id).bind(input.draining).bind(input.revoked).bind(input.slots).bind(input.labels).bind(input.signing_profiles).bind(input.pool_id).fetch_optional(&state.pool).await?.ok_or(ApiError::NotFound)?;
+    let mut transaction = state.pool.begin().await?;
+    sqlx::query("SELECT id FROM nodes WHERE id=$1 FOR UPDATE")
+        .bind(id)
+        .execute(&mut *transaction)
+        .await?;
+    let changing_pool_while_updating: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM nodes WHERE id=$1 AND ota_draining AND pool_id<>$2)",
+    )
+    .bind(id)
+    .bind(input.pool_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    if changing_pool_while_updating {
+        return Err(ApiError::Conflict(
+            "wait for the active Agent update before changing its pool".into(),
+        ));
+    }
+    let revoked=sqlx::query_scalar::<_,bool>("UPDATE nodes SET draining=$2,revoked=revoked OR $3,slots=$4,labels=$5,signing_profiles=$6,pool_id=$7 WHERE id=$1 RETURNING revoked").bind(id).bind(input.draining).bind(input.revoked).bind(input.slots).bind(input.labels).bind(input.signing_profiles).bind(input.pool_id).fetch_optional(&mut *transaction).await?.ok_or(ApiError::NotFound)?;
+    transaction.commit().await?;
     state
         .audit(
             auth.user_id,

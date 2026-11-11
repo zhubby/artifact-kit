@@ -74,6 +74,9 @@ message Command {
   string message = 7;
   string request_id = 8;
   uint64 ack_sequence = 9;
+  // Agent-level commands (agent_update / agent_health) have no attempt ID.
+  // OTA v1 is negotiated by the agent-ota-v1 hello capability; protocol stays 1.
+  string payload_json = 10;
 }
 message LogChunk {
   string attempt_id = 1;

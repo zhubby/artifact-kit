@@ -10,11 +10,13 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/artifact-kit/agent/internal/agent"
 	"github.com/artifact-kit/agent/internal/client"
 	"github.com/artifact-kit/agent/internal/config"
+	"github.com/artifact-kit/agent/internal/ota"
 	"github.com/artifact-kit/agent/internal/worker"
 	"github.com/kardianos/service"
 )
@@ -44,7 +46,7 @@ func run() error {
 		return nil
 	}
 	if os.Args[1] == "version" {
-		fmt.Printf("artifact-agent %s %s/%s protocol=1\n", agent.Version, runtime.GOOS, runtime.GOARCH)
+		fmt.Printf("artifact-agent %s %s/%s protocol=1 commit=%s\n", agent.Version, runtime.GOOS, runtime.GOARCH, agent.Commit)
 		return nil
 	}
 	base, err := os.UserConfigDir()
@@ -70,6 +72,7 @@ func run() error {
 	allowHTTP := flags.Bool("allow-http-uploads", false, "allow HTTP object-store uploads for explicit local development only")
 	serviceAction := flags.String("action", "", "install, uninstall, start, stop or restart")
 	user := flags.String("user", "", "dedicated unprivileged service account; required for installation")
+	publicKeys := flags.String("public-keys", "", "comma-separated base64 Ed25519 verification keys for ota-init")
 	if err = flags.Parse(os.Args[2:]); err != nil {
 		return err
 	}
@@ -79,6 +82,19 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	switch os.Args[1] {
+	case "ota-init":
+		cfg, err := config.Load(*configPath)
+		if err != nil {
+			return err
+		}
+		executable, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		if *publicKeys == "" {
+			return errors.New("--public-keys is required")
+		}
+		return ota.Initialize(*configPath, filepath.Join(cfg.Root, "ota"), executable, agent.Version, strings.Split(*publicKeys, ","))
 	case "register":
 		if *endpoint == "" || *ca == "" {
 			return errors.New("--endpoint and --ca are required")
@@ -107,6 +123,13 @@ func run() error {
 		cfg, err := config.Load(*configPath)
 		if err != nil {
 			return err
+		}
+		if os.Getenv("AK_OTA_DIRECTORY") == "" {
+			if _, err := ota.Load(*configPath); err == nil {
+				return ota.Supervise(ctx, *configPath, agent.Version)
+			} else if !os.IsNotExist(err) {
+				return err
+			}
 		}
 		return agent.Run(ctx, cfg)
 	case "doctor":
@@ -176,7 +199,15 @@ func (program *agentService) Start(instance service.Service) error {
 	program.done = make(chan struct{})
 	go func() {
 		defer close(program.done)
-		if err := agent.Run(ctx, cfg); err != nil {
+		var runError error
+		if _, err := ota.Load(program.configPath); err == nil {
+			runError = ota.Supervise(ctx, program.configPath, agent.Version)
+		} else if os.IsNotExist(err) {
+			runError = agent.Run(ctx, cfg)
+		} else {
+			runError = err
+		}
+		if err := runError; err != nil {
 			if logger, logErr := instance.Logger(nil); logErr == nil {
 				_ = logger.Error(err)
 			} else {

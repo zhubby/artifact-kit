@@ -514,6 +514,20 @@ async fn heartbeat(
                 .map_err(|_| Status::unavailable("connection closed"))?;
         }
     }
+    let ota_healthy = crate::ota::report(state, node, session, &payload)
+        .await
+        .map_err(internal)?;
+    if ota_healthy && event.kind == "heartbeat" {
+        valid_node(&state.pool, node, session).await?;
+        sender
+            .send(Ok(Command {
+                kind: "agent_health".into(),
+                request_id: event.command_id.clone(),
+                ..Default::default()
+            }))
+            .await
+            .map_err(|_| Status::unavailable("connection closed"))?;
+    }
     Ok(())
 }
 

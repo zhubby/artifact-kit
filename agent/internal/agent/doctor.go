@@ -12,7 +12,8 @@ import (
 	"github.com/artifact-kit/agent/internal/config"
 )
 
-const Version = "0.1.0"
+var Version = "0.1.0"
+var Commit = "development"
 
 func Doctor(cfg config.Config) (map[string]any, []string) {
 	names := []string{"git", "bash", "sh", "powershell", "pwsh", "cc", "cargo", "go", "node", "npm", "xcodebuild", "java", "gradle", "cmake", "ninja", "dotnet", "msbuild", "signtool", "codesign", "security", "apksigner", "docker"}

@@ -210,6 +210,8 @@ export async function fixtureAPI(page: Page, role: User["role"] = "admin") {
       ],
       [`/builds/${build.id}`]: build,
       "/nodes": nodes,
+      "/agent-releases": [],
+      "/agent-updates": [],
       "/overview": {
         projects: 1,
         nodes_online: 1,

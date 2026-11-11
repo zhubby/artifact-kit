@@ -1,3 +1,4 @@
+mod agent_updates;
 mod builds;
 mod management;
 mod projects;
@@ -40,6 +41,27 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/nodes", get(management::nodes))
         .route("/api/v1/nodes/{id}", patch(management::update_node))
+        .route(
+            "/api/v1/agent-releases",
+            get(agent_updates::releases).post(agent_updates::import),
+        )
+        .route(
+            "/api/v1/nodes/{id}/agent-update",
+            patch(agent_updates::node_target),
+        )
+        .route(
+            "/api/v1/pools/{id}/agent-update",
+            patch(agent_updates::pool_target),
+        )
+        .route("/api/v1/agent-updates", get(agent_updates::updates))
+        .route(
+            "/api/v1/agent-updates/{id}/retry",
+            post(agent_updates::retry),
+        )
+        .route(
+            "/api/v1/agent-updates/{id}/cancel",
+            post(agent_updates::cancel),
+        )
         .route(
             "/api/v1/credentials",
             get(management::credentials).post(management::create_credential),

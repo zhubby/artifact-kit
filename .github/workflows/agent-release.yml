@@ -1,0 +1,97 @@
+name: Agent Release
+on:
+  push:
+    tags: ['agent-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing Git tag to publish
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            goos: linux
+            arch: arm64
+          - os: macos-latest
+            goos: darwin
+            arch: arm64
+          - os: macos-15-intel
+            goos: darwin
+            arch: amd64
+          - os: windows-latest
+            goos: windows
+            arch: amd64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.27.x
+          cache-dependency-path: agent/go.sum
+      - run: go test -race ./...
+        working-directory: agent
+      - name: Native service, OTA and rollback under a dedicated service account
+        run: go test -race ./cmd/artifact-agent -run '^TestNativeServiceLifecycle$' -count=1 -v -timeout=12m
+        working-directory: agent
+        env:
+          AK_NATIVE_SERVICE_TESTS: '1'
+          AK_NATIVE_EXPECTED_PLATFORM: ${{ matrix.goos }}/${{ matrix.arch }}
+      - name: Build versioned native executable
+        shell: bash
+        working-directory: agent
+        env:
+          AGENT_TAG: ${{ inputs.tag || github.ref_name }}
+          AGENT_OS: ${{ matrix.goos }}
+          AGENT_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          extension=''
+          if [ "$AGENT_OS" = windows ]; then extension='.exe'; fi
+          revision=$(git rev-parse HEAD)
+          CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/artifact-kit/agent/internal/agent.Version=$AGENT_TAG -X github.com/artifact-kit/agent/internal/agent.Commit=$revision" -o "bin/artifact-agent-$AGENT_OS-$AGENT_ARCH$extension" ./cmd/artifact-agent
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-${{ matrix.goos }}-${{ matrix.arch }}
+          path: agent/bin/artifact-agent-*
+  publish:
+    needs: native
+    runs-on: ubuntu-latest
+    environment: agent-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.27.x
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: agent-*
+          merge-multiple: true
+          path: agent/bin
+      - name: Sign manifest and publish immutable assets
+        working-directory: agent
+        env:
+          AGENT_TAG: ${{ inputs.tag || github.ref_name }}
+          AK_AGENT_RELEASE_SIGNING_SEED: ${{ secrets.AGENT_RELEASE_SIGNING_SEED }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          revision=$(git rev-parse HEAD)
+          go run ./cmd/agent-release --directory bin --version "$AGENT_TAG" --commit "$revision"
+          gh release create "$AGENT_TAG" --verify-tag --title "Agent $AGENT_TAG" --generate-notes bin/artifact-agent-* bin/agent-manifest.json bin/agent-manifest.sig

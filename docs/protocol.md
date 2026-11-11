@@ -11,7 +11,7 @@
 5. `Connect` 为双向流。hello 绑定节点 ID、协议版本、能力及诊断。新连接会替代旧 session；旧 session 不能继续改写任务。
 6. 每 10 秒心跳。35 秒未收到消息关闭连接；是否重派由 90 秒持久化任务租约决定，而不是简单的 online 标志。
 
-节点证书到期前需要排空、吊销并以新配置重新注册；本版没有自动续证或自动升级。吊销不可反向恢复，防止旧私钥重新有效。
+节点证书到期前需要排空、吊销并以新配置重新注册；本版没有自动续证；Agent 自动升级见 [OTA 协议与运维](agent-ota.md)。吊销不可反向恢复，防止旧私钥重新有效。
 
 ## 两阶段开始与租约
 
@@ -51,3 +51,7 @@ Agent 在租约内断线保持 Worker，重连后补报；无续租则本地终�
 `PrepareArtifact` 声明相对路径、大小和 SHA-256，获得 15 分钟 HTTPS staging PUT URL。`CompleteArtifact` 获取对象，验证完整内容，再写入从不签发 PUT URL 的 final key；成功后登记制品。上传声明和制品登记各自在事务提交前获得 attempt / 节点共享锁，并重新检查当前租约、节点证书期限、吊销和构建取消状态；锁等待期间失效则回滚本次记录。完成接口在 S3 校验结束后才取得这些锁，保留独立心跳续租。重复完成返回相同制品，仍需当前授权有效。下载经 HTTP 项目权限校验，签发 60 秒 GET URL，不能匿名访问桶。
 
 对象传输不使用双向控制流。未来容器执行器可以复用 attempt / lease / log / artifact 契约，但不改变制品为文件还是 OCI 镜像的独立建模。
+
+## Agent 级 OTA 扩展
+
+协议主版本仍为 1。hello 的 capabilities 包含 `agent-ota-v1` 才调度升级。心跳的独立 `ota` 对象报告持久化阶段；`agent_update` 命令使用 Command.payload_json（新增字段 10），没有 attempt_id / lease_token；`agent_health` 引用当前心跳 command_id。所有状态及确认继续验证节点 mTLS 身份、当前 session、吊销和证书期限。旧 Agent 会忽略未知命令，旧控制面忽略新心跳字段。升级确认没有收到时不提交候选版本。

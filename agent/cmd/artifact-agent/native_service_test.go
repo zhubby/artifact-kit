@@ -70,6 +70,19 @@ func (peer *servicePeer) Connect(stream pb.Control_ConnectServer) error {
 	case <-stream.Context().Done():
 		return stream.Context().Err()
 	}
+	healthAck := func(event *pb.AgentEvent) error {
+		if event.Kind != "heartbeat" {
+			return nil
+		}
+		var p map[string]json.RawMessage
+		if json.Unmarshal([]byte(event.PayloadJson), &p) != nil || len(p["ota"]) == 0 || string(p["ota"]) == "null" {
+			return nil
+		}
+		return stream.Send(&pb.Command{Kind: "agent_health", RequestId: event.CommandId})
+	}
+	if err := healthAck(event); err != nil {
+		return err
+	}
 	events := make(chan *pb.AgentEvent)
 	errors := make(chan error, 1)
 	go func() {
@@ -94,6 +107,9 @@ func (peer *servicePeer) Connect(stream pb.Control_ConnectServer) error {
 			if event.Kind == "accept" {
 				command = &pb.Command{Kind: "start", AttemptId: event.AttemptId, LeaseToken: event.LeaseToken, RequestId: event.CommandId, LeaseSeconds: 90}
 			} else if event.Kind == "heartbeat" {
+				if err := healthAck(event); err != nil {
+					return err
+				}
 				var payload struct {
 					Active []struct {
 						ID    string `json:"attempt_id"`
@@ -286,6 +302,7 @@ func TestNativeServiceLifecycle(test *testing.T) {
 	}
 	workload := newServiceWorkload(test, private)
 	password := fmt.Sprintf("Ak-CI-%x!", makeServiceRandom(test, 20))
+	otaKey := bootstrapTestOTA(test, binary, configPath, configuration.Root)
 	accountEnvironment := append(os.Environ(), "AK_TEST_SERVICE_PASSWORD="+password)
 	createServiceTestUser(test, accountEnvironment, directory, private)
 	test.Cleanup(workload.stop)
@@ -375,6 +392,11 @@ func TestNativeServiceLifecycle(test *testing.T) {
 	workload.awaitSuccess(test, third, completed)
 	action("stop")
 	awaitServiceDisconnect(test, third)
+	awaitNativeService(test, false)
+	action("start")
+	otaConnection := awaitServiceConnection(test, peer)
+	exerciseServiceOTA(test, otaKey, configPath, peer, otaConnection)
+	action("stop")
 	awaitNativeService(test, false)
 	action("uninstall")
 	if state := inspectNativeService(test); state.Installed {
