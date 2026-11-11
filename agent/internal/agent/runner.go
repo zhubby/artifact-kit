@@ -51,18 +51,21 @@ func (task *task) control(input worker.Input) {
 }
 
 type Runner struct {
-	config       config.Config
-	mutex        sync.Mutex
-	tasks        map[string]*task
-	anchors      map[string]time.Time
-	notify       chan struct{}
-	spoolMutex   sync.Mutex
-	spoolBytes   int64
-	diagnostics  map[string]any
-	capabilities []string
-	workers      int
-	otaSession   string
-	otaHealthAt  time.Time
+	config          config.Config
+	mutex           sync.Mutex
+	tasks           map[string]*task
+	anchors         map[string]time.Time
+	notify          chan struct{}
+	spoolMutex      sync.Mutex
+	spoolBytes      int64
+	diagnostics     map[string]any
+	capabilities    []string
+	workers         int
+	workerExit      sync.WaitGroup
+	otaSession      string
+	otaHealthAt     time.Time
+	otaDrainRequest string
+	otaDrainUpdate  string
 }
 
 func Run(ctx context.Context, cfg config.Config) error {
@@ -144,8 +147,8 @@ func (runner *Runner) heartbeat(kind string) *pb.AgentEvent {
 	diagnostics["buffered_log_bytes"] = runner.spoolBytes
 	runner.spoolMutex.Unlock()
 	diagnostics["agent_commit"] = Commit
-	data, _ := json.Marshal(map[string]any{"active_attempts": active, "capabilities": runner.capabilities, "diagnostics": diagnostics, "ota": runner.otaSnapshot()})
 	request := identifier()
+	data, _ := json.Marshal(map[string]any{"active_attempts": active, "capabilities": runner.capabilities, "diagnostics": diagnostics, "ota": runner.otaSnapshot(request)})
 	runner.anchors[request] = time.Now()
 	for key, value := range runner.anchors {
 		if time.Since(value) > 2*time.Minute {
@@ -360,6 +363,7 @@ func (runner *Runner) launch(current *task, leaseSeconds uint32) {
 	runner.mutex.Lock()
 	runner.workers++
 	runner.mutex.Unlock()
+	runner.workerExit.Add(1)
 	current.pipeMutex.Lock()
 	current.pipe = input
 	current.encoder = json.NewEncoder(input)
@@ -369,6 +373,7 @@ func (runner *Runner) launch(current *task, leaseSeconds uint32) {
 		input.Close()
 	}
 	go func() {
+		defer runner.workerExit.Done()
 		decoder := json.NewDecoder(output)
 		for {
 			var event worker.Event
@@ -483,6 +488,9 @@ func (runner *Runner) stop() {
 		}
 		current.pipeMutex.Unlock()
 	}
+	// Workers finish cancellation, process-tree cleanup and workspace removal
+	// before the runtime exits. The service launcher bounds a stuck shutdown.
+	runner.workerExit.Wait()
 }
 
 type logRecord struct {

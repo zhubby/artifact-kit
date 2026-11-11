@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -149,4 +150,57 @@ func TestOTASupervisorMTLSUpgradeAndRollback(t *testing.T) {
 	})
 	first := awaitServiceConnection(t, peer)
 	exerciseServiceOTA(t, key, path, peer, first)
+}
+
+func TestOTASupervisorStopsActiveWorker(t *testing.T) {
+	private, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint, peer := startServicePeer(t, private)
+	workload := newServiceWorkload(t, private)
+	t.Cleanup(workload.stop)
+	path, root := filepath.Join(private, "agent.json"), filepath.Join(private, "managed")
+	if err := config.Save(path, config.Config{Endpoint: endpoint, CAFile: filepath.Join(private, "ca.pem"), CertificateFile: filepath.Join(private, "client.pem"), KeyFile: filepath.Join(private, "client-key.pem"), AgentID: "native-service-test", Root: root}); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(private, "launcher")
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
+	requireNativeCommand(t, nil, false, "go", "build", "-o", binary, ".")
+	bootstrapTestOTA(t, binary, path, root)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- ota.Supervise(ctx, path, "0.1.0") }()
+	waited := false
+	t.Cleanup(func() {
+		cancel()
+		if !waited {
+			select {
+			case <-done:
+			case <-time.After(15 * time.Second):
+				t.Error("supervisor did not stop")
+			}
+		}
+	})
+	connection := awaitServiceConnection(t, peer)
+	id := workload.assign(t, connection, 1, "parent")
+	treeStopped, _ := workload.awaitTree(t, connection, id, os.Getpid(), owner.Username, root)
+	cancel()
+	select {
+	case err := <-done:
+		waited = true
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("supervisor did not stop")
+	}
+	awaitServiceDisconnect(t, connection)
+	treeStopped()
 }

@@ -588,6 +588,13 @@ async fn ota_failed_activation_pauses_pool_and_fences_stale_sessions() {
         .await
         .unwrap();
     assert_eq!(status, "offered");
+    let preparing = serde_json::json!({"diagnostics":{"agent_version":"v-old"},"ota":{"update_id":id,"phase":"activating","activation_pending":true,"launcher_version":"v-old"}});
+    assert!(
+        artifact_control::ota::report(&database.state, node, session, &preparing)
+            .await
+            .unwrap(),
+        "old runtime must receive acknowledgment before yielding to a candidate"
+    );
     assert!(
         artifact_control::ota::report(&database.state, node, session, &payload)
             .await

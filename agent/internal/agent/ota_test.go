@@ -18,7 +18,7 @@ func TestOTADrainWaitsForTerminalAckWorkersAndLogs(t *testing.T) {
 	r := &Runner{tasks: map[string]*task{"attempt": {finished: true}}, workers: 1, spoolBytes: 5}
 	assertReady := func(expected bool) {
 		t.Helper()
-		r.otaSnapshot()
+		r.otaSnapshot("ready")
 		_, err := os.Stat(filepath.Join(directory, "drained.json"))
 		if (err == nil) != expected {
 			t.Fatalf("ready=%t, expected=%t", err == nil, expected)
@@ -30,6 +30,11 @@ func TestOTADrainWaitsForTerminalAckWorkersAndLogs(t *testing.T) {
 	r.workers = 0
 	assertReady(false)
 	r.spoolBytes = 0
+	assertReady(false)
+	r.anchors = map[string]time.Time{"ready": time.Now()}
+	if err := r.command(&pb.Command{Kind: "agent_health", RequestId: "ready"}); err != nil {
+		t.Fatal(err)
+	}
 	assertReady(true)
 }
 

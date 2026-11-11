@@ -6,8 +6,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -79,7 +79,7 @@ func run() error {
 	if *configPath == "" {
 		return errors.New("--config is required when the account has no configuration directory")
 	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := workerSignalContext()
 	defer cancel()
 	switch os.Args[1] {
 	case "ota-init":
@@ -130,6 +130,13 @@ func run() error {
 			} else if !os.IsNotExist(err) {
 				return err
 			}
+		} else {
+			go func() {
+				// The fixed launcher owns this pipe. EOF also handles an
+				// unexpected launcher exit without platform-specific signals.
+				_, _ = io.Copy(io.Discard, os.Stdin)
+				cancel()
+			}()
 		}
 		return agent.Run(ctx, cfg)
 	case "doctor":
@@ -228,7 +235,7 @@ func (program *agentService) Stop(_ service.Service) error {
 	if program.done != nil {
 		select {
 		case <-program.done:
-		case <-time.After(5 * time.Second):
+		case <-time.After(12 * time.Second):
 		}
 	}
 	return nil

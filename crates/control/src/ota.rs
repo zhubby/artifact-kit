@@ -436,7 +436,10 @@ pub async fn report(state: &AppState, node: Uuid, session: Uuid, payload: &Value
         && let Some(u)=sqlx::query("SELECT u.*,r.version FROM agent_updates u JOIN agent_releases r ON r.id=u.release_id WHERE u.id=$1 AND u.node_id=$2 AND u.finished_at IS NULL").bind(id).bind(node).fetch_optional(&mut *tx).await? {
             let phase=status["phase"].as_str().unwrap_or("");
             let terminal=["succeeded","failed","rolled_back","canceled"].contains(&phase);
-            if phase=="activating"||phase=="succeeded" {health=runtime==u.get::<String,_>("version")}
+            if phase=="activating"||phase=="succeeded" {
+                health=runtime==u.get::<String,_>("version")
+                    || (phase=="activating"&&status["activation_pending"]==true&&Some(runtime)==u.get::<Option<String>,_>("previous_version").as_deref());
+            }
             if ["downloading","draining","activating","succeeded","failed","rolled_back","canceled"].contains(&phase)&&health {
                 sqlx::query("UPDATE agent_updates SET status=$2,error=$3,updated_at=now(),finished_at=CASE WHEN $4 THEN now() ELSE NULL END WHERE id=$1").bind(id).bind(phase).bind(status["error"].as_str().map(|s|s.chars().take(1000).collect::<String>())).bind(terminal).execute(&mut *tx).await?;
                 if terminal {

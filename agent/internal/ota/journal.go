@@ -18,16 +18,17 @@ type Image struct {
 	Path    string `json:"path"`
 }
 type State struct {
-	Generation      int64     `json:"generation"`
-	UpdateID        string    `json:"update_id"`
-	Target          string    `json:"target"`
-	Phase           string    `json:"phase"`
-	Error           string    `json:"error,omitempty"`
-	Current         Image     `json:"current"`
-	Previous        Image     `json:"previous"`
-	Candidate       Image     `json:"candidate"`
-	LauncherVersion string    `json:"launcher_version"`
-	StartedAt       time.Time `json:"started_at"`
+	ActivationPending bool      `json:"activation_pending,omitempty"`
+	Generation        int64     `json:"generation"`
+	UpdateID          string    `json:"update_id"`
+	Target            string    `json:"target"`
+	Phase             string    `json:"phase"`
+	Error             string    `json:"error,omitempty"`
+	Current           Image     `json:"current"`
+	Previous          Image     `json:"previous"`
+	Candidate         Image     `json:"candidate"`
+	LauncherVersion   string    `json:"launcher_version"`
+	StartedAt         time.Time `json:"started_at"`
 }
 type Request struct {
 	Generation int64  `json:"generation"`

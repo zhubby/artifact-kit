@@ -55,7 +55,8 @@ ExecStart=%s
 User=%s
 Restart=always
 RestartSec=120
-KillMode=control-group
+KillMode=mixed
+TimeoutStopSec=15
 EnvironmentFile=-/etc/sysconfig/artifact-kit-agent
 
 [Install]

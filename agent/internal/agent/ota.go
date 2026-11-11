@@ -29,7 +29,20 @@ func (runner *Runner) otaCommand(command *pb.Command) (bool, error) {
 		if fresh {
 			runner.otaHealthAt = anchor
 		}
+		drained := fresh && command.RequestId == runner.otaDrainRequest
+		update := runner.otaDrainUpdate
 		runner.mutex.Unlock()
+		if drained {
+			state, err := ota.Snapshot(directory)
+			if err != nil {
+				return true, err
+			}
+			if state.UpdateID == update && state.Phase == "draining" {
+				if err = ota.Atomic(filepath.Join(directory, "drained.json"), map[string]string{"id": update}); err != nil {
+					return true, err
+				}
+			}
+		}
 		if fresh {
 			return true, ota.Confirm(directory, runner.otaSession, command.RequestId)
 		}
@@ -40,7 +53,7 @@ func (runner *Runner) otaCommand(command *pb.Command) (bool, error) {
 
 // Caller holds the task mutex. finished events remain in tasks until their
 // terminal ack, which itself is withheld until artifact and log delivery.
-func (runner *Runner) otaSnapshot() any {
+func (runner *Runner) otaSnapshot(request string) any {
 	directory := os.Getenv("AK_OTA_DIRECTORY")
 	if directory == "" {
 		return nil
@@ -54,7 +67,12 @@ func (runner *Runner) otaSnapshot() any {
 		empty := runner.spoolBytes == 0
 		runner.spoolMutex.Unlock()
 		if empty {
-			_ = ota.Atomic(filepath.Join(directory, "drained.json"), map[string]string{"id": state.UpdateID})
+			// Announce activation while the old authenticated stream is still
+			// alive. Only its acknowledgment allows the launcher to switch.
+			state.Phase = "activating"
+			state.ActivationPending = true
+			runner.otaDrainRequest = request
+			runner.otaDrainUpdate = state.UpdateID
 		}
 	}
 	return state

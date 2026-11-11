@@ -63,6 +63,7 @@ type downloadResult struct {
 type child struct {
 	command *exec.Cmd
 	tree    *executor.ProcessTree
+	control io.WriteCloser
 	done    chan error
 }
 
@@ -71,11 +72,16 @@ func startChild(configPath, directory, path, launcher string) (*child, error) {
 	command.Env = append(os.Environ(), "AK_OTA_DIRECTORY="+directory, "AK_OTA_LAUNCHER_VERSION="+launcher)
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
-	tree, err := executor.StartProcess(command)
+	control, err := command.StdinPipe()
 	if err != nil {
 		return nil, err
 	}
-	c := &child{command: command, tree: tree, done: make(chan error, 1)}
+	tree, err := executor.StartProcess(command)
+	if err != nil {
+		_ = control.Close()
+		return nil, err
+	}
+	c := &child{command: command, tree: tree, control: control, done: make(chan error, 1)}
 	go func() { c.done <- command.Wait() }()
 	return c, nil
 }
@@ -83,8 +89,16 @@ func (c *child) stop() {
 	if c == nil {
 		return
 	}
-	c.tree.Kill()
-	<-c.done
+	// EOF is a private cross-platform shutdown signal. Let the runtime cancel
+	// and reap its Workers so their task groups and workspaces are cleaned up
+	// before closing the outer Windows Job Object or Unix process group.
+	_ = c.control.Close()
+	select {
+	case <-c.done:
+	case <-time.After(8 * time.Second):
+		c.tree.Kill()
+		<-c.done
+	}
 	c.tree.Close()
 }
 
