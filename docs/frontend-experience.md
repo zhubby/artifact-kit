@@ -1,0 +1,53 @@
+# 控制台语言、主题与动效
+
+界面延续 IBM Plex、墨绿与香槟金，增加青绿极光、卡片聚光和一次性内容入场。业务 API、角色权限、构建与发布状态、日志及用户配置保持原有含义。
+
+## 偏好与翻译
+
+- `next-intl` 提供 `zh-CN`、`en` 词条、参数插值与复数；词条位于 `web/src/messages/`。新增界面文案需同时更新两个语言文件。
+- 默认简体中文。`ak-locale` Cookie 保存一年，服务端读取以输出 HTML `lang`、标题及初始文案；切换时更新同一 Provider 的状态，不刷新路由或重新挂载业务组件。
+- `next-themes` 使用 `ak-theme` 保存 `system`、`dark`、`light`，默认跟随系统；启动脚本在首屏应用配色。语义 CSS 变量同时覆盖页面、侧栏、表格、错误、状态和日志区域。
+- `ak-effects` 保存视觉动效开关，默认启用；系统 `prefers-reduced-motion` 优先。关闭后停止装饰画布及 CSS/GSAP 动画，保留状态文字。存储不可用时保留本次会话选择。
+- 桌面顶栏／登录右上显示偏好控件；1200px 及以下合并到复用 Radix Dialog 的偏好弹窗。
+- 日期按所选语言及浏览器本地时区显示；数据计数按语言格式化。仓库、项目名、日志、配置快照、审计 action 及服务端错误详情原样显示；请求错误有本地化标题。
+- 网络异常、无错误详情的 HTTP 失败与本地 JSON 格式错误保留翻译键，已显示的错误会随语言切换更新；服务端提供的错误详情逐字保留。
+
+## 动效生命周期
+
+React Bits 源码版本、完整许可证与适配说明见 `web/THIRD_PARTY_NOTICES.md`。Aurora 动态加载，单屏一个画布，桌面 DPR 上限 1.5／40fps，手机 DPR 1／24fps；页面隐藏或画布离屏即暂停。WebGL 不可用、着色器初始化失败或上下文丢失时保留静态光场。手动关闭动效或系统启用减少动态效果时卸载画布并清理资源。
+
+AnimatedContent 使用 450ms 入场、60ms 组内错开，只在首次进入或路由变化时播放；轮询、SSE、语言及主题变化不重播。SpotlightCard 只在鼠标移动时按帧更新，不为触屏启动持续循环。
+
+## 验证
+
+```sh
+cd web
+rtk npm ci
+rtk npm run typecheck
+rtk npm run build
+AK_UI_PRODUCTION=1 rtk npm run test:ui
+```
+
+独立 UI 测试使用完整 API fixtures，不需要账号、数据库或 Agent；覆盖桌面 1440px、平板 820px、手机 390px，中英双语、深浅配色、系统主题变化、偏好持久化、原始内容、无横向页面溢出、对话框焦点、权限控件及切换偏好时的状态保留。动效测试计数实际 WebGL draw，验证减少动态效果、手动关闭、离屏与 visibility 事件处理；headless visibility 事件测试不等同于实体浏览器最小化验收。
+
+截图保存到忽略的 `.local/frontend-evidence/`，trace 与报告位于 `web/test-results/ui/`、`web/playwright-report/ui/`。真实后台验收继续运行原有 `rtk npm test`，需要按 README 启动 `scripts/acceptance.py --keep-alive` 并加载 `.local/env`。fixtures 不能代替真实构建、SSE、下载、发布和权限验收。
+
+两套测试的输出目录相互独立：真实后台用例使用 `web/test-results/live/`、`web/playwright-report/live/`，避免清理其他套件的 trace。
+
+## 2026-11-10 本地验收记录
+
+| 验收项 | 结果 |
+| --- | --- |
+| TypeScript / Next.js 生产构建 | 通过 |
+| 独立 UI 套件 | 48 项通过；桌面、平板、手机各 16 项 |
+| 真实后台浏览器回归 | 10 项通过；桌面与手机各 5 项 |
+| 原生后台验收准备 | 35 项通过，run `47f987059ac8` |
+| 双语词条 | 中英各 321 项，键集合一致 |
+| React Bits 完整许可证 | SHA-256 与固定上游版本一致 |
+| 截图 | 48 张：3 种尺寸 × 2 种语言 × 2 套主题 × 4 个界面 |
+
+独立用例覆盖语言 Cookie 与服务端 HTML、系统主题变化、偏好持久化、表单／筛选／目标状态保留、唯一 SSE 订阅、只读控件、延迟响应下的设置页切换、本地错误翻译与服务端原始错误。动效用例观察实际 WebGL 绘制，覆盖手动关闭、运行中切换减少动态效果、离屏／后台暂停、离屏时的跨标签页主题更新、移动端渲染预算及 WebGL 静态降级。
+
+真实后台用例验证原生构建、日志、制品下载、不可变发布、SSE 重连、部分目标失败与发布失败的独立状态、只读角色后端拒绝，以及从项目／构建表单交付实际制品。
+
+已检查深浅主题的登录、总览、构建详情及项目弹窗，并检查英文长文案、手机表格横向滚动、弹窗内部滚动、焦点与文本层次。原始截图索引为 `.local/frontend-evidence/screenshots.md`，摘要与哈希为 `manifest.json`，双主题预览为 `comparison.png`。截图使用 API fixtures；真实后台截图另存于 `web/test-results/live/`。浏览器验收使用 Chromium，手机为设备模拟，未包含实体 iOS Safari 验收。

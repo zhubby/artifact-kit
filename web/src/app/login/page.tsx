@@ -1,14 +1,137 @@
 "use client";
 
+import { PreferencesControls } from "@/components/preferences-controls";
+import { Atmosphere } from "@/components/atmosphere";
+import AnimatedContent from "@/components/react-bits/AnimatedContent";
+import { useUI } from "@/components/providers";
+
 import { useState, type FormEvent } from "react";
-import { ArrowRight, Box, CheckCircle2, GitBranch, Layers3, Package, ShieldCheck } from "lucide-react";
+import {
+  ArrowRight,
+  Box,
+  CheckCircle2,
+  GitBranch,
+  Layers3,
+  Package,
+  ShieldCheck,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ErrorBox, Field } from "@/components/common";
 import { mutation } from "@/lib/api";
+import { asError } from "@/lib/errors";
 
 export default function Login() {
-  const [error,setError]=useState<string>(); const [busy,setBusy]=useState(false);
-  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setBusy(true); setError(undefined); const values=new FormData(event.currentTarget); try { await mutation("/auth/login",Object.fromEntries(values)); window.location.assign("/"); } catch(error) { setError(error instanceof Error ? error.message : "登录失败"); } finally { setBusy(false); } }
-  return <div className="login-grid"><aside className="login-story"><div className="flex items-center gap-3 text-xl font-medium"><div className="brand-mark"><Box size={22}/></div>artifact kit<span className="ml-2 rounded border border-border px-2 py-1 font-mono text-[9px] text-muted-foreground">CONTROL PLANE</span></div><div className="story-body my-auto py-16"><p className="eyebrow mb-6">SOURCE → ARTIFACT → RELEASE</p><h1>每一次构建，<br/>都有迹可循。</h1><p className="mt-6 max-w-md text-sm leading-8 text-muted-foreground">连接你的实体机器，让不同平台的工具链，<br/>汇聚为一条可观察、可追溯的交付链路。</p><div className="mt-12 max-w-md">{[[GitBranch,"固定源码与配置"],[Layers3,"匹配原生构建节点"],[ShieldCheck,"受控签名与校验"],[Package,"不可变的内部 Release"]].map(([Icon,label],index) => { const Component=Icon as typeof GitBranch; return <div className="pipeline-line" key={String(label)}><span className="mr-2 font-mono text-[10px] text-primary">0{index+1}</span><Component size={16}/><span className="text-xs">{String(label)}</span><CheckCircle2 className="ml-auto size-3.5 text-muted-foreground"/></div>; })}</div></div><p className="mt-8 font-mono text-[10px] tracking-wider text-muted-foreground">LINUX / MACOS / WINDOWS / ANDROID / IOS</p></aside><main className="login-form"><div className="w-full max-w-[350px]"><p className="eyebrow">WORKSPACE ACCESS</p><h2 className="mt-3 text-2xl font-medium tracking-tight">登录构建控制台</h2><p className="mt-3 mb-8 text-sm leading-6 text-muted-foreground">使用管理员分配的账号访问工作空间。</p><ErrorBox message={error}/><form onSubmit={submit} className="form-stack"><Field label="用户名"><Input name="username" autoComplete="username" required autoFocus placeholder="你的用户名"/></Field><Field label="密码"><Input name="password" type="password" autoComplete="current-password" required placeholder="输入账号密码"/></Field><Button className="mt-2 w-full" disabled={busy}>{busy ? "正在验证…" : "进入工作空间"}<ArrowRight/></Button></form><div className="mt-10 flex gap-2 border-t border-border pt-5 text-xs leading-6 text-muted-foreground"><ShieldCheck className="mt-1 size-4 shrink-0"/><span>仅供内部可信团队使用。账号、节点与制品访问均由控制中心授权。</span></div></div></main></div>;
+  const { t } = useUI();
+  const [error, setError] = useState<Error>();
+  const [busy, setBusy] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError(undefined);
+    const values = new FormData(event.currentTarget);
+    try {
+      await mutation("/auth/login", Object.fromEntries(values));
+      window.location.assign("/");
+    } catch (error) {
+      setError(asError(error, "login.failed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="login-grid">
+      <div className="login-preferences">
+        <PreferencesControls />
+      </div>
+      <Atmosphere className="login-atmosphere" />
+      <aside className="login-story">
+        <div className="flex items-center gap-3 text-xl font-medium">
+          <div className="brand-mark">
+            <Box size={22} />
+          </div>
+          artifact kit
+          <span className="ml-2 rounded border border-border px-2 py-1 font-mono text-[9px] text-muted-foreground">
+            {t("login.controlPlane")}
+          </span>
+        </div>
+        <AnimatedContent className="story-body my-auto py-16" stagger>
+          <p className="eyebrow mb-6">{t("login.pipeline")}</p>
+          <h1>
+            {t("login.headlineFirst")}
+            <br />
+            {t("login.headlineSecond")}
+          </h1>
+          <p className="mt-6 max-w-md text-sm leading-8 text-muted-foreground">
+            {t("login.descriptionFirst")}
+            <br />
+            {t("login.descriptionSecond")}
+          </p>
+          <div className="mt-12 max-w-md">
+            {[
+              [GitBranch, t("login.source")],
+              [Layers3, t("login.nodes")],
+              [ShieldCheck, t("login.signing")],
+              [Package, t("login.release")],
+            ].map(([Icon, label], index) => {
+              const Component = Icon as typeof GitBranch;
+              return (
+                <div className="pipeline-line" key={index}>
+                  <span className="mr-2 font-mono text-[10px] text-primary">
+                    0{index + 1}
+                  </span>
+                  <Component size={16} />
+                  <span className="text-xs">{String(label)}</span>
+                  <CheckCircle2 className="ml-auto size-3.5 text-muted-foreground" />
+                </div>
+              );
+            })}
+          </div>
+        </AnimatedContent>
+        <p className="mt-8 font-mono text-[10px] tracking-wider text-muted-foreground">
+          LINUX / MACOS / WINDOWS / ANDROID / IOS
+        </p>
+      </aside>
+      <main className="login-form">
+        <AnimatedContent className="w-full max-w-[400px] login-form-content">
+          <p className="eyebrow">{t("login.eyebrow")}</p>
+          <h2 className="mt-3 text-2xl font-medium tracking-tight">
+            {t("login.title")}
+          </h2>
+          <p className="mt-3 mb-8 text-sm leading-6 text-muted-foreground">
+            {t("login.description")}
+          </p>
+          <ErrorBox message={error} />
+          <form onSubmit={submit} className="form-stack">
+            <Field label={t("login.username")}>
+              <Input
+                name="username"
+                autoComplete="username"
+                required
+                autoFocus
+                placeholder={t("login.usernamePlaceholder")}
+              />
+            </Field>
+            <Field label={t("login.password")}>
+              <Input
+                name="password"
+                type="password"
+                autoComplete="current-password"
+                required
+                placeholder={t("login.passwordPlaceholder")}
+              />
+            </Field>
+            <Button className="mt-2 w-full" disabled={busy}>
+              {busy ? t("login.verifying") : t("login.submit")}
+              <ArrowRight />
+            </Button>
+          </form>
+          <div className="mt-10 flex gap-2 border-t border-border pt-5 text-xs leading-6 text-muted-foreground">
+            <ShieldCheck className="mt-1 size-4 shrink-0" />
+            <span>{t("login.notice")}</span>
+          </div>
+        </AnimatedContent>
+      </main>
+    </div>
+  );
 }

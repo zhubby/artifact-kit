@@ -43,6 +43,11 @@ jobs:
       - run: sh scripts/cross-build-agent.sh
       - run: npm ci && npm run typecheck && npm run build && npx playwright install --with-deps chromium
         working-directory: web
+      - name: Frontend locales, themes and motion
+        run: npm run test:ui
+        working-directory: web
+        env:
+          AK_UI_PRODUCTION: '1'
       - run: cargo build --locked --bin artifact-control
       - name: Real Rust / Go / PostgreSQL / private S3 / browser
         shell: bash
@@ -95,6 +100,7 @@ jobs:
             .local/acceptance/*/evidence.json
             web/test-results/
             web/playwright-report/
+            .local/frontend-evidence/
   native-agent:
     name: native-agent (${{ matrix.os }})
     timeout-minutes: 15

@@ -1,0 +1,26 @@
+{
+  "repository": "https://github.com/DavidHDev/react-bits",
+  "commit": "9d9c687dc4f55b23539aa5417b703078047efa74",
+  "files": [
+    {
+      "path": "LICENSE.md",
+      "sha256": "4bdd1fa59a6b7d5954bc3b213dbc34e455c635a94bbcecf9293553797d0fad02",
+      "bytes": 2060
+    },
+    {
+      "path": "src/ts-tailwind/Backgrounds/Aurora/Aurora.tsx",
+      "sha256": "d4ecc600762aed884a4c2c3724a7601567c9120fa4cc1ae5c8bdd7c0997828f0",
+      "bytes": 17679
+    },
+    {
+      "path": "src/ts-tailwind/Components/SpotlightCard/SpotlightCard.tsx",
+      "sha256": "f7b64189ce3c018e5f54103bdf16b3e5f0c97f4a0dba9f6cd62d8793580b8c72",
+      "bytes": 12423
+    },
+    {
+      "path": "src/ts-tailwind/Animations/AnimatedContent/AnimatedContent.tsx",
+      "sha256": "9385c7f26a3358f8b7da1fb97baa3758896f7907782c5e3ec6a88ea7e2cf23cc",
+      "bytes": 7093
+    }
+  ]
+}
