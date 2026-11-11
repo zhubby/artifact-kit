@@ -5,9 +5,13 @@
 ## 身份与权限
 
 - `POST /auth/login`：`{username,password}`，设置 HttpOnly / SameSite=Strict cookie，生产添加 Secure。
+- `GET /auth/config`：无需登录，返回 `{registration_enabled}`；响应禁止缓存。
+- `POST /auth/register`：无需登录，仅接受 `{username,password}`，用户名去除首尾空白后为 1–100 UTF-8 字节，区分大小写且不能包含 NUL；密码为 12–256 UTF-8 字节。未知字段（包括 `role`、确认密码）被拒绝。新账号固定为 `viewer`，可读取本实例全部项目、构建和产物，不具备构建或管理权限。
+- 注册成功返回 `201 {id,username,role}`，创建与登录相同的 24 小时会话。用户、会话与 `user_registered` 审计原子提交；密码仅以 Argon2 哈希保存。无效输入返回 `400`，注册关闭或 CSRF 不符合要求返回 `403`，用户名冲突返回 `409`。
+- 注册在参数校验后、密码哈希前消耗限流额度：每实例滚动 5 分钟最多受理 10 次有效格式的尝试，重复用户名和后续失败也消耗额度；额度持久化在 `registration_attempt` 审计中，通过数据库事务锁防止并发越限。超限返回 `429` 和 `Retry-After`（秒）；重启不会重置额度，其他接口和登录限流不受影响。
 - `GET /auth/me`、`POST /auth/logout`。
 - Cookie 写请求需要 `x-artifactory-csrf: 1`，有 Origin 时必须精确匹配 `ARTIFACTORY_PUBLIC_URL`。Bearer Token 不使用 cookie 身份。
-- 管理员：账户、项目授权、凭据、节点池、注册与节点管理。操作者：构建、取消、重试和内部发布。只读：查询与下载。
+- 管理员：账户、项目授权、凭据、节点池、Agent 注册与节点管理。操作者：构建、取消、重试和内部发布。只读：查询与下载。
 - API Token 明确绑定项目 ID 列表与 `read/build/release` scopes，同时不能超过所属账户角色；不能调用管理 API 或再创建 Token。
 - session 有效期 24 小时；Token 有效期 1 到 365 天。登录失败按账号持久化限流，反向代理仍应部署连接 / IP 级保护。
 
@@ -16,7 +20,7 @@
 | 方法 / 路径 | 输入 / 说明 |
 |---|---|
 | `GET /overview` | 概览统计，仅会话 |
-| `GET, POST /users` | 创建 `{username,password,role}`，密码 12 到 256 字符 |
+| `GET, POST /users` | 创建 `{username,password,role}`，密码 12 到 256 UTF-8 字节 |
 | `GET, POST /tokens` | 创建 `{name,project_ids,scopes,days}`，仅本次返回明文 |
 | `DELETE /tokens/{id}` | 吊销当前用户的 Token |
 | `GET, POST /pools` | 创建 `{name}` |

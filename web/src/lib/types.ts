@@ -1,4 +1,5 @@
 export interface User { id: string; username: string; role: "admin" | "operator" | "viewer" }
+export interface AuthConfig { registration_enabled: boolean }
 export interface Project { model_profile_id?: string | null; build_context?: string; source_credentials?: {repository_url: string; credential_id: string}[]; id: string; name: string; repository_url: string; credential_id: string | null; pool_ids: string[]; signing_profiles: string[]; build_count: number; last_build: { id: string; status: string; created_at: string } | null }
 export interface StepRun { step_index: number; name: string; phase: string; status: string; exit_code: number | null; started_at: string; finished_at: string | null }
 export interface Attempt { id: string; node_id: string; node_name: string; status: string; lease_expires_at: string; error: string | null; started_at: string | null; finished_at: string | null; steps: StepRun[] }

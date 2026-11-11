@@ -84,6 +84,37 @@ class LocalServiceCredentialTests(unittest.TestCase):
 
 
 class ProductionComposeTests(unittest.TestCase):
+    def test_registration_defaults_on_and_can_be_disabled(self):
+        environment = {
+            key: value for key, value in os.environ.items()
+            if not key.startswith(('ARTIFACTORY_', 'COMPOSE_'))
+        }
+        environment.update(
+            ARTIFACTORY_DOMAIN='console.example.invalid',
+            ARTIFACTORY_S3_DOMAIN='objects.example.invalid',
+            ARTIFACTORY_DATABASE_PASSWORD='non-secret-config-fixture',
+            ARTIFACTORY_MASTER_KEY=base64.b64encode(bytes(32)).decode(),
+            ARTIFACTORY_S3_ACCESS_KEY='non-secret-config-fixture',
+            ARTIFACTORY_S3_SECRET_KEY='non-secret-config-fixture',
+            ARTIFACTORY_BOOTSTRAP_PASSWORD='non-secret-config-fixture',
+        )
+        for enabled in ['true', 'false']:
+            with self.subTest(enabled=enabled):
+                if enabled == 'false':
+                    environment['ARTIFACTORY_REGISTRATION_ENABLED'] = enabled
+                result = subprocess.run(
+                    ['docker', 'compose', '--project-name', 'artifactory-config-fixture',
+                     '--env-file', os.devnull, '-f', str(ROOT / 'compose.yaml'),
+                     'config', '--format', 'json'],
+                    cwd=ROOT, env=environment, capture_output=True, text=True,
+                    check=True, timeout=30,
+                )
+                manifest = json.loads(result.stdout)
+                self.assertEqual(
+                    manifest['services']['control']['environment'].get('ARTIFACTORY_REGISTRATION_ENABLED'),
+                    enabled,
+                )
+
     def test_control_tmpfs_options_remain_one_mount(self):
         environment = {
             key: value for key, value in os.environ.items()
@@ -111,6 +142,31 @@ class ProductionComposeTests(unittest.TestCase):
             ['/tmp:size=1g,mode=1777'],
             'the size and mode must belong to the same absolute tmpfs mount',
         )
+
+
+class LocalRegistrationSettingsTests(unittest.TestCase):
+    def test_initial_registration_setting_respects_override_and_preserves_existing_env(self):
+        for enabled in ['true', 'false']:
+            with self.subTest(enabled=enabled), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                (root / 'scripts').mkdir()
+                shutil.copy(ROOT / 'scripts/init-local.sh', root / 'scripts/init-local.sh')
+                pki = root / '.local/pki'
+                pki.mkdir(parents=True)
+                (pki / 'ca.key').touch()
+                (pki / 'server.key').touch()
+                environment = {key: value for key, value in os.environ.items()
+                               if key != 'ARTIFACTORY_REGISTRATION_ENABLED'}
+                if enabled == 'false':
+                    environment['ARTIFACTORY_REGISTRATION_ENABLED'] = enabled
+                command = ['sh', 'scripts/init-local.sh']
+                subprocess.run(command, cwd=root, env=environment, check=True, capture_output=True)
+                original = (root / '.local/env').read_bytes()
+                settings = dict(line.split('=', 1) for line in original.decode().splitlines())
+                self.assertEqual(settings.get('ARTIFACTORY_REGISTRATION_ENABLED'), enabled)
+                environment['ARTIFACTORY_REGISTRATION_ENABLED'] = 'false' if enabled == 'true' else 'true'
+                subprocess.run(command, cwd=root, env=environment, check=True, capture_output=True)
+                self.assertEqual((root / '.local/env').read_bytes(), original)
 
 
 if __name__ == '__main__':

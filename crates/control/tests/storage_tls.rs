@@ -36,6 +36,7 @@ async fn storage_tls_probe_helper() {
         grpc_bind: "unused".into(),
         public_url: endpoint.clone(),
         insecure_dev: false,
+        registration_enabled: true,
         pki_dir: directory.clone().into(),
         data_dir: directory.into(),
         master_key: [0; 32],

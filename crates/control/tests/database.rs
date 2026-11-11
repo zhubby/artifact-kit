@@ -17,6 +17,9 @@ use tokio::sync::{RwLock, mpsc};
 use tower::ServiceExt;
 use uuid::Uuid;
 
+#[path = "database/registration.rs"]
+mod registration;
+
 #[tokio::test]
 #[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL and git-lfs"]
 async fn evicted_source_restores_pinned_objects_after_upstream_refs_move() {
@@ -541,6 +544,122 @@ struct Database {
 
 #[tokio::test]
 #[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
+async fn registration_creates_viewer_and_standard_session() {
+    use argon2::{Argon2, PasswordHash, PasswordVerifier};
+    let database = Database::new().await;
+    let router = api::router(database.state.clone());
+    let password = "a-new-reader-password";
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/register")
+                .header("content-type", "application/json")
+                .header("x-artifactory-csrf", "1")
+                .header("origin", "http://localhost:3000")
+                .body(Body::from(
+                    serde_json::json!({"username":"  new-reader  ","password":password})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let set_cookie = response.headers()["set-cookie"].to_str().unwrap();
+    assert!(set_cookie.contains("HttpOnly; SameSite=Strict; Path=/; Max-Age=86400"));
+    assert!(!set_cookie.contains("Secure"));
+    let cookie = set_cookie.split(';').next().unwrap().to_owned();
+    let body = axum::body::to_bytes(response.into_body(), 8192)
+        .await
+        .unwrap();
+    let user: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(user["username"], "new-reader");
+    assert_eq!(user["role"], "viewer");
+    assert!(user.get("password_hash").is_none());
+    let (encoded, role): (String, String) =
+        sqlx::query_as("SELECT password_hash,role FROM users WHERE username='new-reader'")
+            .fetch_one(&database.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(role, "viewer");
+    assert_ne!(encoded, password);
+    Argon2::default()
+        .verify_password(password.as_bytes(), &PasswordHash::new(&encoded).unwrap())
+        .unwrap();
+    let sessions: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM sessions WHERE expires_at>now()+interval '23 hours' AND expires_at<=now()+interval '24 hours'",
+    )
+    .fetch_one(&database.state.pool)
+    .await
+    .unwrap();
+    assert_eq!(sessions, 1);
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/me")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let audit: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE action='user_registered'")
+            .fetch_one(&database.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(audit, 1);
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/logout")
+                .header("cookie", &cookie)
+                .header("x-artifactory-csrf", "1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/me")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .header("x-artifactory-csrf", "1")
+                .body(Body::from(
+                    serde_json::json!({"username":"new-reader","password":password}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().contains_key("set-cookie"));
+    database.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
 async fn revision_budget_excludes_source_authorization_and_transport_failures() {
     let database = Database::new().await;
     let node = database.node().await;
@@ -654,6 +773,7 @@ impl Database {
             grpc_bind: "127.0.0.1:0".into(),
             public_url: "http://localhost:3000".into(),
             insecure_dev: true,
+            registration_enabled: true,
             pki_dir: ".local/pki".into(),
             data_dir: std::env::temp_dir(),
             master_key: [1; 32],

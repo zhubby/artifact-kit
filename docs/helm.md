@@ -2,6 +2,8 @@
 
 Chart 位于 `charts/artifactory`，包含单实例 control、Next.js / Caddy 网关、PostgreSQL 17、私有 SeaweedFS S3，独立 Pi AI worker，以及四个独立 PVC。control、数据库、S3 使用 Recreate 升级，避免双调度器或两个写进程同时挂载同一数据目录；升级存在短暂停机。
 
+`auth.registrationEnabled` 默认 `true`，访客可自助注册为全实例只读用户，查看和下载全部项目的构建与产物。仅允许管理员分配账号的部署应在安装或升级时设置 `--set auth.registrationEnabled=false`；该开关映射到 control 的 `ARTIFACTORY_REGISTRATION_ENABLED`，不会停用已有账号或会话。
+
 ## Release 镜像
 
 GitHub `release-images` 工作流仅在 **Release published** 时执行，正式版本和预发布版本都构建。它检出该 Release 的 tag，在原生 AMD64、ARM64 runner 分别构建，再发布包含 `linux/amd64` / `linux/arm64` 的 GHCR manifest：

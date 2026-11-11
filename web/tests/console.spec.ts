@@ -15,6 +15,59 @@ async function login(page: Page, user = username!, secret = password!) {
   await expect(page.getByRole("heading", { name: "构建，签名，交付。" })).toBeVisible();
 }
 
+test("self-registration creates a real viewer session, downloads artifacts and supports re-login", async ({ page, context }, testInfo) => {
+  const registeredUser = `registered-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+  const registeredPassword = "registration-acceptance-only-2026";
+  await page.goto("/login");
+  const config = await page.request.get("/api/v1/auth/config");
+  expect(config.status()).toBe(200);
+  expect(await config.json()).toEqual({ registration_enabled: true });
+  const invalidUsername = await page.request.post("/api/v1/auth/register", {
+    headers: { "x-artifactory-csrf": "1" },
+    data: { username: "invalid\u0000", password: registeredPassword },
+  });
+  expect(invalidUsername.status()).toBe(400);
+  await page.getByRole("link", { name: "创建账号", exact: true }).click();
+  await expect(page).toHaveURL(/\/register$/);
+  await page.locator('input[name="username"]').fill(registeredUser);
+  await page.locator('input[name="password"]').fill(registeredPassword);
+  await page.locator('input[name="confirmPassword"]').fill(registeredPassword);
+  await page.screenshot({ path: testInfo.outputPath("registration.png"), fullPage: true });
+  const registered = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/auth/register" && response.request().method() === "POST");
+  await page.getByRole("button", { name: "注册并进入工作空间", exact: true }).click();
+  const response = await registered;
+  expect(response.status()).toBe(201);
+  expect(response.request().postDataJSON()).toEqual({ username: registeredUser, password: registeredPassword });
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole("heading", { name: "构建，签名，交付。" })).toBeVisible();
+  const session = (await context.cookies()).find(cookie => cookie.name === "artifactory_session");
+  expect(session).toMatchObject({ httpOnly: true, sameSite: "Strict", path: "/" });
+  expect(session!.expires * 1000).toBeGreaterThan(Date.now() + 23 * 60 * 60 * 1000);
+  const identity = await page.request.get("/api/v1/auth/me");
+  expect(identity.status()).toBe(200);
+  expect(await identity.json()).toMatchObject({ username: registeredUser, role: "viewer", token: false });
+  const projects = await page.request.get("/api/v1/projects");
+  expect(projects.status()).toBe(200);
+  expect((await projects.json()).some((project: { id: string }) => project.id === evidence.project_id)).toBe(true);
+  await expect(page.getByRole("button", { name: "发起构建", exact: true })).toHaveCount(0);
+  const denied = await page.request.post(`/api/v1/projects/${evidence.project_id}/builds`, {
+    headers: { "x-artifactory-csrf": "1" }, data: { ref: "main" },
+  });
+  expect(denied.status()).toBe(403);
+  for (const path of ["users", "credentials"]) {
+    expect((await page.request.get(`/api/v1/${path}`)).status()).toBe(403);
+  }
+  await page.goto(`/builds/${evidence.build_id}`);
+  const downloading = page.waitForEvent("download");
+  await page.getByRole("link", { name: "下载 dist/app", exact: true }).click();
+  expect(await (await downloading).failure()).toBeNull();
+  const logout = await page.request.post("/api/v1/auth/logout", { headers: { "x-artifactory-csrf": "1" } });
+  expect(logout.status()).toBe(200);
+  expect((await page.request.get("/api/v1/auth/me")).status()).toBe(401);
+  await login(page, registeredUser, registeredPassword);
+  await expect(page.getByRole("button", { name: "发起构建", exact: true })).toHaveCount(0);
+});
+
 test("real console, native logs, artifact download and immutable release", async ({ page }, testInfo) => {
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));

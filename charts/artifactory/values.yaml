@@ -35,6 +35,9 @@ secrets:
   credentials: ""
   pki: ""
 
+auth:
+  registrationEnabled: true
+
 console:
   publicUrl: https://build.example.com
   service:

@@ -15,6 +15,7 @@ data:
   ARTIFACTORY_GRPC_BIND: 0.0.0.0:8443
   ARTIFACTORY_PUBLIC_URL: {{ .Values.console.publicUrl | trimSuffix "/" | quote }}
   ARTIFACTORY_INSECURE_DEV: {{ .Values.development.insecureHttp | toString | quote }}
+  ARTIFACTORY_REGISTRATION_ENABLED: {{ .Values.auth.registrationEnabled | toString | quote }}
   ARTIFACTORY_DATA_DIR: /var/lib/artifactory
   ARTIFACTORY_SOURCE_CACHE_BYTES: {{ .Values.sourceCache.maxBytes | quote }}
   ARTIFACTORY_PKI_DIR: /run/artifactory-pki

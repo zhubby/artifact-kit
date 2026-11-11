@@ -194,6 +194,7 @@ export async function fixtureAPI(page: Page, role: User["role"] = "admin") {
       });
     }
     const responses: Record<string, unknown> = {
+      "/auth/config": { registration_enabled: true },
       "/auth/me": { id: "user-main", username: "alex", role },
       "/projects": [project],
       [`/projects/${project.id}`]: project,

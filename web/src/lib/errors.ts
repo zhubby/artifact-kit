@@ -4,7 +4,16 @@ type LocalErrorKey =
   | "common.invalidJson"
   | "common.operationFailed"
   | "common.requestFailed"
-  | "login.failed";
+  | "login.failed"
+  | "register.failed"
+  | "register.invalidUsername"
+  | "register.invalidPassword"
+  | "register.invalidFields"
+  | "register.passwordMismatch"
+  | "register.usernameTaken"
+  | "register.forbidden"
+  | "register.rateLimited"
+  | "register.configFailed";
 
 // Retain translation keys until rendering so existing errors follow the locale.
 export class LocalizedError extends Error {

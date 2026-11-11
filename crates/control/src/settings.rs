@@ -9,6 +9,7 @@ pub struct Settings {
     pub grpc_bind: String,
     pub public_url: String,
     pub insecure_dev: bool,
+    pub registration_enabled: bool,
     pub pki_dir: PathBuf,
     pub data_dir: PathBuf,
     pub master_key: [u8; 32],
@@ -58,6 +59,9 @@ impl Settings {
                 .unwrap_or_else(|_| "127.0.0.1:8443".into()),
             public_url: public_url.trim_end_matches('/').into(),
             insecure_dev,
+            registration_enabled: parse_registration_enabled(
+                env::var("ARTIFACTORY_REGISTRATION_ENABLED").ok().as_deref(),
+            )?,
             pki_dir: env::var("ARTIFACTORY_PKI_DIR")
                 .unwrap_or_else(|_| ".local/pki".into())
                 .into(),
@@ -72,5 +76,27 @@ impl Settings {
             s3_access_key: required("ARTIFACTORY_S3_ACCESS_KEY")?,
             s3_secret_key: required("ARTIFACTORY_S3_SECRET_KEY")?,
         })
+    }
+}
+
+fn parse_registration_enabled(value: Option<&str>) -> Result<bool> {
+    value
+        .unwrap_or("true")
+        .parse()
+        .context("ARTIFACTORY_REGISTRATION_ENABLED must be true or false")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_registration_enabled;
+
+    #[test]
+    fn registration_defaults_on_and_accepts_explicit_boolean_values() {
+        assert!(parse_registration_enabled(None).unwrap());
+        assert!(parse_registration_enabled(Some("true")).unwrap());
+        assert!(!parse_registration_enabled(Some("false")).unwrap());
+        for value in ["", "1", "TRUE", "invalid"] {
+            assert!(parse_registration_enabled(Some(value)).is_err());
+        }
     }
 }

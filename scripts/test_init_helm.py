@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -12,6 +13,20 @@ SCRIPT = Path(__file__).with_name("init-helm.py")
 
 
 class HelmBootstrapTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('helm'), 'requires helm')
+    def test_registration_defaults_on_and_can_be_disabled(self):
+        chart = SCRIPT.parents[1] / 'charts/artifactory'
+        for enabled in ['true', 'false']:
+            with self.subTest(enabled=enabled):
+                command = ['helm', 'template', 'registration-test', str(chart)]
+                if enabled == 'false':
+                    command.extend(['--set', 'auth.registrationEnabled=false'])
+                result = subprocess.run(command, check=True, capture_output=True, text=True)
+                self.assertTrue(
+                    f'ARTIFACTORY_REGISTRATION_ENABLED: "{enabled}"' in result.stdout,
+                    'rendered registration setting does not match the requested value',
+                )
+
     def test_persistent_secrets_and_certificate_identity(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "private"

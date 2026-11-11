@@ -19,6 +19,8 @@ pub enum ApiError {
     NotFound,
     #[error("{0}")]
     Conflict(String),
+    #[error("too many requests")]
+    TooManyRequests(u64),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -49,6 +51,7 @@ impl IntoResponse for ApiError {
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
             Self::Internal(error) => {
                 tracing::error!(error = %error, "request failed");
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -59,6 +62,13 @@ impl IntoResponse for ApiError {
         } else {
             self.to_string()
         };
-        (status, Json(json!({"error": message}))).into_response()
+        let mut response = (status, Json(json!({"error": message}))).into_response();
+        if let Self::TooManyRequests(seconds) = self {
+            response.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                seconds.to_string().parse().unwrap(),
+            );
+        }
+        response
     }
 }

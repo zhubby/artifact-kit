@@ -88,6 +88,7 @@ async fn storage_error_probe_helper() {
             grpc_bind: "unused".into(),
             public_url: endpoint.clone(),
             insecure_dev: true,
+            registration_enabled: true,
             pki_dir: directory.path().into(),
             data_dir: directory.path().into(),
             master_key: [0; 32],

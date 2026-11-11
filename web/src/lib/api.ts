@@ -32,10 +32,25 @@ export async function api<Type>(
   if (!response.ok) {
     if (
       response.status === 401 &&
-      path !== "/auth/login" &&
+      !["/auth/login", "/auth/register", "/auth/config"].includes(path) &&
       typeof window !== "undefined"
     )
       window.location.replace("/login");
+    if (path === "/auth/config")
+      throw new LocalizedError("register.configFailed");
+    if (path === "/auth/register") {
+      if (response.status === 400) {
+        if (body?.error === "username must contain 1..100 bytes")
+          throw new LocalizedError("register.invalidUsername");
+        if (body?.error === "password must contain 12..256 bytes")
+          throw new LocalizedError("register.invalidPassword");
+        throw new LocalizedError("register.invalidFields");
+      }
+      if (response.status === 403) throw new LocalizedError("register.forbidden");
+      if (response.status === 409) throw new LocalizedError("register.usernameTaken");
+      if (response.status === 429) throw new LocalizedError("register.rateLimited");
+      throw new LocalizedError("register.failed");
+    }
     if (typeof body?.error === "string" && body.error)
       throw new Error(body.error);
     throw new LocalizedError("common.httpFailed", { status: response.status });

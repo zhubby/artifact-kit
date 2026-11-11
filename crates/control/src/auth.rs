@@ -9,8 +9,8 @@ use argon2::{
 };
 use axum::{
     Json,
-    extract::{FromRequestParts, State},
-    http::{HeaderMap, HeaderValue, Method, header, request::Parts},
+    extract::{FromRequestParts, State, rejection::JsonRejection},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header, request::Parts},
     response::IntoResponse,
 };
 use serde::Deserialize;
@@ -150,6 +150,101 @@ pub struct Login {
     password: String,
 }
 
+pub async fn registration_config(State(state): State<AppState>) -> impl IntoResponse {
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(json!({"registration_enabled":state.settings.registration_enabled})),
+    )
+}
+
+async fn reserve_registration(state: &AppState) -> Result<()> {
+    let mut transaction = state.pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('artifactory:registration',0))")
+        .execute(&mut *transaction)
+        .await?;
+    let (attempts, retry_after): (i64, i64) = sqlx::query_as(
+        "SELECT count(*),coalesce(ceil(extract(epoch FROM (min(created_at)+interval '5 minutes'-statement_timestamp())))::bigint,0) FROM audit_events WHERE action='registration_attempt' AND created_at>statement_timestamp()-interval '5 minutes'",
+    )
+    .fetch_one(&mut *transaction)
+    .await?;
+    if attempts >= 10 {
+        transaction.rollback().await?;
+        return Err(ApiError::TooManyRequests(retry_after.max(1) as u64));
+    }
+    sqlx::query("INSERT INTO audit_events(actor,action,resource_id,created_at) VALUES('anonymous','registration_attempt','registration',clock_timestamp())")
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+pub async fn register(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    input: std::result::Result<Json<Login>, JsonRejection>,
+) -> Result<impl IntoResponse> {
+    csrf(&headers, &state)?;
+    if !state.settings.registration_enabled {
+        return Err(ApiError::Forbidden);
+    }
+    let Json(input) =
+        input.map_err(|_| ApiError::BadRequest("invalid registration fields".into()))?;
+    let username = input.username.trim();
+    if username.contains('\0') {
+        return Err(ApiError::BadRequest("invalid registration fields".into()));
+    }
+    if username.is_empty() || username.len() > 100 {
+        return Err(ApiError::BadRequest(
+            "username must contain 1..100 bytes".into(),
+        ));
+    }
+    if !(12..=256).contains(&input.password.len()) {
+        return Err(ApiError::BadRequest(
+            "password must contain 12..256 bytes".into(),
+        ));
+    }
+    reserve_registration(&state).await?;
+    let password = input.password;
+    let encoded = tokio::task::spawn_blocking(move || password_hash(&password))
+        .await
+        .map_err(anyhow::Error::from)??;
+    let user_id = Uuid::new_v4();
+    let token = crypto::token();
+    let mut transaction = state.pool.begin().await?;
+    sqlx::query("INSERT INTO users(id,username,password_hash,role) VALUES($1,$2,$3,'viewer')")
+        .bind(user_id)
+        .bind(username)
+        .bind(encoded)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '24 hours')")
+        .bind(crypto::hash(&token))
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("INSERT INTO audit_events(actor,action,resource_id,details) VALUES($1,'user_registered',$1,'{\"role\":\"viewer\"}')")
+        .bind(user_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    Ok((
+        StatusCode::CREATED,
+        [(
+            header::SET_COOKIE,
+            session_cookie(&token, state.settings.insecure_dev),
+        )],
+        Json(json!({"id":user_id,"username":username,"role":"viewer"})),
+    ))
+}
+
+fn session_cookie(token: &str, insecure_dev: bool) -> HeaderValue {
+    let secure = if insecure_dev { "" } else { "; Secure" };
+    HeaderValue::from_str(&format!(
+        "artifactory_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400{secure}"
+    ))
+    .unwrap()
+}
+
 pub async fn login(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -195,17 +290,11 @@ pub async fn login(
     sqlx::query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '24 hours')")
         .bind(crypto::hash(&token)).bind(user_id).execute(&state.pool).await?;
     state.audit(user_id, "login", user_id, json!({})).await?;
-    let secure = if state.settings.insecure_dev {
-        ""
-    } else {
-        "; Secure"
-    };
-    let value = HeaderValue::from_str(&format!(
-        "artifactory_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400{secure}"
-    ))
-    .unwrap();
     Ok((
-        [(header::SET_COOKIE, value)],
+        [(
+            header::SET_COOKIE,
+            session_cookie(&token, state.settings.insecure_dev),
+        )],
         Json(json!({"id":user_id,"username":input.username,"role":row.get::<String,_>("role")})),
     ))
 }
