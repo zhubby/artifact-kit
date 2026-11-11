@@ -61,7 +61,7 @@ func Verify(raw []byte, signature string, keys []string, osName, arch string) (A
 	seen := map[string]bool{}
 	for _, a := range m.Assets {
 		platform := a.OS + "/" + a.Arch
-		name := "artifact-agent-" + a.OS + "-" + a.Arch
+		name := "artifactory-agent-" + a.OS + "-" + a.Arch
 		if a.OS == "windows" {
 			name += ".exe"
 		}

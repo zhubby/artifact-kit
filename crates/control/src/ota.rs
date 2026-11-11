@@ -79,7 +79,7 @@ pub fn verify(raw: &[u8], signature: &str, keys: &[String]) -> Result<Manifest> 
         ensure!(
             a.name
                 == format!(
-                    "artifact-agent-{}-{}{}",
+                    "artifactory-agent-{}-{}{}",
                     a.os,
                     a.arch,
                     if a.os == "windows" { ".exe" } else { "" }
@@ -182,9 +182,9 @@ pub async fn import_tag(state: &AppState, tag: &str) -> Result<Uuid> {
     let get = |url: String, accept: &str| {
         let mut r = client
             .get(url)
-            .header("User-Agent", "artifact-kit-agent-ota")
+            .header("User-Agent", "artifactory-agent-ota")
             .header("Accept", accept);
-        if let Ok(token) = std::env::var("AK_AGENT_GITHUB_TOKEN") {
+        if let Ok(token) = std::env::var("ARTIFACTORY_AGENT_GITHUB_TOKEN") {
             r = r.bearer_auth(token)
         }
         r
@@ -479,7 +479,7 @@ mod tests {
                     os: (*os).into(),
                     arch: (*arch).into(),
                     name: format!(
-                        "artifact-agent-{os}-{arch}{}",
+                        "artifactory-agent-{os}-{arch}{}",
                         if *os == "windows" { ".exe" } else { "" }
                     ),
                     size: 10,

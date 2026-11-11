@@ -1,4 +1,4 @@
-use artifact_control::{settings::Settings, storage::Storage};
+use artifactory_control::{settings::Settings, storage::Storage};
 use std::process::Command;
 
 #[test]
@@ -25,11 +25,11 @@ fn storage_uses_system_trust_and_verifies_s3_identity() {
 // client's process environment and must not race other Rust tests.
 #[tokio::test]
 async fn storage_tls_probe_helper() {
-    if std::env::var("AK_TEST_STORAGE_TLS_HELPER").as_deref() != Ok("1") {
+    if std::env::var("ARTIFACTORY_TEST_STORAGE_TLS_HELPER").as_deref() != Ok("1") {
         return;
     }
-    let endpoint = std::env::var("AK_TEST_STORAGE_TLS_ENDPOINT").unwrap();
-    let directory = std::env::var("AK_TEST_STORAGE_TLS_DIRECTORY").unwrap();
+    let endpoint = std::env::var("ARTIFACTORY_TEST_STORAGE_TLS_ENDPOINT").unwrap();
+    let directory = std::env::var("ARTIFACTORY_TEST_STORAGE_TLS_DIRECTORY").unwrap();
     let settings = Settings {
         database_url: "unused".into(),
         http_bind: "unused".into(),

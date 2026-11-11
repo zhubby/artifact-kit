@@ -1,10 +1,17 @@
-{$AK_DOMAIN} {
+{$ARTIFACTORY_DOMAIN} {
     encode zstd gzip
+    handle /api/* {
+        reverse_proxy control:8080 {
+            flush_interval -1
+        }
+    }
+    handle {
     reverse_proxy web:3000 {
         flush_interval -1
     }
+    }
 }
 
-{$AK_S3_DOMAIN} {
+{$ARTIFACTORY_S3_DOMAIN} {
     reverse_proxy s3:8333
 }

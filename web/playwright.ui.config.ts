@@ -12,12 +12,12 @@ export default defineConfig({
   ],
   outputDir: "test-results/ui",
   use: {
-    baseURL: process.env.AK_UI_URL || "http://127.0.0.1:3100",
+    baseURL: process.env.ARTIFACTORY_UI_URL || "http://127.0.0.1:3100",
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
   webServer: {
-    command: process.env.AK_UI_PRODUCTION
+    command: process.env.ARTIFACTORY_UI_PRODUCTION
       ? "npm run start -- --hostname 127.0.0.1 --port 3100"
       : "npm run dev -- --port 3100",
     url: "http://127.0.0.1:3100/login",

@@ -14,8 +14,8 @@ import (
 	"runtime"
 	"time"
 
-	pb "github.com/artifact-kit/agent/gen/agentv1"
-	"github.com/artifact-kit/agent/internal/config"
+	pb "github.com/zhubby/artifact-kit/agent/gen/agentv1"
+	"github.com/zhubby/artifact-kit/agent/internal/config"
 )
 
 func Enroll(ctx context.Context, path string, cfg config.Config, token string) error {

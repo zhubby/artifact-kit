@@ -1,9 +1,0 @@
-apiVersion: v2
-name: artifact-kit
-description: Single-instance Artifact Kit with PostgreSQL and private S3 storage
-type: application
-version: 0.1.0
-appVersion: "0.1.0"
-home: https://github.com/zhubby/artifact-kit
-sources:
-  - https://github.com/zhubby/artifact-kit

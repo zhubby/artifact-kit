@@ -1,0 +1,24 @@
+{{- $components := list "control" "postgres" "s3" }}
+{{- if .Values.aiWorker.enabled }}{{- $components = append $components "ai-worker" }}{{- end }}
+{{- range $component := $components }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "artifactory.fullname" $ }}-{{ $component }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "artifactory.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if eq $.Values.persistence.storageClass "-" }}
+  storageClassName: ""
+  {{- else if $.Values.persistence.storageClass }}
+  storageClassName: {{ $.Values.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ index $.Values.persistence $component | quote }}
+{{- end }}

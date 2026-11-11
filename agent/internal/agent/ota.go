@@ -6,12 +6,12 @@ import (
 	"path/filepath"
 	"time"
 
-	pb "github.com/artifact-kit/agent/gen/agentv1"
-	"github.com/artifact-kit/agent/internal/ota"
+	pb "github.com/zhubby/artifact-kit/agent/gen/agentv1"
+	"github.com/zhubby/artifact-kit/agent/internal/ota"
 )
 
 func (runner *Runner) otaCommand(command *pb.Command) (bool, error) {
-	directory := os.Getenv("AK_OTA_DIRECTORY")
+	directory := os.Getenv("ARTIFACTORY_OTA_DIRECTORY")
 	if directory == "" {
 		return false, nil
 	}
@@ -54,7 +54,7 @@ func (runner *Runner) otaCommand(command *pb.Command) (bool, error) {
 // Caller holds the task mutex. finished events remain in tasks until their
 // terminal ack, which itself is withheld until artifact and log delivery.
 func (runner *Runner) otaSnapshot(request string) any {
-	directory := os.Getenv("AK_OTA_DIRECTORY")
+	directory := os.Getenv("ARTIFACTORY_OTA_DIRECTORY")
 	if directory == "" {
 		return nil
 	}

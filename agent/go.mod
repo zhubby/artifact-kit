@@ -1,4 +1,4 @@
-module github.com/artifact-kit/agent
+module github.com/zhubby/artifact-kit/agent
 
 go 1.24.0
 

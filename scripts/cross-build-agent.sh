@@ -7,5 +7,5 @@ for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; d
   architecture=${target#*/}
   extension=
   if [ "$operating_system" = windows ]; then extension=.exe; fi
-  CGO_ENABLED=0 GOOS="$operating_system" GOARCH="$architecture" go build -trimpath -o "bin/artifact-agent-$operating_system-$architecture$extension" ./cmd/artifact-agent
+  CGO_ENABLED=0 GOOS="$operating_system" GOARCH="$architecture" go build -trimpath -o "bin/artifactory-agent-$operating_system-$architecture$extension" ./cmd/artifactory-agent
 done

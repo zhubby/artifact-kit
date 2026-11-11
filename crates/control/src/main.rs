@@ -1,8 +1,12 @@
 use anyhow::{Context, Result, ensure};
-use artifact_control::{
+use artifactory_control::{
     api, auth,
     grpc::AgentService,
-    protocol::{control_server::ControlServer, enrollment_server::EnrollmentServer},
+    planning::PlanningService,
+    protocol::{
+        control_server::ControlServer, enrollment_server::EnrollmentServer,
+        planner_enrollment_server::PlannerEnrollmentServer, planning_server::PlanningServer,
+    },
     scheduler,
     settings::Settings,
     state::AppState,
@@ -32,7 +36,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "artifact_control=info,tower_http=info".into()),
+                .unwrap_or_else(|_| "artifactory_control=info,tower_http=info".into()),
         )
         .init();
     let arguments = Arguments::parse();
@@ -50,9 +54,10 @@ async fn main() -> Result<()> {
         .fetch_one(&pool)
         .await?;
     if count == 0 {
-        let username = std::env::var("AK_BOOTSTRAP_USERNAME").unwrap_or_else(|_| "admin".into());
-        let password = std::env::var("AK_BOOTSTRAP_PASSWORD")
-            .context("AK_BOOTSTRAP_PASSWORD is required for the first administrator")?;
+        let username =
+            std::env::var("ARTIFACTORY_BOOTSTRAP_USERNAME").unwrap_or_else(|_| "admin".into());
+        let password = std::env::var("ARTIFACTORY_BOOTSTRAP_PASSWORD")
+            .context("ARTIFACTORY_BOOTSTRAP_PASSWORD is required for the first administrator")?;
         ensure!(
             !username.is_empty() && username.len() <= 100,
             "invalid bootstrap username"
@@ -83,9 +88,18 @@ async fn main() -> Result<()> {
         .tls_config(tls)?
         .add_service(EnrollmentServer::new(agent.clone()).max_decoding_message_size(64 * 1024))
         .add_service(ControlServer::new(agent).max_decoding_message_size(128 * 1024))
+        .add_service(
+            PlannerEnrollmentServer::new(PlanningService(state.clone()))
+                .max_decoding_message_size(32 * 1024),
+        )
+        .add_service(
+            PlanningServer::new(PlanningService(state.clone()))
+                .max_decoding_message_size(768 * 1024)
+                .max_encoding_message_size(2 * 1024 * 1024),
+        )
         .serve_with_shutdown(settings.grpc_bind.parse()?, shutdown());
     let listener = tokio::net::TcpListener::bind(&settings.http_bind).await?;
-    tracing::info!(http=%settings.http_bind,grpc=%settings.grpc_bind,"Artifact Kit control plane ready");
+    tracing::info!(http=%settings.http_bind,grpc=%settings.grpc_bind,"artifactory control plane ready");
     let http = axum::serve(listener, api::router(state)).with_graceful_shutdown(shutdown());
     tokio::try_join!(async { http.await.map_err(anyhow::Error::from) }, async {
         grpc.await.map_err(anyhow::Error::from)

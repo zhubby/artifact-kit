@@ -46,16 +46,18 @@ def wait_ready(container, probe, timeout):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--postgres', default='artifact-kit-postgres-test')
-    parser.add_argument('--s3', default='artifact-kit-s3-test')
-    parser.add_argument('--s3-url', default=os.environ.get('AK_S3_ENDPOINT', 'http://127.0.0.1:19000'))
+    parser.add_argument('--postgres', default='artifactory-postgres-test')
+    parser.add_argument('--s3', default='artifactory-s3-test')
+    parser.add_argument('--s3-url', default=os.environ.get('ARTIFACTORY_S3_ENDPOINT', 'http://127.0.0.1:19000'))
     parser.add_argument('--timeout', type=float, default=60)
     arguments = parser.parse_args()
     if arguments.timeout <= 0:
         parser.error('--timeout must be positive')
 
     def postgres_ready():
-        return subprocess.run(['docker', 'exec', arguments.postgres, 'pg_isready', '-U', 'artifact', '-d', 'artifact'], capture_output=True, timeout=5).returncode == 0
+        # The entrypoint's temporary initialization server accepts Unix sockets
+        # before it restarts. Only the final server opens its TCP listener.
+        return subprocess.run(['docker', 'exec', arguments.postgres, 'pg_isready', '-h', '127.0.0.1', '-U', 'artifactory', '-d', 'artifactory'], capture_output=True, timeout=5).returncode == 0
 
     def s3_ready():
         try:

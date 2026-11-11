@@ -20,7 +20,7 @@ export async function api<Type>(
       credentials: "same-origin",
       headers: {
         "Content-Type": "application/json",
-        "x-artifact-csrf": "1",
+        "x-artifactory-csrf": "1",
         ...init.headers,
       },
       cache: "no-store",

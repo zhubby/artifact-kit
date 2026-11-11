@@ -1,6 +1,6 @@
 # Third-party visual components
 
-Artifact Kit includes adapted React Bits components by David Haz:
+artifactory includes adapted React Bits components by David Haz:
 
 - Repository: https://github.com/DavidHDev/react-bits
 - Source commit: `9d9c687dc4f55b23539aa5417b703078047efa74`
@@ -13,4 +13,4 @@ Adaptations:
 - **SpotlightCard:** retains radial pointer illumination and masked edge glow; uses local pointer events and one coalesced frame per movement instead of per-card global listeners, ambient loops and grain.
 - **AnimatedContent:** retains GSAP context and staggered entrance; limits the API to mount/route entrance, with shared live reduced-motion control, immediately reversible cleanup and no replay on data or language updates. Server-rendered content stays visible before JavaScript runs.
 
-The components are integrated into the Artifact Kit application. The upstream license includes additional restrictions on selling or redistributing the components themselves; it is not an unmodified MIT license.
+The components are integrated into the artifactory application. The upstream license includes additional restrictions on selling or redistributing the components themselves; it is not an unmodified MIT license.

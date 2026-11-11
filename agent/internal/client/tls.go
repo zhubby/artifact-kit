@@ -6,7 +6,7 @@ import (
 	"errors"
 	"os"
 
-	"github.com/artifact-kit/agent/internal/config"
+	"github.com/zhubby/artifact-kit/agent/internal/config"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )

@@ -33,6 +33,9 @@ export function Status({
   const { t } = useUI();
   const labels: Record<string, string> = {
     resolving: t("status.resolving"),
+    planning: t("status.planning"),
+    replanning: t("status.replanning"),
+    needs_input: t("status.needs_input"),
     queued: t("status.queued"),
     leased: t("status.leased"),
     running: t("status.running"),

@@ -117,7 +117,7 @@ pub async fn resolve(
             environment.push(("GIT_SSH_COMMAND".into(), format!("ssh -F /dev/null -i {} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o {}", shell_quote(key.to_str().context("invalid managed path")?), shell_quote(&trusted_hosts))));
         } else {
             let askpass = directory.path().join("askpass.sh");
-            tokio::fs::write(&askpass, "#!/bin/sh\ncase \"$1\" in *sername*) printf '%s\\n' \"$AK_GIT_USERNAME\";; *) printf '%s\\n' \"$AK_GIT_PASSWORD\";; esac\n").await?;
+            tokio::fs::write(&askpass, "#!/bin/sh\ncase \"$1\" in *sername*) printf '%s\\n' \"$ARTIFACTORY_GIT_USERNAME\";; *) printf '%s\\n' \"$ARTIFACTORY_GIT_PASSWORD\";; esac\n").await?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -126,8 +126,8 @@ pub async fn resolve(
             }
             environment.extend([
                 ("GIT_ASKPASS".into(), askpass.to_string_lossy().into()),
-                ("AK_GIT_USERNAME".into(), auth.username),
-                ("AK_GIT_PASSWORD".into(), auth.secret),
+                ("ARTIFACTORY_GIT_USERNAME".into(), auth.username),
+                ("ARTIFACTORY_GIT_PASSWORD".into(), auth.secret),
             ]);
         }
     }
@@ -171,7 +171,7 @@ pub async fn resolve(
         commit.len() == 40 || commit.len() == 64,
         "invalid resolved commit"
     );
-    let object = format!("{commit}:artifact-kit.yaml");
+    let object = format!("{commit}:artifactory.yaml");
     let size = run_git(&["-C", repo_path, "cat-file", "-s", &object], &environment).await?;
     ensure!(
         size.trim().parse::<usize>()? <= 256 * 1024,
@@ -198,7 +198,7 @@ async fn run_git(arguments: &[&str], environment: &[(String, String)]) -> Result
     .context("Git operation timed out")??;
     ensure!(
         output.status.success(),
-        "Git operation failed; check repository access, reference, host trust and root artifact-kit.yaml"
+        "Git operation failed; check repository access, reference, host trust and root artifactory.yaml"
     );
     Ok(String::from_utf8(output.stdout)?)
 }

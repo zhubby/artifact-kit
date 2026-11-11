@@ -22,7 +22,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--sudo-sshd', action='store_true', help='run only the isolated SSH daemon via passwordless sudo on an ephemeral Linux CI runner')
     options = parser.parse_args()
-    if os.environ.get('AK_INSECURE_DEV') != 'true':
+    if os.environ.get('ARTIFACTORY_INSECURE_DEV') != 'true':
         parser.error('this destructive fixture test requires the explicit local acceptance environment')
     if platform.system() not in ('Darwin', 'Linux'):
         parser.error('the SSH fixture requires a Unix host with OpenSSH server')
@@ -70,10 +70,10 @@ LogLevel VERBOSE
     repository = private / 'fixture.git'
     repository.mkdir()
     acceptance.command(['git', 'init', '-b', 'main', str(repository)])
-    (repository / 'main.c').write_text('#include <stdio.h>\nint main(void) { puts("artifact-kit-ssh-ok"); return 0; }\n')
+    (repository / 'main.c').write_text('#include <stdio.h>\nint main(void) { puts("artifactory-ssh-ok"); return 0; }\n')
     host_os = {'Darwin': 'darwin', 'Linux': 'linux'}[platform.system()]
     arch = 'arm64' if platform.machine() in ('arm64', 'aarch64') else 'amd64'
-    (repository / 'artifact-kit.yaml').write_text(f'''version: 1
+    (repository / 'artifactory.yaml').write_text(f'''version: 1
 release: {{enabled: true}}
 targets:
   native:
@@ -109,7 +109,7 @@ targets:
                     return True
 
             acceptance.wait_for(ready, 15)
-            acceptance.api('/auth/login', {'username': os.environ['AK_BOOTSTRAP_USERNAME'], 'password': os.environ['AK_BOOTSTRAP_PASSWORD']})
+            acceptance.api('/auth/login', {'username': os.environ['ARTIFACTORY_BOOTSTRAP_USERNAME'], 'password': os.environ['ARTIFACTORY_BOOTSTRAP_PASSWORD']})
             credential = acceptance.api('/credentials', {'name': 'SSH acceptance ' + acceptance.RUN_ID, 'kind': 'ssh', 'secret': (private / 'client').read_text(), 'known_hosts': known_hosts})['id']
             credentials = json.dumps(acceptance.api('/credentials'))
             acceptance.check('SSH credential response redacts private key', (private / 'client').read_text() not in credentials)
@@ -124,7 +124,7 @@ targets:
             binary = directory / 'ssh-downloaded-app'
             binary.write_bytes(content)
             binary.chmod(0o700)
-            acceptance.check('downloaded SSH-built native artifact runs', acceptance.command([str(binary)]) == 'artifact-kit-ssh-ok')
+            acceptance.check('downloaded SSH-built native artifact runs', acceptance.command([str(binary)]) == 'artifactory-ssh-ok')
             acceptance.wait_for(lambda: acceptance.api('/builds/' + build_id)['publish_status'] == 'succeeded')
             release = acceptance.api('/builds/' + build_id + '/publish', {})
             acceptance.check('SSH build publishes an immutable release', acceptance.api('/releases/' + release['id'])['build_id'] == build_id)

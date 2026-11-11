@@ -607,6 +607,24 @@ async fn apply_event(
     let target: crate::recipe::Target =
         serde_json::from_value(row.get("target_config")).map_err(internal)?;
     match event.kind.as_str() {
+        "source_cache" => {
+            if payload.get("hit").and_then(Value::as_bool).is_none()
+                || payload.get("path").and_then(Value::as_str).is_none()
+                || payload
+                    .get("commit")
+                    .and_then(Value::as_str)
+                    .is_none_or(|value| !crate::source_cache::valid_commit(value))
+            {
+                return Err(Status::invalid_argument("invalid source cache event"));
+            }
+            let updated=sqlx::query("UPDATE source_repositories r SET agent_cache_hits=agent_cache_hits+CASE WHEN $2 THEN 1 ELSE 0 END,agent_cache_misses=agent_cache_misses+CASE WHEN $2 THEN 0 ELSE 1 END WHERE r.id IN (SELECT (entry->>'repository_id')::uuid FROM source_snapshots s CROSS JOIN LATERAL jsonb_array_elements(s.manifest->'repositories') entry JOIN attempts a ON a.source_snapshot_id=s.id WHERE a.id=$1 AND entry->>'path'=$3 AND entry->>'commit'=$4)")
+                .bind(id).bind(payload["hit"].as_bool().unwrap()).bind(payload["path"].as_str().unwrap()).bind(payload["commit"].as_str().unwrap()).execute(&mut *transaction).await.map_err(internal)?;
+            if updated.rows_affected() != 1 {
+                return Err(Status::invalid_argument(
+                    "source cache event does not match attempt snapshot",
+                ));
+            }
+        }
         "step_started" => {
             let index = payload
                 .get("index")
@@ -675,10 +693,26 @@ async fn apply_event(
                 }
             }
             let error = payload.get("error").and_then(Value::as_str).unwrap_or("");
-            sqlx::query("UPDATE attempts SET status=$2,error=$3,finished_at=now() WHERE id=$1")
+            let failure = payload
+                .get("failure_kind")
+                .and_then(Value::as_str)
+                .unwrap_or("execution");
+            if ![
+                "execution",
+                "source",
+                "authorization",
+                "artifact_transport",
+                "agent",
+            ]
+            .contains(&failure)
+            {
+                return Err(Status::invalid_argument("invalid failure kind"));
+            }
+            sqlx::query("UPDATE attempts SET status=$2,error=$3,failure_kind=$4,finished_at=now() WHERE id=$1")
                 .bind(id)
                 .bind(final_status)
                 .bind(error)
+                .bind(failure)
                 .execute(&mut *transaction)
                 .await
                 .map_err(internal)?;

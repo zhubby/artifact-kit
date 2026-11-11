@@ -15,11 +15,11 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/artifact-kit/agent/gen/agentv1"
-	"github.com/artifact-kit/agent/internal/client"
-	"github.com/artifact-kit/agent/internal/config"
-	"github.com/artifact-kit/agent/internal/ota"
-	"github.com/artifact-kit/agent/internal/worker"
+	pb "github.com/zhubby/artifact-kit/agent/gen/agentv1"
+	"github.com/zhubby/artifact-kit/agent/internal/client"
+	"github.com/zhubby/artifact-kit/agent/internal/config"
+	"github.com/zhubby/artifact-kit/agent/internal/ota"
+	"github.com/zhubby/artifact-kit/agent/internal/worker"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -77,7 +77,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	diagnostics, capabilities := Doctor(cfg)
-	if os.Getenv("AK_OTA_DIRECTORY") != "" {
+	if os.Getenv("ARTIFACTORY_OTA_DIRECTORY") != "" {
 		capabilities = append(capabilities, "agent-ota-v1")
 	}
 	runner := &Runner{config: cfg, tasks: map[string]*task{}, anchors: map[string]time.Time{}, notify: make(chan struct{}, 1), diagnostics: diagnostics, capabilities: capabilities}
@@ -170,7 +170,7 @@ func (runner *Runner) session(ctx context.Context, control pb.ControlClient) err
 		return err
 	}
 	runner.otaSession = identifier()
-	if directory := os.Getenv("AK_OTA_DIRECTORY"); directory != "" {
+	if directory := os.Getenv("ARTIFACTORY_OTA_DIRECTORY"); directory != "" {
 		_ = ota.Confirm(directory, runner.otaSession, "")
 	}
 	if err = stream.Send(runner.heartbeat("hello")); err != nil {
@@ -366,7 +366,7 @@ func (runner *Runner) command(command *pb.Command) error {
 func (runner *Runner) launch(current *task, leaseSeconds uint32) {
 	executable, err := os.Executable()
 	if err != nil {
-		runner.event(current, worker.Event{Kind: "finished", Payload: map[string]any{"status": "failed", "error": "worker executable unavailable"}})
+		runner.event(current, worker.Event{Kind: "finished", Payload: map[string]any{"status": "failed", "error": "worker executable unavailable", "failure_kind": "agent"}})
 		return
 	}
 	command := exec.Command(executable, "worker")
@@ -424,13 +424,13 @@ func (runner *Runner) launch(current *task, leaseSeconds uint32) {
 		finished := current.finished
 		runner.mutex.Unlock()
 		if !finished {
-			runner.event(current, worker.Event{Kind: "finished", Payload: map[string]any{"status": "failed", "error": "worker exited without a terminal result"}})
+			runner.event(current, worker.Event{Kind: "finished", Payload: map[string]any{"status": "failed", "error": "worker exited without a terminal result", "failure_kind": "agent"}})
 		}
 	}()
 }
 
 func (runner *Runner) failedStart(current *task) {
-	runner.event(current, worker.Event{Kind: "finished", Payload: map[string]any{"status": "failed", "error": "unable to start isolated worker"}})
+	runner.event(current, worker.Event{Kind: "finished", Payload: map[string]any{"status": "failed", "error": "unable to start isolated worker", "failure_kind": "agent"}})
 }
 
 func (runner *Runner) event(current *task, event worker.Event) {

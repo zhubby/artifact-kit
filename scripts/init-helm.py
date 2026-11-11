@@ -32,8 +32,8 @@ def san(host):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--namespace", type=dns_label, default="artifact-kit")
-    parser.add_argument("--release", type=dns_label, default="artifact-kit")
+    parser.add_argument("--namespace", type=dns_label, default="artifactory")
+    parser.add_argument("--release", type=dns_label, default="artifactory")
     parser.add_argument("--resource-prefix", type=dns_label, help="match Helm fullnameOverride, if used")
     parser.add_argument("--grpc-host", type=san, action="append", required=True,
                         help="Agent-visible host, without port; repeat for multiple SANs")
@@ -54,9 +54,9 @@ def main():
                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
     openssl("req", "-x509", "-newkey", "rsa:3072", "-nodes", "-keyout", "ca.key",
-            "-out", "ca.pem", "-sha256", "-days", "3650", "-subj", "/CN=Artifact Kit Agent Issuer")
+            "-out", "ca.pem", "-sha256", "-days", "3650", "-subj", "/CN=artifactory Agent Issuer")
     openssl("req", "-newkey", "rsa:3072", "-nodes", "-keyout", "server.key",
-            "-out", "server.csr", "-subj", "/CN=Artifact Kit Control")
+            "-out", "server.csr", "-subj", "/CN=artifactory Control")
     hosts = args.grpc_host + ["DNS:" + prefix + "-grpc",
                              f"DNS:{prefix}-grpc.{args.namespace}.svc"]
     (pki / "server.ext").write_text(
@@ -68,18 +68,18 @@ def main():
             "-extfile", "server.ext")
 
     password = secrets.token_hex(24)
-    s3_access = "artifact-kit"
+    s3_access = "artifactory"
     s3_secret = secrets.token_hex(32)
     credentials = {
         "database-password": password,
-        "database-url": f"postgres://artifact:{password}@{prefix}-postgres:5432/artifact",
+        "database-url": f"postgres://artifactory:{password}@{prefix}-postgres:5432/artifactory",
         "master-key": base64.b64encode(secrets.token_bytes(32)).decode(),
         "s3-access-key": s3_access,
         "s3-secret-key": s3_secret,
         "bootstrap-username": "admin",
         "bootstrap-password": secrets.token_hex(24),
         "s3.json": json.dumps({"identities": [{
-            "name": "artifact-kit",
+            "name": "artifactory",
             "credentials": [{"accessKey": s3_access, "secretKey": s3_secret}],
             "actions": ["Admin", "Read", "List", "Write", "Tagging"],
         }]}),
@@ -89,7 +89,7 @@ def main():
         document = {
             "apiVersion": "v1", "kind": "Secret", "type": "Opaque",
             "metadata": {"name": prefix + "-" + suffix, "namespace": args.namespace,
-                         "labels": {"app.kubernetes.io/part-of": "artifact-kit",
+                         "labels": {"app.kubernetes.io/part-of": "artifactory",
                                     "app.kubernetes.io/instance": args.release}},
             "stringData": data,
         }

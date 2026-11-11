@@ -109,7 +109,7 @@ impl FromRequestParts<AppState> for Auth {
 
 pub fn csrf(headers: &HeaderMap, state: &AppState) -> Result<()> {
     if headers
-        .get("x-artifact-csrf")
+        .get("x-artifactory-csrf")
         .and_then(|value| value.to_str().ok())
         != Some("1")
     {
@@ -129,7 +129,7 @@ fn cookie(headers: &HeaderMap) -> Option<&str> {
         .to_str()
         .ok()?
         .split(';')
-        .find_map(|entry| entry.trim().strip_prefix("ak_session="))
+        .find_map(|entry| entry.trim().strip_prefix("artifactory_session="))
 }
 
 pub fn password_hash(password: &str) -> anyhow::Result<String> {
@@ -201,7 +201,7 @@ pub async fn login(
         "; Secure"
     };
     let value = HeaderValue::from_str(&format!(
-        "ak_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400{secure}"
+        "artifactory_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400{secure}"
     ))
     .unwrap();
     Ok((
@@ -224,7 +224,7 @@ pub async fn logout(
     Ok((
         [(
             header::SET_COOKIE,
-            "ak_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
+            "artifactory_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
         )],
         Json(json!({"ok":true})),
     ))

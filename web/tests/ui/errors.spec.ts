@@ -60,6 +60,7 @@ test("invalid JSON is a localized form error and never reaches the backend", asy
   const events = await fixtureAPI(page);
   await page.goto("/");
   await page.getByRole("button", { name: "发起构建", exact: true }).click();
+  await page.locator('textarea[name="goal"]').fill("Build the desktop executable");
   await page.locator('textarea[name="parameters"]').fill('{"unfinished":');
   await page
     .getByRole("dialog")

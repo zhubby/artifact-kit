@@ -15,7 +15,7 @@ func TestSignedPackageVerification(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	data := []byte("native agent")
 	digest := sha256.Sum256(data)
-	m := Manifest{Version: "v1.2.3", Commit: strings.Repeat("a", 40), ProtocolMin: 1, ProtocolMax: 1, Assets: []Asset{{OS: "darwin", Arch: "arm64", Name: "artifact-agent-darwin-arm64", Size: int64(len(data)), SHA256: hex.EncodeToString(digest[:])}}}
+	m := Manifest{Version: "v1.2.3", Commit: strings.Repeat("a", 40), ProtocolMin: 1, ProtocolMax: 1, Assets: []Asset{{OS: "darwin", Arch: "arm64", Name: "artifactory-agent-darwin-arm64", Size: int64(len(data)), SHA256: hex.EncodeToString(digest[:])}}}
 	raw, _ := json.Marshal(m)
 	sig := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, raw))
 	keys := []string{base64.StdEncoding.EncodeToString(pub)}

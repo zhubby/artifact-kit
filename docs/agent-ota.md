@@ -8,17 +8,17 @@
 
 在受保护的 GitHub `agent-release` Environment 中设置 `AGENT_RELEASE_SIGNING_SEED`，值为独立 Ed25519 私钥的 32 字节 seed 的 base64。只允许发布 job 读取该 Secret。推送 `agent-v*` Git 标签，或手动执行工作流并选择一个已存在的 Git 标签。工作流不覆盖已有 Release。
 
-控制面 `${AK_DATA_DIR}/agent-releases.json` 由部署管理员配置，文件示例：
+控制面 `${ARTIFACTORY_DATA_DIR}/agent-releases.json` 由部署管理员配置，文件示例：
 
 ```json
 {
-  "repository": "owner/artifact-kit",
+  "repository": "owner/artifactory",
   "api_base": "https://api.github.com",
   "public_keys": ["BASE64_ED25519_PUBLIC_KEY"]
 }
 ```
 
-私有仓库可为控制面提供 `AK_AGENT_GITHUB_TOKEN`。`api_base` 也可指向预先配置的 GitHub Enterprise API；生产环境要求 HTTPS。浏览器提交的字段只有版本标签，不能指定任意下载 URL。下载地址由固定仓库和 GitHub asset ID 构造，重定向限制为配置的 API 主机和 GitHub HTTPS 下载主机。
+私有仓库可为控制面提供 `ARTIFACTORY_AGENT_GITHUB_TOKEN`。`api_base` 也可指向预先配置的 GitHub Enterprise API；生产环境要求 HTTPS。浏览器提交的字段只有版本标签，不能指定任意下载 URL。下载地址由固定仓库和 GitHub asset ID 构造，重定向限制为配置的 API 主机和 GitHub HTTPS 下载主机。
 
 版本导入必须通过签名、五个平台、协议、大小、完整内容的 SHA-256 校验。全部校验成功后才建立版本目录记录。对象按 manifest 摘要存储；版本号内容不可覆盖，同内容重复导入返回原 ID。未配置验签公钥时拒绝导入。测试密钥必须独立于正式发布密钥。
 
@@ -27,8 +27,8 @@
 先停止接单并等待现有任务、日志和产物完成。备份原二进制、原生服务配置、`agent.json`、证书和私钥；保留服务账户、HOME、PATH、签名环境、SDK 及 macOS `DEVELOPER_DIR`。管理员将支持 OTA 的二进制安装在原服务路径，随后**以现有普通服务账户**执行：
 
 ```sh
-artifact-agent ota-init --config /path/to/agent.json --public-keys BASE64_ED25519_PUBLIC_KEY
-artifact-agent service --action start --config /path/to/agent.json
+artifactory-agent ota-init --config /path/to/agent.json --public-keys BASE64_ED25519_PUBLIC_KEY
+artifactory-agent service --action start --config /path/to/agent.json
 ```
 
 `ota-init` 拒绝覆盖已有 OTA 配置。它在配置旁创建独立的 `ota.json`，将初始运行程序复制到服务账户管理的版本目录。严格解析的 `agent.json` 保持原格式。
@@ -60,7 +60,7 @@ artifact-agent service --action start --config /path/to/agent.json
 
 ## 管理接口
 
-均位于 `/api/v1`。查询要求会话 viewer，写入要求管理员会话、`x-artifact-csrf: 1` 和与 `AK_PUBLIC_URL` 一致的 Origin。项目 Token 无权访问管理接口。目标、策略、导入、重试、取消和终态均有审计。
+均位于 `/api/v1`。查询要求会话 viewer，写入要求管理员会话、`x-artifactory-csrf: 1` 和与 `ARTIFACTORY_PUBLIC_URL` 一致的 Origin。项目 Token 无权访问管理接口。目标、策略、导入、重试、取消和终态均有审计。
 
 | 方法与路径 | 请求 / 行为 |
 | --- | --- |

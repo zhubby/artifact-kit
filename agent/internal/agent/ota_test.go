@@ -1,8 +1,8 @@
 package agent
 
 import (
-	pb "github.com/artifact-kit/agent/gen/agentv1"
-	"github.com/artifact-kit/agent/internal/ota"
+	pb "github.com/zhubby/artifact-kit/agent/gen/agentv1"
+	"github.com/zhubby/artifact-kit/agent/internal/ota"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,7 +11,7 @@ import (
 
 func TestOTADrainWaitsForTerminalAckWorkersAndLogs(t *testing.T) {
 	directory := t.TempDir()
-	t.Setenv("AK_OTA_DIRECTORY", directory)
+	t.Setenv("ARTIFACTORY_OTA_DIRECTORY", directory)
 	if err := ota.Atomic(filepath.Join(directory, "state.json"), ota.State{UpdateID: "u", Phase: "draining"}); err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestOTADrainWaitsForTerminalAckWorkersAndLogs(t *testing.T) {
 
 func TestOTAHealthRequiresCurrentOutstandingHeartbeat(t *testing.T) {
 	directory := t.TempDir()
-	t.Setenv("AK_OTA_DIRECTORY", directory)
+	t.Setenv("ARTIFACTORY_OTA_DIRECTORY", directory)
 	r := &Runner{otaSession: "session", anchors: map[string]time.Time{"fresh": time.Now(), "expired": time.Now().Add(-time.Minute)}}
 	for _, id := range []string{"forged", "expired"} {
 		if err := r.command(&pb.Command{Kind: "agent_health", RequestId: id}); err != nil {

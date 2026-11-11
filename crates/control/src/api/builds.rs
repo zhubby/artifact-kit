@@ -29,6 +29,12 @@ pub struct BuildInput {
     #[serde(default)]
     targets: Vec<String>,
     release_version: Option<String>,
+    goal: Option<String>,
+    #[serde(default = "empty_array")]
+    target_requirements: Value,
+}
+fn empty_array() -> Value {
+    json!([])
 }
 fn empty_object() -> Value {
     json!({})
@@ -57,9 +63,38 @@ pub async fn create(
     if let Some(version) = &input.release_version {
         validate_version(version)?;
     }
+    let goal = input.goal.unwrap_or_else(|| {
+        "Build and verify this project, then collect its distributable artifacts.".into()
+    });
+    if goal.trim().is_empty() || goal.len() > 16000 {
+        return Err(ApiError::BadRequest(
+            "a build goal of 1..16000 bytes is required".into(),
+        ));
+    }
+    let requirements = input
+        .target_requirements
+        .as_array()
+        .ok_or_else(|| ApiError::BadRequest("target_requirements must be an array".into()))?;
+    if requirements.len() > 32
+        || requirements.iter().any(|r| {
+            !r.is_object()
+                || r.as_object()
+                    .unwrap()
+                    .keys()
+                    .any(|k| k != "os" && k != "arch")
+                || !["linux", "darwin", "windows"].contains(&r["os"].as_str().unwrap_or(""))
+                || !["amd64", "arm64"].contains(&r["arch"].as_str().unwrap_or(""))
+        })
+    {
+        return Err(ApiError::BadRequest("invalid platform requirements".into()));
+    }
+    let project_row=sqlx::query("SELECT model_profile_id,pool_ids,signing_profiles,build_context,source_credentials FROM projects WHERE id=$1").bind(project).fetch_one(&state.pool).await?;
+    let model =
+        super::ai_management::model_snapshot(&state, project_row.get("model_profile_id")).await?;
+    let context = json!({"pool_ids":project_row.get::<Vec<Uuid>,_>("pool_ids"),"signing_profiles":project_row.get::<Vec<String>,_>("signing_profiles"),"build_context":project_row.get::<String,_>("build_context"),"source_credentials":project_row.get::<Value,_>("source_credentials")});
     let id = Uuid::new_v4();
-    let created=sqlx::query("INSERT INTO builds(id,project_id,requested_ref,parameters,selected_targets,release_version,publish_status,requested_by,source_repository_url,source_credential_id) SELECT $1,id,$3,$4,$5,$6,$7,$8,repository_url,credential_id FROM projects WHERE id=$2")
-        .bind(id).bind(project).bind(&input.reference).bind(input.parameters).bind(input.targets).bind(&input.release_version).bind(if input.release_version.is_some(){"pending"}else{"not_requested"}).bind(auth.user_id).execute(&state.pool).await?;
+    let created=sqlx::query("INSERT INTO builds(id,project_id,requested_ref,parameters,selected_targets,release_version,publish_status,requested_by,source_repository_url,source_credential_id,goal,target_requirements,planning_context,model_config_snapshot) SELECT $1,id,$3,$4,$5,$6,$7,$8,repository_url,credential_id,$9,$10,$11,$12 FROM projects WHERE id=$2")
+        .bind(id).bind(project).bind(&input.reference).bind(input.parameters).bind(input.targets).bind(&input.release_version).bind(if input.release_version.is_some(){"pending"}else{"not_requested"}).bind(auth.user_id).bind(goal).bind(input.target_requirements).bind(context).bind(model).execute(&state.pool).await?;
     if created.rows_affected() != 1 {
         return Err(ApiError::NotFound);
     }
@@ -102,7 +137,7 @@ pub async fn list(
     if let Some(project) = filter.project_id {
         auth.project(project, "read")?;
     }
-    Ok(Json(sqlx::query_scalar("SELECT (to_jsonb(b)-'config_yaml'-'config_snapshot') || jsonb_build_object('project_name',p.name,'targets',(SELECT coalesce(jsonb_agg(jsonb_build_object('id',j.id,'target',j.target,'status',j.status)),'[]') FROM jobs j WHERE j.build_id=b.id)) FROM builds b JOIN projects p ON p.id=b.project_id WHERE ($1::uuid IS NULL OR b.project_id=$1) AND ($2::uuid[] IS NULL OR b.project_id=ANY($2)) ORDER BY b.created_at DESC LIMIT 100")
+    Ok(Json(sqlx::query_scalar("SELECT (to_jsonb(b)-'config_yaml'-'config_snapshot'-'model_config_snapshot') || jsonb_build_object('project_name',p.name,'targets',(SELECT coalesce(jsonb_agg(jsonb_build_object('id',j.id,'target',j.target,'status',j.status)),'[]') FROM jobs j WHERE j.build_id=b.id)) FROM builds b JOIN projects p ON p.id=b.project_id WHERE ($1::uuid IS NULL OR b.project_id=$1) AND ($2::uuid[] IS NULL OR b.project_id=ANY($2)) ORDER BY b.created_at DESC LIMIT 100")
         .bind(filter.project_id).bind(auth.visible_projects()).fetch_all(&state.pool).await?))
 }
 
@@ -116,11 +151,18 @@ async fn build_project(state: &AppState, id: Uuid) -> Result<Uuid> {
 }
 
 pub async fn build_detail(state: &AppState, id: Uuid) -> Result<Value> {
-    let mut build:Value=sqlx::query_scalar("SELECT to_jsonb(b) || jsonb_build_object('project_name',p.name) FROM builds b JOIN projects p ON p.id=b.project_id WHERE b.id=$1").bind(id).fetch_one(&state.pool).await?;
+    let mut build:Value=sqlx::query_scalar("SELECT (to_jsonb(b)-'model_config_snapshot') || jsonb_build_object('project_name',p.name) FROM builds b JOIN projects p ON p.id=b.project_id WHERE b.id=$1").bind(id).fetch_one(&state.pool).await?;
     let jobs:Vec<Value>=sqlx::query_scalar("SELECT to_jsonb(j) || jsonb_build_object('attempts',(SELECT coalesce(jsonb_agg((to_jsonb(a)-'lease_token'-'command_id') || jsonb_build_object('node_name',n.name,'steps',(SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY s.step_index),'[]') FROM step_runs s WHERE s.attempt_id=a.id)) ORDER BY a.created_at),'[]') FROM attempts a JOIN nodes n ON n.id=a.node_id WHERE a.job_id=j.id)) FROM jobs j WHERE j.build_id=$1 ORDER BY j.target").bind(id).fetch_all(&state.pool).await?;
     let artifacts:Vec<Value>=sqlx::query_scalar("SELECT (to_jsonb(ar)-'object_key') || jsonb_build_object('target',j.target,'attempt_status',a.status) FROM artifacts ar JOIN attempts a ON a.id=ar.attempt_id JOIN jobs j ON j.id=a.job_id WHERE j.build_id=$1 ORDER BY ar.created_at").bind(id).fetch_all(&state.pool).await?;
     build["jobs"] = json!(jobs);
     build["artifacts"] = json!(artifacts);
+    build["source_snapshot"] = if let Some(snapshot) = build["source_snapshot_id"].as_str() {
+        let id = Uuid::parse_str(snapshot).map_err(anyhow::Error::from)?;
+        serde_json::to_value(crate::source_cache::load(state, id).await?)
+            .map_err(anyhow::Error::from)?
+    } else {
+        Value::Null
+    };
     build["publish_attempts"] = json!(
         sqlx::query_scalar::<_, Value>(
             "SELECT to_jsonb(p) FROM publish_attempts p WHERE build_id=$1 ORDER BY created_at DESC"
@@ -163,7 +205,8 @@ pub async fn cancel(
         .bind(id)
         .execute(&mut *transaction)
         .await?;
-    if status == "resolving" {
+    sqlx::query("UPDATE planning_runs SET state='canceled',finished_at=now() WHERE build_id=$1 AND state IN ('queued','leased')").bind(id).execute(&mut *transaction).await?;
+    if ["resolving", "planning", "replanning", "needs_input"].contains(&status.as_str()) {
         sqlx::query("UPDATE builds SET status='canceled',finished_at=now() WHERE id=$1")
             .bind(id)
             .execute(&mut *transaction)
@@ -182,12 +225,14 @@ pub async fn retry(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>> {
     let mut transaction = state.pool.begin().await?;
-    let row=sqlx::query("SELECT j.status,b.id,b.project_id,b.release_version,EXISTS(SELECT 1 FROM releases r WHERE r.build_id=b.id) AS published FROM jobs j JOIN builds b ON b.id=j.build_id WHERE j.id=$1 FOR UPDATE OF j,b").bind(id).fetch_one(&mut *transaction).await?;
+    let row=sqlx::query("SELECT j.status,b.status AS build_status,b.id,b.project_id,b.release_version,EXISTS(SELECT 1 FROM releases r WHERE r.build_id=b.id) AS published FROM jobs j JOIN builds b ON b.id=j.build_id WHERE j.id=$1 FOR UPDATE OF j,b").bind(id).fetch_one(&mut *transaction).await?;
     auth.project(row.get("project_id"), "build")?;
     if row.get::<Option<String>, _>("release_version").is_some() {
         auth.project(row.get("project_id"), "release")?;
     }
     if row.get::<bool, _>("published")
+        || ["planning", "replanning", "needs_input"]
+            .contains(&row.get::<String, _>("build_status").as_str())
         || !["failed", "lost", "canceled"].contains(&row.get::<String, _>("status").as_str())
     {
         return Err(ApiError::Conflict(

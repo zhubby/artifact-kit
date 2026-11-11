@@ -1,4 +1,4 @@
-use artifact_control::{settings::Settings, storage::Storage};
+use artifactory_control::{settings::Settings, storage::Storage};
 use std::{process::Command, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -41,7 +41,7 @@ fn run_probe(mode: &str) {
     // tests. Only synthetic credentials and an ephemeral loopback port are used.
     let output = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "storage_error_probe_helper", "--nocapture"])
-        .env("AK_TEST_STORAGE_ERROR_MODE", mode)
+        .env("ARTIFACTORY_TEST_STORAGE_ERROR_MODE", mode)
         .env("NO_PROXY", "localhost,127.0.0.1")
         .env("no_proxy", "localhost,127.0.0.1")
         .output()
@@ -53,7 +53,7 @@ fn run_probe(mode: &str) {
 
 #[tokio::test]
 async fn storage_error_probe_helper() {
-    let mode = match std::env::var("AK_TEST_STORAGE_ERROR_MODE") {
+    let mode = match std::env::var("ARTIFACTORY_TEST_STORAGE_ERROR_MODE") {
         Ok(mode) if mode == "transport" || mode == "responses" => mode,
         _ => return,
     };

@@ -22,6 +22,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = 'http://127.0.0.1:8080'
+PKI = Path(os.environ.get('ARTIFACTORY_PKI_DIR', str(ROOT / '.local/pki')))
+FIXTURE_DATABASE_URL = None
 RUN_ID = uuid.uuid4().hex[:12]
 DIRECTORY = ROOT / '.local' / 'acceptance' / RUN_ID
 DIRECTORY.mkdir(parents=True, mode=0o700)
@@ -58,7 +60,7 @@ HTTP = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(COOKIE_JAR
 
 
 def request(path, body=None, method=None, authenticated=True, token=None):
-    headers = {'Content-Type': 'application/json', 'x-artifact-csrf': '1', 'Origin': os.environ['AK_PUBLIC_URL']}
+    headers = {'Content-Type': 'application/json', 'x-artifactory-csrf': '1', 'Origin': os.environ['ARTIFACTORY_PUBLIC_URL']}
     if token:
         headers['Authorization'] = 'Bearer ' + token
     payload = None if body is None else json.dumps(body).encode()
@@ -72,6 +74,9 @@ def request(path, body=None, method=None, authenticated=True, token=None):
 
 
 def api(path, body=None, method=None):
+    if body is not None and method in (None,'POST') and path.startswith('/projects/') and path.endswith('/builds'):
+        from legacy_fixture import historical_build
+        return historical_build(path.split('/')[2],body,FIXTURE_DATABASE_URL)
     status, value = request(path, body, method)
     if status != 200:
         raise RuntimeError(f'{path}: {status}: {value}')
@@ -82,7 +87,7 @@ def create_fixture():
     repo = DIRECTORY / 'repos' / 'fixture.git'
     repo.mkdir(parents=True)
     command(['git', 'init', '-b', 'main', str(repo)])
-    (repo / 'main.c').write_text('#include <stdio.h>\nint main(void) { puts("artifact-kit-native-ok"); return 0; }\n')
+    (repo / 'main.c').write_text('#include <stdio.h>\nint main(void) { puts("artifactory-native-ok"); return 0; }\n')
     host_os = {'Darwin': 'darwin', 'Linux': 'linux'}[platform.system()]
     arch = 'arm64' if platform.machine() in ('arm64', 'aarch64') else 'amd64'
     signing = host_os == 'darwin'
@@ -98,18 +103,18 @@ def create_fixture():
         run: |
           codesign --verify --strict --verbose=2 dist/app
           ./dist/app
-          if [ "$AK_PARAM_MODE" = missing ]; then rm dist/app; fi
-          if [ "$AK_PARAM_MODE" = escape ]; then ln -s /etc/passwd dist/escape; fi
+          if [ "$ARTIFACTORY_PARAM_MODE" = missing ]; then rm dist/app; fi
+          if [ "$ARTIFACTORY_PARAM_MODE" = escape ]; then ln -s /etc/passwd dist/escape; fi
 ''' if signing else '''
       - name: verify
         phase: verify
         timeout_seconds: 180
         run: |
           ./dist/app
-          if [ "$AK_PARAM_MODE" = missing ]; then rm dist/app; fi
-          if [ "$AK_PARAM_MODE" = escape ]; then ln -s /etc/passwd dist/escape; fi
+          if [ "$ARTIFACTORY_PARAM_MODE" = missing ]; then rm dist/app; fi
+          if [ "$ARTIFACTORY_PARAM_MODE" = escape ]; then ln -s /etc/passwd dist/escape; fi
 '''
-    (repo / 'artifact-kit.yaml').write_text(f'''version: 1
+    (repo / 'artifactory.yaml').write_text(f'''version: 1
 parameters: {{MODE: normal}}
 release: {{enabled: true}}
 targets:
@@ -125,9 +130,9 @@ targets:
           mkdir -p dist
           cc main.c -o dist/app
           echo 'native compilation complete'
-          if [ "$AK_PARAM_MODE" = fail ]; then exit 17; fi
-          if [ "$AK_PARAM_MODE" = resume ]; then sleep 18; fi
-          if [ "$AK_PARAM_MODE" = slow ]; then sleep 180 & child=$!; echo "$child" > child.pid; wait "$child"; fi
+          if [ "$ARTIFACTORY_PARAM_MODE" = fail ]; then exit 17; fi
+          if [ "$ARTIFACTORY_PARAM_MODE" = resume ]; then sleep 18; fi
+          if [ "$ARTIFACTORY_PARAM_MODE" = slow ]; then sleep 180 & child=$!; echo "$child" > child.pid; wait "$child"; fi
 {sign_steps}
     artifacts: [dist/*]
   intentional-failure:
@@ -179,7 +184,7 @@ targets:
 
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 19443), GitHandler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain(ROOT / '.local/pki/server.pem', ROOT / '.local/pki/server.key')
+    context.load_cert_chain(PKI / 'server.pem', PKI / 'server.key')
     server.socket = context.wrap_socket(server.socket, server_side=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, password, commit, signing
@@ -234,7 +239,7 @@ def start_control(timeout=30):
         pass
     log_path = DIRECTORY / 'control.log'
     with log_path.open('ab') as log:
-        process = subprocess.Popen([str(ROOT / 'target/debug/artifact-control')], cwd=ROOT, env=dict(os.environ, GIT_SSL_CAINFO=str(ROOT / '.local/pki/ca.pem')), stdout=log, stderr=log)
+        process = subprocess.Popen([str(ROOT / 'target/debug/artifactory-control')], cwd=ROOT, env=dict(os.environ, GIT_SSL_CAINFO=str(PKI / 'ca.pem')), stdout=log, stderr=log)
 
     def ready():
         status = process.poll()
@@ -260,23 +265,23 @@ def main():
     try:
         server, git_password, commit, signing = create_fixture()
         control = start_control()
-        api('/auth/login', {'username': os.environ['AK_BOOTSTRAP_USERNAME'], 'password': os.environ['AK_BOOTSTRAP_PASSWORD']})
+        api('/auth/login', {'username': os.environ['ARTIFACTORY_BOOTSTRAP_USERNAME'], 'password': os.environ['ARTIFACTORY_BOOTSTRAP_PASSWORD']})
         credential = api('/credentials', {'name': 'acceptance-' + RUN_ID, 'kind': 'https', 'username': 'fixture', 'secret': git_password})['id']
         check('credential response redacts secret', git_password not in json.dumps(api('/credentials')))
         pool = '00000000-0000-0000-0000-000000000001'
         enrollment = api('/enrollment-tokens', {'pool_id': pool})['token']
         config_file = DIRECTORY / 'agent.json'
-        agent_binary = DIRECTORY / 'bin with spaces' / 'artifact agent'
+        agent_binary = DIRECTORY / 'bin with spaces' / 'artifactory agent'
         agent_binary.parent.mkdir()
-        shutil.copy2(ROOT / 'agent/bin/artifact-agent', agent_binary)
-        arguments = [str(agent_binary), 'register', '--config', str(config_file), '--endpoint', 'localhost:8443', '--ca', str(ROOT / '.local/pki/ca.pem'), '--root', str(DIRECTORY / 'agent-data'), '--name', 'acceptance-' + RUN_ID, '--allow-http-uploads']
-        agent_environment = {key: value for key, value in os.environ.items() if not key.startswith('AK_') and key != 'DATABASE_URL'}
-        environment = dict(agent_environment, AK_ENROLLMENT_TOKEN=enrollment)
+        shutil.copy2(ROOT / 'agent/bin/artifactory-agent', agent_binary)
+        arguments = [str(agent_binary), 'register', '--config', str(config_file), '--endpoint', 'localhost:8443', '--ca', str(PKI / 'ca.pem'), '--root', str(DIRECTORY / 'agent-data'), '--name', 'acceptance-' + RUN_ID, '--allow-http-uploads']
+        agent_environment = {key: value for key, value in os.environ.items() if not key.startswith('ARTIFACTORY_') and key != 'DATABASE_URL'}
+        environment = dict(agent_environment, ARTIFACTORY_ENROLLMENT_TOKEN=enrollment)
         command(arguments, env=environment)
         reused = subprocess.run(arguments + ['--config', str(DIRECTORY / 'reused.json'), '--root', str(DIRECTORY / 'reused-data')], env=environment, capture_output=True)
         check('enrollment token single use', reused.returncode != 0 and not (DIRECTORY / 'reused.json').exists())
         config = json.loads(config_file.read_text())
-        config['git_ca_file'] = str(ROOT / '.local/pki/ca.pem')
+        config['git_ca_file'] = str(PKI / 'ca.pem')
         config['signing_profiles'] = {'adhoc-test': {}} if signing else {}
         config_file.write_text(json.dumps(config))
         agent_log = open(DIRECTORY / 'agent.log', 'ab')
@@ -308,7 +313,7 @@ def main():
         binary = DIRECTORY / 'downloaded-app'
         binary.write_bytes(content)
         binary.chmod(0o700)
-        check('downloaded native program executes', command([str(binary)]) == 'artifact-kit-native-ok')
+        check('downloaded native program executes', command([str(binary)]) == 'artifactory-native-ok')
         if signing:
             command(['codesign', '--verify', '--strict', str(binary)])
             check('downloaded binary ad-hoc signature verified', True)

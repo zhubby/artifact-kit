@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/artifact-kit/agent/gen/agentv1"
-	"github.com/artifact-kit/agent/internal/config"
-	"github.com/artifact-kit/agent/internal/worker"
+	pb "github.com/zhubby/artifact-kit/agent/gen/agentv1"
+	"github.com/zhubby/artifact-kit/agent/internal/config"
+	"github.com/zhubby/artifact-kit/agent/internal/worker"
 )
 
 func TestBoundedSpoolDoesNotSkipSequenceOnOverflow(test *testing.T) {

@@ -1,6 +1,6 @@
 # Agent 协议与状态机
 
-公共契约位于 `proto/artifactkit/agent/v1/agent.proto`。目前协议主版本为 1；不兼容的主版本在注册和 hello 时拒绝。Go 生成代码提交在 `agent/gen`，修改协议后运行 `scripts/generate-proto.sh`；Rust 在 Cargo 构建时生成服务端。
+公共契约位于 `proto/artifactory/agent/v1/agent.proto`。目前协议主版本为 1；不兼容的主版本在注册和 hello 时拒绝。Go 生成代码提交在 `agent/gen`，修改协议后运行 `scripts/generate-proto.sh`；Rust 在 Cargo 构建时生成服务端。
 
 ## 连接与身份
 
@@ -55,3 +55,11 @@ Agent 在租约内断线保持 Worker，重连后补报；无续租则本地终�
 ## Agent 级 OTA 扩展
 
 协议主版本仍为 1。hello 的 capabilities 包含 `agent-ota-v1` 才调度升级。心跳的独立 `ota` 对象报告持久化阶段；`agent_update` 命令使用 Command.payload_json（新增字段 10），没有 attempt_id / lease_token；`agent_health` 引用当前心跳 command_id。所有状态及确认继续验证节点 mTLS 身份、当前 session、吊销和证书期限。旧 Agent 会忽略未知命令，旧控制面忽略新心跳字段。升级确认没有收到时不提交候选版本。
+
+## AI 与平台源码扩展
+
+新 Agent 声明 `source-cache-v1` 和 `external-build-plan-v1` 能力后，才可获得 AI 构建。Assignment 增加源码快照/仓库对象、计划版本及外置脚本。源码临时 token 只绑定有效 attempt，凭据通过 Askpass 使用；上游 Git 凭据不离开控制中心。Agent 的 `source_cache` 事件记录每个仓库命中状态和固定 commit，服务端与快照核对并按既有序号去重。
+
+独立 `PlannerEnrollment.Enroll` 签发 AI worker 身份；`Planning.Poll/Heartbeat/Tool/Report` 使用 mTLS、规划 run ID 与 lease token。每个 worker 同时一个任务，90 秒租约、10 秒心跳；持久截止时间默认十分钟、调用预算二十次。重启恢复 checkpoint 和剩余预算。排空停止新任务，吊销立即使 RPC 失效。
+
+计划提交、澄清、取消和过期回收在数据库事务内校验最新状态。被拒计划完整回滚；旧 token、旧 run 和重复完成不能排队。修订固定源码与权限，只替换失败目标；每个 attempt 持久引用自己的 source_snapshot_id 与 plan_revision_id。消息主版本和既有执行/日志/制品契约保持为 1。

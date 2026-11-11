@@ -15,7 +15,7 @@ targets:
           Copy-Item target/release/myapp.exe dist/myapp.exe
       - name: sign
         phase: sign
-        run: signtool sign /fd SHA256 /td SHA256 /tr "$env:AK_TIMESTAMP_URL" /sha1 "$env:AK_WINDOWS_CERT_THUMBPRINT" dist/myapp.exe
+        run: signtool sign /fd SHA256 /td SHA256 /tr "$env:ARTIFACTORY_TIMESTAMP_URL" /sha1 "$env:ARTIFACTORY_WINDOWS_CERT_THUMBPRINT" dist/myapp.exe
       - name: verify
         phase: verify
         run: signtool verify /pa /all /v dist/myapp.exe

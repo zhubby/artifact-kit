@@ -130,7 +130,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "artifact-control"
+name = "artifactory-control"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",

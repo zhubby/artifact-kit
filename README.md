@@ -1,8 +1,12 @@
-# Artifact Kit
+# artifactory
 
 面向个人与内部可信团队的跨平台应用构建、签名与内部分发平台。
 
-**Git 项目 → 固定提交与配置 → 原生节点构建 → 签名 / 校验 → 私有制品 → 不可变 Release。**
+项目于 2026-11-11 统一更名为 `artifactory`。GitHub 仓库地址与本地目录不变；命令、配置、环境变量及 Agent 协议使用新名称，旧部署需重新配置。更名说明见 [更名记录](docs/artifactory-rename-2026-11-11.md)，后续复审修复及实际部署见[本机 / Mac mini 验收](docs/local-macmini-acceptance-2026-11-11.md)；此前的设计和验收记录保留当时的名称与结果。
+
+**只读 Git 项目 → 固定源码快照 → Pi AI 执行计划 → 原生节点构建 → 签名 / 校验 → 私有制品 → 不可变 Release。**
+
+新构建不需要仓库配置文件。用户描述目标，AI 只读分析源码并生成命令与外置脚本，所有说明和计划保存在平台；最多自动修订两次。配置模型、注册 worker、源码分发与迁移说明见 [零侵入 AI 构建](docs/ai-builds.md)，真实模型及本地 / Mac mini 测试见 [AI 构建验收记录](docs/ai-builds-acceptance-2026-11-11.md)。
 
 ## 实现范围
 
@@ -17,14 +21,14 @@
 
 ## 本地开发
 
-需要 Rust、Go 1.24+、Node 22、npm、protoc、OpenSSL、Git、Python 3、Docker。具体已验证版本见验收记录。
+需要 Rust、Go 1.24+、Node 24、npm、protoc、OpenSSL、Git、Git LFS、Python 3、Docker。具体已验证版本见验收记录。
 
 ```sh
 sh scripts/init-local.sh
 sh scripts/local-services.sh
 set -a; . .local/env; set +a
-export GIT_SSL_CAINFO="$AK_PKI_DIR/ca.pem"
-cargo run --bin artifact-control
+export GIT_SSL_CAINFO="$ARTIFACTORY_PKI_DIR/ca.pem"
+cargo run --bin artifactory-control
 ```
 
 另开终端启动控制台：
@@ -41,17 +45,17 @@ Agent 注册：在控制台创建 15 分钟有效的一次性令牌，以环境�
 
 ```sh
 cd agent
-CGO_ENABLED=0 go build -o bin/artifact-agent ./cmd/artifact-agent
-export AK_ENROLLMENT_TOKEN='从控制台获取'
-bin/artifact-agent register --endpoint localhost:8443 --ca ../.local/pki/ca.pem --config ../.local/agent/agent.json --root "$(pwd)/../.local/agent/data" --allow-http-uploads
-unset AK_ENROLLMENT_TOKEN
-bin/artifact-agent doctor --config ../.local/agent/agent.json
-bin/artifact-agent run --config ../.local/agent/agent.json
+CGO_ENABLED=0 go build -o bin/artifactory-agent ./cmd/artifactory-agent
+export ARTIFACTORY_ENROLLMENT_TOKEN='从控制台获取'
+bin/artifactory-agent register --endpoint localhost:8443 --ca ../.local/pki/ca.pem --config ../.local/agent/agent.json --root "$(pwd)/../.local/agent/data" --allow-http-uploads
+unset ARTIFACTORY_ENROLLMENT_TOKEN
+bin/artifactory-agent doctor --config ../.local/agent/agent.json
+bin/artifactory-agent run --config ../.local/agent/agent.json
 ```
 
 生产部署、三类系统服务与签名节点设置见 [运维手册](docs/operations.md)。不要在已有生产配置旁运行本地验收脚本。
 
-Kubernetes / 本机 kind 使用 [Helm 部署指南](docs/helm.md)。GitHub Release 发布时自动构建并推送 control / web 的 AMD64、ARM64 镜像到 GHCR。
+Kubernetes / 本机 kind 使用 [Helm 部署指南](docs/helm.md)。GitHub Release 发布时自动构建并推送 control / web / ai-worker 的 AMD64、ARM64 镜像到 GHCR。新构建前需按 [AI 构建指南](docs/ai-builds.md) 配置模型并注册 worker。
 
 ## 验证
 
@@ -60,19 +64,20 @@ python3 -m unittest discover -s scripts -p 'test_*.py' -v
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
-AK_TEST_DATABASE_URL=postgres://artifact:local-test-only@127.0.0.1:15432/artifact cargo test --test database -- --ignored
+ARTIFACTORY_TEST_DATABASE_URL=postgres://artifactory:local-test-only@127.0.0.1:15432/artifactory cargo test --test database -- --ignored
 (cd agent && go vet ./... && go test -race ./...)
 sh scripts/cross-build-agent.sh
 (cd web && npm run typecheck && npm run build)
+(cd ai-worker && npm ci && npm run check && npm test)
 ```
 
-真实端到端验收会创建带 Basic Auth 的 HTTPS Git 服务、真实原生 C 构建、真实 Agent、S3 上传 / 下载、取消和故障场景。macOS 额外执行 ad-hoc codesign，**不是开发者分发签名**。
+历史兼容端到端验收会创建迁移前配方记录、带 Basic Auth 的 HTTPS Git 服务、真实原生 C 构建、真实 Agent、S3 上传 / 下载、取消和故障场景。macOS 额外执行 ad-hoc codesign，**不是开发者分发签名**。
 
 Unix 的 Go 测试还会运行真实前台 Agent / Worker，检查正常退出、Agent 强制退出及 Worker 收到 SIGTERM 后的任务进程树与工作目录清理。系统服务验收仅在显式启用的 GitHub 托管临时 VM 上执行，包含专用账户下在途任务的服务停止 / 重启及后续任务；详见 [原生服务验收](docs/operations.md#临时-ci-原生服务验收)。
 
 ```sh
-cargo build --bin artifact-control
-(cd agent && CGO_ENABLED=0 go build -o bin/artifact-agent ./cmd/artifact-agent)
+cargo build --bin artifactory-control
+(cd agent && CGO_ENABLED=0 go build -o bin/artifactory-agent ./cmd/artifactory-agent)
 set -a; . .local/env; set +a
 python3 -u scripts/acceptance.py --keep-alive
 ```
@@ -81,15 +86,15 @@ python3 -u scripts/acceptance.py --keep-alive
 
 ```sh
 set -a; . .local/env; set +a
-export AK_LIVE_TESTS=1
-export AK_LIVE_S3_CONTAINER=artifact-kit-s3-test
-export AK_LIVE_AGENT_CONFIG="$(python3 -c 'import json; print(json.load(open(".local/acceptance/latest.json"))["agent_config"])')"
-export AK_LIVE_PROJECT_ID="$(python3 -c 'import json; print(json.load(open(".local/acceptance/latest.json"))["project_id"])')"
+export ARTIFACTORY_LIVE_TESTS=1
+export ARTIFACTORY_LIVE_S3_CONTAINER=artifactory-s3-test
+export ARTIFACTORY_LIVE_AGENT_CONFIG="$(python3 -c 'import json; print(json.load(open(".local/acceptance/latest.json"))["agent_config"])')"
+export ARTIFACTORY_LIVE_PROJECT_ID="$(python3 -c 'import json; print(json.load(open(".local/acceptance/latest.json"))["project_id"])')"
 (cd agent && go test -v ./internal/client -run TestLiveRustGoProtocol)
 (cd web && npm test)
 ```
 
-`AK_LIVE_S3_CONTAINER` 会短暂暂停指定的 S3 容器，以验证存储阻塞不影响心跳续租；只允许填写本次独立测试环境的容器，不要指向生产或共享存储。不做该故障检查时不要设置此变量。
+`ARTIFACTORY_LIVE_S3_CONTAINER` 会短暂暂停指定的 S3 容器，以验证存储阻塞不影响心跳续租；只允许填写本次独立测试环境的容器，不要指向生产或共享存储。不做该故障检查时不要设置此变量。
 
 协议联测还需要 `psql`，且 `.local/env` 中的 `DATABASE_URL` 必须指向该验收中心的数据库。测试会锁住本次创建的任务记录，实际提交节点吊销、数据库证书期限失效及 mTLS 会话替换，验证等待中的续租、开始授权与完成事件被拒绝，同时保留正常授权的成功对照；另行验证失败任务重试后的旧完成事件重放及后续任务开始。
 
@@ -117,7 +122,7 @@ python3 -u scripts/recovery_acceptance.py
 python3 -u scripts/compose_acceptance.py
 ```
 
-需要 Unix 非 root Docker 账户及 Go、Git、Python 3.12+、OpenSSL。覆盖生产五服务、真实 HTTPS / mTLS、原生 Linux C 构建、运行中 SSE、私有制品、中心重启，以及 S3 暂停时的日志缓冲耗尽与恢复；保留现有开发服务，不修改宿主信任库。输入、证据和正式环境验收边界见 [运维手册](docs/operations.md#隔离-compose--tls-验收)。
+需要 Unix 非 root Docker 账户及 Go、Git、Python 3.12+、OpenSSL。覆盖生产六服务、真实 HTTPS / mTLS、原生 Linux C 构建、运行中 SSE、私有制品、中心重启，以及 S3 暂停时的日志缓冲耗尽与恢复；保留现有开发服务，不修改宿主信任库。输入、证据和正式环境验收边界见 [运维手册](docs/operations.md#隔离-compose--tls-验收)。
 
 ## 仓库导航
 
@@ -125,8 +130,9 @@ python3 -u scripts/compose_acceptance.py
 |---|---|
 | `crates/control` | 控制面、SQL 迁移、权限 / 状态 / 数据库测试 |
 | `agent` | Go Agent、原生 Worker、生成的 Go 协议、进程树测试 |
-| `proto/artifactkit/agent/v1` | 版本化 Protobuf 公共契约 |
-| `schemas` / `examples` | 配置 schema 与五类目标的适配模板 |
+| `ai-worker` | Node 24 Pi SDK 规划进程、只读工具和模型接口 |
+| `proto/artifactory/agent/v1` | 版本化 Protobuf 公共契约 |
+| `schemas` / `examples` | 内部执行配方和历史配置 schema 与目标参考 |
 | `web` | 控制台、Playwright 真实后台测试 |
 | `deploy` / `compose.yaml` | Linux 单实例部署 |
 | `docs` | 配置、API、协议、运维与验收边界 |

@@ -22,7 +22,7 @@ func TestInterruptedDownloadNeverReplacesCurrentBinary(t *testing.T) {
 	pub, key, _ := ed25519.GenerateKey(rand.Reader)
 	body := []byte("complete release binary")
 	hash := sha256.Sum256(body)
-	name := "artifact-agent-" + runtime.GOOS + "-" + runtime.GOARCH
+	name := "artifactory-agent-" + runtime.GOOS + "-" + runtime.GOARCH
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
@@ -56,7 +56,7 @@ func TestInterruptedDownloadNeverReplacesCurrentBinary(t *testing.T) {
 			if err != nil || string(old) != "known good" {
 				t.Fatal("current runtime was changed")
 			}
-			candidate := filepath.Join(directory, "versions", m.Assets[0].SHA256, "artifact-agent")
+			candidate := filepath.Join(directory, "versions", m.Assets[0].SHA256, "artifactory-agent")
 			if runtime.GOOS == "windows" {
 				candidate += ".exe"
 			}

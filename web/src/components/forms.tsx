@@ -8,9 +8,9 @@ import { CopyButton, ErrorBox, Field } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { Modal } from "@/components/ui/dialog";
-import { mutation } from "@/lib/api";
+import { mutation, useRemote } from "@/lib/api";
 import { asError, LocalizedError } from "@/lib/errors";
-import type { Credential, Node, Pool, Project } from "@/lib/types";
+import type { Credential, ModelProfile, Node, Pool, Project } from "@/lib/types";
 
 export function SubmitForm({
   children,
@@ -80,6 +80,9 @@ export function ProjectForm({
   done: () => void;
 }) {
   const { t } = useUI();
+  const models = useRemote<Pick<ModelProfile,"id"|"name"|"enabled">[]>("/model-options");
+  const [model, setModel] = useState(project?.model_profile_id || "");
+  const [bindings, setBindings] = useState(project?.source_credentials || []);
   return (
     <SubmitForm
       onCancel={done}
@@ -92,6 +95,9 @@ export function ProjectForm({
             credential_id: string(form, "credential_id") || null,
             pool_ids: form.getAll("pools"),
             signing_profiles: csv(string(form, "signing_profiles")),
+            model_profile_id: model || null,
+            build_context: string(form, "build_context"),
+            source_credentials: bindings,
           },
           project ? "PATCH" : "POST",
         );
@@ -161,6 +167,30 @@ export function ProjectForm({
           placeholder="apple-team, windows-release"
         />
       </Field>
+      <Field label={t("ai.modelProfile")} hint={t("ai.projectModelHint")}>
+        <select className="input" value={model} onChange={(event) => setModel(event.target.value)}>
+          <option value="">{t("ai.platformDefault")}</option>
+          {(models.data || []).map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+        </select>
+      </Field>
+      <Field label={t("ai.projectContext")} hint={t("ai.projectContextHint")}>
+        <Textarea name="build_context" defaultValue={project?.build_context} maxLength={16000} />
+      </Field>
+      <fieldset className="space-y-3">
+        <legend className="text-sm font-medium">{t("ai.submoduleCredentials")}</legend>
+        <p className="text-xs leading-5 text-muted-foreground">{t("ai.submoduleHint")}</p>
+        {bindings.map((binding, index) => <div className="grid gap-2" key={index}>
+          <Input aria-label={t("projects.repository")} placeholder="https://git.example.com/team/library.git" value={binding.repository_url} onChange={(event) => setBindings(bindings.map((entry, i) => i === index ? {...entry, repository_url: event.target.value} : entry))} required />
+          <div className="flex gap-2">
+            <select className="input min-w-0 flex-1" aria-label={t("projects.credential")} required value={binding.credential_id} onChange={(event) => setBindings(bindings.map((entry, i) => i === index ? {...entry, credential_id: event.target.value} : entry))}>
+              <option value="">{t("projects.credential")}</option>
+              {credentials.map((credential) => <option key={credential.id} value={credential.id}>{credential.name}</option>)}
+            </select>
+            <Button type="button" variant="ghost" onClick={() => setBindings(bindings.filter((_, i) => i !== index))}>{t("ai.remove")}</Button>
+          </div>
+        </div>)}
+        <Button type="button" variant="secondary" onClick={() => setBindings([...bindings, {repository_url: "", credential_id: ""}])}>{t("ai.addBinding")}</Button>
+      </fieldset>
     </SubmitForm>
   );
 }
@@ -186,7 +216,8 @@ export function BuildForm({
           {
             ref: string(form, "ref"),
             parameters: JSON.parse(string(form, "parameters") || "{}"),
-            targets: csv(string(form, "targets")),
+            goal: string(form, "goal"),
+            target_requirements: form.getAll("target_platform").map((value) => { const [os, arch] = String(value).split("/"); return {os, arch}; }),
             release_version: string(form, "release_version") || null,
           },
         );
@@ -216,9 +247,14 @@ export function BuildForm({
           placeholder="main / refs/tags/v1.0.0 / commit"
         />
       </Field>
-      <Field label={t("builds.platforms")} hint={t("builds.platformsHint")}>
-        <Input name="targets" placeholder="linux, macos, windows" />
+      <Field label={t("ai.goal")} hint={t("ai.goalHint")}>
+        <Textarea name="goal" required maxLength={16000} placeholder={t("ai.goalPlaceholder")} />
       </Field>
+      <fieldset>
+        <legend className="mb-3 text-sm font-medium">{t("builds.platforms")}</legend>
+        <div className="flex flex-wrap gap-4">{["darwin/arm64", "darwin/amd64", "linux/amd64", "linux/arm64", "windows/amd64"].map((platform) => <label key={platform} className="flex items-center gap-2 text-xs"><input type="checkbox" name="target_platform" value={platform} />{platform.replace("darwin", "macOS")}</label>)}</div>
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">{t("ai.platformHint")}</p>
+      </fieldset>
       <Field label={t("builds.parameters")} hint={t("builds.parametersHint")}>
         <Textarea name="parameters" defaultValue="{}" spellCheck={false} />
       </Field>
@@ -375,10 +411,12 @@ export function SecretDialog({
   value,
   title,
   close,
+  hint,
 }: {
   value?: string;
   title: string;
   close: () => void;
+  hint?: string;
 }) {
   const { t } = useUI();
   return (
@@ -397,7 +435,7 @@ export function SecretDialog({
         <CopyButton value={value || ""} />
       </div>
       <div className="mt-5 text-xs leading-6 text-muted-foreground">
-        {t("secrets.agentHint")}
+        {hint || t("secrets.agentHint")}
       </div>
       <Button className="mt-6 w-full" onClick={close}>
         {t("secrets.saved")}

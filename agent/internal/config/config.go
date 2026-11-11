@@ -20,6 +20,7 @@ type Config struct {
 	SigningProfiles  map[string]map[string]string `json:"signing_profiles,omitempty"`
 	LogBufferBytes   int64                        `json:"log_buffer_bytes,omitempty"`
 	AllowHTTPUploads bool                         `json:"allow_http_uploads,omitempty"`
+	SourceCacheBytes int64                        `json:"source_cache_bytes,omitempty"`
 }
 
 func Load(path string) (Config, error) {
@@ -43,6 +44,12 @@ func Load(path string) (Config, error) {
 	}
 	if config.LogBufferBytes < 1024*1024 {
 		return config, errors.New("log buffer must be at least 1 MiB")
+	}
+	if config.SourceCacheBytes == 0 {
+		config.SourceCacheBytes = 20 * 1024 * 1024 * 1024
+	}
+	if config.SourceCacheBytes < 1024*1024 {
+		return config, errors.New("source cache quota must be at least 1 MiB")
 	}
 	return config, err
 }

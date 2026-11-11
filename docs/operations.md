@@ -13,9 +13,9 @@ Kubernetes 和本机 kind 的 Chart、凭据初始化、TLS、持久卷与升级
 在专用**非 root** 部署账户下准备：
 
 ```sh
-AK_DOMAIN=build.example.com \
-AK_S3_DOMAIN=artifacts.example.com \
-AK_GRPC_HOST=agents.example.com \
+ARTIFACTORY_DOMAIN=build.example.com \
+ARTIFACTORY_S3_DOMAIN=artifacts.example.com \
+ARTIFACTORY_GRPC_HOST=agents.example.com \
 sh scripts/init-deploy.sh
 docker compose --env-file .deploy/env config --quiet
 docker compose --env-file .deploy/env up -d --build
@@ -23,7 +23,7 @@ docker compose --env-file .deploy/env up -d --build
 
 `.deploy/env` 包含随机数据库密码、Git 凭据加密主密钥、S3 密钥和初始密码；`.deploy/pki` 包含节点证书签发私钥。均不入 Git，目录权限为 0700，文件为 0600；容器以该部署账户 UID/GID 读取。不要在已有部署上重新初始化或更换主密钥。
 
-Compose 内 S3 的默认匿名访问已禁用。Agent 必须能访问外部 S3 HTTPS 名称；控制面也使用该 HTTPS 地址完成初始化和内容校验，因此部署宿主必须能回环访问这个域名。首次 ACME 颁证期间控制面可能自动重启，TLS 就绪后恢复；不要用 `AK_INSECURE_DEV` 绕过生产证书检查。使用组织内部 CA 时，将信任链安装到中心 / Agent 的系统信任库。
+Compose 内 S3 的默认匿名访问已禁用。Agent 必须能访问外部 S3 HTTPS 名称；控制面也使用该 HTTPS 地址完成初始化和内容校验，因此部署宿主必须能回环访问这个域名。首次 ACME 颁证期间控制面可能自动重启，TLS 就绪后恢复；不要用 `ARTIFACTORY_INSECURE_DEV` 绕过生产证书检查。使用组织内部 CA 时，将信任链安装到中心 / Agent 的系统信任库。
 
 控制面 S3 客户端通过 Rustls 加载系统根证书。容器部署需把组织 CA 加入控制面镜像或容器内的信任库，并确保运行账户可读；宿主安装的证书不会自动传播到容器。证书的签发链和 S3 endpoint 主机名都会校验。
 
@@ -43,11 +43,11 @@ S3 启动脚本把只读挂载、0600 权限的宿主认证配置复制为容器
 python3 -u scripts/compose_acceptance.py
 ```
 
-脚本从当前 Git HEAD 创建私有源码快照，构建实际控制面与控制台镜像；以独立项目名、卷、网络和随机 loopback 端口运行生产清单的全部五个服务。测试覆盖使用 Caddy 内部 CA 的真实 HTTPS、Secure Cookie / CSRF、运行中 SSE、mTLS Agent、HTTPS Git 原生 C 构建、私有 S3 上传下载与中心重启。CA 只注入测试客户端与独立控制面进程，不修改宿主信任库。默认不加载已有 `.local/env` 或 `.deploy/env`，运行后仅清理归属标签匹配本次 run 的容器、网络与卷。
+脚本从当前 Git HEAD 创建私有源码快照（未提交候选需先复制到隔离临时 Git 仓库并提交），构建实际控制面与控制台镜像；以独立项目名、卷、网络和随机 loopback 端口运行生产清单的全部六个服务。测试覆盖使用 Caddy 内部 CA 的真实 HTTPS、Secure Cookie / CSRF、运行中 SSE、mTLS Agent、HTTPS Git 原生 C 构建、私有 S3 上传下载与中心重启。CA 只注入测试客户端与独立控制面进程，不修改宿主信任库。默认不加载已有 `.local/env` 或 `.deploy/env`，运行后仅清理归属标签匹配本次 run 的容器、网络与卷。
 
 日志故障测试把验收 Agent 缓冲设为 1 MiB，仅暂停本次归属标签匹配的 S3，再让真实 Worker 输出超过缓冲上限。脚本核对子进程终止、磁盘缓冲边界及独立心跳，恢复 S3 后检查明确失败原因、无制品 / Release、日志按序确认和清理，并使用同一 Agent 再构建原生 C 程序。缓存块的大小 / SHA-256 同时与真实 PostgreSQL 索引及 HTTPS SSE 内容比较。测试容器使用 Docker init 回收孤儿子进程；失败清理也会先恢复本次暂停的 S3。执行的 controller 副本及 controller / probe 摘要随本地证据保留。
 
-`--image-prefix` 可指定拉取镜像所用的 registry 镜像源；输入变更、各镜像的实际平台与 ID 随证据记录，不修改默认部署镜像或全局 Docker 配置。可选 `--control-image` / `--web-image` 仅复用 `org.opencontainers.image.revision` 与当前 HEAD、`artifact-kit.dockerfile.sha256` 与对应 Dockerfile 均匹配的镜像。`--probe-image` 可复用包含 python3、Git、cc、OpenSSL 的 Linux 测试工具镜像；Agent 二进制仍从本次源码快照重新编译，验收脚本也由本次 run 单独挂载。
+`--image-prefix` 可指定拉取镜像所用的 registry 镜像源；输入变更、各镜像的实际平台与 ID 随证据记录，不修改默认部署镜像或全局 Docker 配置。可选 `--control-image` / `--web-image` 仅复用 `org.opencontainers.image.revision` 与当前 HEAD、`artifactory.dockerfile.sha256` 与对应 Dockerfile 均匹配的镜像。`--probe-image` 可复用包含 python3、Git、cc、OpenSSL 的 Linux 测试工具镜像；Agent 二进制仍从本次源码快照重新编译，验收脚本也由本次 run 单独挂载。
 
 日志和证据保存在 `.local/compose-tls/<run>/`。其中源码快照含本次部署的主密钥、数据库 / S3 密码和测试 PKI，必须保持私有；CI 仅上传显式列出的诊断日志和证据文件，不上传快照、生成的 Compose 配置或 Agent 私钥。专用 probe 容器只承载该验收的原生 Linux 进程，不属于产品的容器执行器，也不证明实体 Agent 服务、五类真实应用、发行签名或公网 DNS / ACME 已验收。
 
@@ -55,17 +55,17 @@ python3 -u scripts/compose_acceptance.py
 
 先运行 `sh scripts/cross-build-agent.sh`，结果位于 `agent/bin`。所有目标为 CGO-disabled 二进制；这只是可编译性，不是宿主运行验证。使用已有 OS 原生工具链，不安装 SDK。
 
-注册时钉住管理员通过可信渠道分发的 `ca.pem`；不要从未知网络下载后直接信任。通过 `AK_ENROLLMENT_TOKEN` 传短期令牌，注册后立即清除环境变量。配置文件和 `node.key` 只能由专用服务账户读取。
+注册时钉住管理员通过可信渠道分发的 `ca.pem`；不要从未知网络下载后直接信任。通过 `ARTIFACTORY_ENROLLMENT_TOKEN` 传短期令牌，注册后立即清除环境变量。配置文件和 `node.key` 只能由专用服务账户读取。
 
 ### Linux / systemd
 
-以专用 `artifact-agent` 非 root 账户完成注册，给予其平台管理的工作目录与项目所需 SDK 访问，不给予 sudo 或通用管理员权限。
+以专用 `artifactory-agent` 非 root 账户完成注册，给予其平台管理的工作目录与项目所需 SDK 访问，不给予 sudo 或通用管理员权限。
 
 ```sh
-artifact-agent register --endpoint agents.example.com:8443 --ca /etc/artifact-kit/ca.pem --config /var/lib/artifact-kit/agent.json --root /var/lib/artifact-kit/data
-artifact-agent doctor --config /var/lib/artifact-kit/agent.json
-sudo artifact-agent service --action install --user artifact-agent --config /var/lib/artifact-kit/agent.json
-sudo artifact-agent service --action start --config /var/lib/artifact-kit/agent.json
+artifactory-agent register --endpoint agents.example.com:8443 --ca /etc/artifactory/ca.pem --config /var/lib/artifactory/agent.json --root /var/lib/artifactory/data
+artifactory-agent doctor --config /var/lib/artifactory/agent.json
+sudo artifactory-agent service --action install --user artifactory-agent --config /var/lib/artifactory/agent.json
+sudo artifactory-agent service --action start --config /var/lib/artifactory/agent.json
 ```
 
 安装操作需要管理员创建 systemd 服务，但服务本身必须使用非 root 账户。确保该账户的 PATH 与 doctor 结果相同，SDK 许可已接受。
@@ -75,24 +75,24 @@ sudo artifact-agent service --action start --config /var/lib/artifact-kit/agent.
 使用专用构建账户，先在相同账户下完成 Xcode 许可、SDK、Keychain 与签名身份设置。以该账户注册，再由管理员安装带 `--user` 的 LaunchDaemon；不能假定后台 daemon 自动获得交互用户已解锁的钥匙串、登录会话或 UI 自动化授权。
 
 ```sh
-artifact-agent doctor --config /Users/build/.config/artifact-kit/agent.json
-sudo artifact-agent service --action install --user build --config /Users/build/.config/artifact-kit/agent.json
-sudo artifact-agent service --action start --config /Users/build/.config/artifact-kit/agent.json
+artifactory-agent doctor --config /Users/build/.config/artifactory/agent.json
+sudo artifactory-agent service --action install --user build --config /Users/build/.config/artifactory/agent.json
+sudo artifactory-agent service --action start --config /Users/build/.config/artifactory/agent.json
 ```
 
 完整 macOS 应用通常还需要按正确嵌套顺序签名、notarization / stapling。原生命令由仓库维护；本机 ad-hoc 验证不是 Developer ID 或 App Store 验收。
 
-LaunchDaemon 的标准输出和错误日志保存在私有配置文件所在目录，文件名为 `artifact-kit-agent.out.log` / `artifact-kit-agent.err.log`；服务账户必须能写入该目录。launchd 降权后无法在默认 `/var/log` 中为普通账户新建文件，此时 Agent 尚未执行就会以 `EX_CONFIG` 退出。
+LaunchDaemon 的标准输出和错误日志保存在私有配置文件所在目录，文件名为 `artifactory-agent.out.log` / `artifactory-agent.err.log`；服务账户必须能写入该目录。launchd 降权后无法在默认 `/var/log` 中为普通账户新建文件，此时 Agent 尚未执行就会以 `EX_CONFIG` 退出。
 
 ### Windows / Service Control Manager
 
-使用具有“作为服务登录”权限的专用账户，不使用 LocalSystem。以管理员 PowerShell 安装，`AK_SERVICE_PASSWORD` 仅供安装过程读取，不写到命令参数。工作目录、配置和私钥使用 NTFS ACL，仅授予该账户、SYSTEM 与管理员必需权限；Go 的 Unix mode 位不能替代 Windows ACL 验证。
+使用具有“作为服务登录”权限的专用账户，不使用 LocalSystem。以管理员 PowerShell 安装，`ARTIFACTORY_SERVICE_PASSWORD` 仅供安装过程读取，不写到命令参数。工作目录、配置和私钥使用 NTFS ACL，仅授予该账户、SYSTEM 与管理员必需权限；Go 的 Unix mode 位不能替代 Windows ACL 验证。
 
 ```powershell
-artifact-agent.exe doctor --config C:\ArtifactKit\agent.json
-artifact-agent.exe service --action install --user '.\artifact-build' --config C:\ArtifactKit\agent.json
-Remove-Item Env:\AK_SERVICE_PASSWORD
-artifact-agent.exe service --action start --config C:\ArtifactKit\agent.json
+artifactory-agent.exe doctor --config C:\artifactory\agent.json
+artifactory-agent.exe service --action install --user '.\artifactory-build' --config C:\artifactory\agent.json
+Remove-Item Env:\ARTIFACTORY_SERVICE_PASSWORD
+artifactory-agent.exe service --action start --config C:\artifactory\agent.json
 ```
 
 给服务账户配置 Visual Studio / SDK、PowerShell、Git 与签名证书的真实访问权限。Windows Job Object 使用挂起创建 → 分配 Job → 恢复，防止子进程在归属 Job 前逃逸；必须在 Windows 实机上验收取消、断线和服务停止。
@@ -107,11 +107,11 @@ Unix Worker 将 SIGTERM、SIGINT 和因 Agent 关闭输出管道产生的 SIGPIP
 
 ### 临时 CI 原生服务验收
 
-`native-agent` 作业覆盖 GitHub 托管临时 VM 的 Linux amd64 / arm64、macOS amd64 / arm64 与 Windows amd64 五种组合，并显式启用 `TestNativeServiceLifecycle`。测试在系统变更前核对矩阵传入的 `AK_NATIVE_EXPECTED_PLATFORM`、实际 Go 运行平台和 runner 系统 / 架构，记录镜像版本。随后创建专用非管理员账户和临时私有配置，通过实际 systemd / launchd / SCM 安装 Agent，核对自动启动配置和真实进程账户，并连接仅监听 loopback、要求客户端证书的 Go 测试控制端；重启必须产生新的认证连接及 PID，停止后连接必须关闭，卸载后服务记录必须消失。二进制及配置路径均含空格，测试结束卸载服务、删除其创建的账户和目录。
+`native-agent` 作业覆盖 GitHub 托管临时 VM 的 Linux amd64 / arm64、macOS amd64 / arm64 与 Windows amd64 五种组合，并显式启用 `TestNativeServiceLifecycle`。测试在系统变更前核对矩阵传入的 `ARTIFACTORY_NATIVE_EXPECTED_PLATFORM`、实际 Go 运行平台和 runner 系统 / 架构，记录镜像版本。随后创建专用非管理员账户和临时私有配置，通过实际 systemd / launchd / SCM 安装 Agent，核对自动启动配置和真实进程账户，并连接仅监听 loopback、要求客户端证书的 Go 测试控制端；重启必须产生新的认证连接及 PID，停止后连接必须关闭，卸载后服务记录必须消失。二进制及配置路径均含空格，测试结束卸载服务、删除其创建的账户和目录。
 
 测试控制端还分配固定本地 Git 提交的受控任务。任务启动真实后代进程，测试通过 OS 进程信息核对专用账户和 Agent → Worker → 步骤 / 后代的实际归属；在服务重启及停止后要求所有旧任务进程消失、工作目录被删除，再让新 Agent / Worker 完成后续任务。受控程序及其后代有两分钟运行上限；失败清理只停止本次观察端，让这些任务自行退出。Windows 使用进程句柄观察退出，避免只按 PID 推断结果。
 
-普通 `go test` 会明确跳过此项；只设置 `AK_NATIVE_SERVICE_TESTS=1` 也不允许在开发机运行，必须同时处于 GitHub 托管临时 VM。Windows 临时账户只单独授予 `SeServiceLogonRight`，不改写既有登录权限策略；私有目录 ACL 限该账户、当前测试进程身份、SYSTEM 与管理员。
+普通 `go test` 会明确跳过此项；只设置 `ARTIFACTORY_NATIVE_SERVICE_TESTS=1` 也不允许在开发机运行，必须同时处于 GitHub 托管临时 VM。Windows 临时账户只单独授予 `SeServiceLogonRight`，不改写既有登录权限策略；私有目录 ACL 限该账户、当前测试进程身份、SYSTEM 与管理员。
 
 这项测试覆盖原生服务管理及受控 Worker 的在途停止链路。Go 测试控制端只确认事件和日志，不代替真实 Rust / PostgreSQL / S3 联测；固定 Git 中的有限测试程序不代表五类真实应用、SDK 或发行签名环境。自动启动配置也不证明 VM / 实体机重启后的恢复。
 
@@ -122,8 +122,8 @@ Unix Worker 将 SIGTERM、SIGINT 和因 Agent 关闭输出管道产生的 SIGPIP
 ```json
 {
   "signing_profiles": {
-    "apple-release": {"AK_APPLE_IDENTITY": "Developer ID Application: YOUR TEAM"},
-    "android-release": {"AK_ANDROID_KEYSTORE": "/private/signing/app.jks", "AK_ANDROID_STORE_PASSWORD": "LOCAL_SECRET"}
+    "apple-release": {"ARTIFACTORY_APPLE_IDENTITY": "Developer ID Application: YOUR TEAM"},
+    "android-release": {"ARTIFACTORY_ANDROID_KEYSTORE": "/private/signing/app.jks", "ARTIFACTORY_ANDROID_STORE_PASSWORD": "LOCAL_SECRET"}
   }
 }
 ```
@@ -155,7 +155,7 @@ doctor 报告路径、版本命令是否成功、实际 OS/CPU、可发现工具
 
 必须协调备份 PostgreSQL、S3 对象、`.deploy/env` 中主密钥及 PKI；只有数据库备份无法解密凭据，也无法恢复制品。备份应离线加密，并独立限制访问。
 
-1. 排空节点、停止新触发、等待在途任务结束，停止 control / web。
+1. 排空节点、停止新触发、等待在途任务结束，停止 control / web / ai-worker。
 2. `pg_dump` 保存事务一致的数据库，记录 schema 迁移版本；同时保存 S3 内容与对象校验清单。
 3. 保存主密钥、S3 密钥、签发 CA、节点授权与镜像版本；不要在普通工单里复制这些秘密。
 4. 在隔离环境恢复数据库及对象，使用相同 master key，检查凭据解密、Release 清单与下载 SHA-256，再开放流量。
@@ -164,3 +164,7 @@ doctor 报告路径、版本命令是否成功、实际 OS/CPU、可发现工具
 本版没有自动 GC / retention API；禁止直接批量删除平台数据目录或 Release 对象。暂存对象和孤立失败日志的清理必须停写、基于数据库引用清单、先备份再删除；已发布制品不能按文件时间猜测是否无用。生产备份恢复演练仍是独立验收项。
 
 开发环境可用 `scripts/recovery_acceptance.py` 重放隔离冷恢复，执行顺序见 README。它使用 process-only rclone remote 和空配置文件，不修改已有全局 remotes；备份位于私有 `.local/acceptance/<run_id>/backup`。脚本不会自动加密或异地传输该目录，生产环境需另行提供密钥托管、加密备份与恢复流程。
+
+## AI worker 与源码缓存
+
+模型配置、worker 注册、任务预算、源码下载、缓存指标与升级顺序见 [AI 构建运维](ai-builds.md)。首次部署必须配置真实模型并完成 worker 注册；六服务 Compose 的 worker 默认等待注册，不持有模型密钥环境变量。备份必须包含 worker 身份和平台源码快照元数据。

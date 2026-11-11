@@ -50,7 +50,7 @@ export default function Login() {
           <div className="brand-mark">
             <Box size={22} />
           </div>
-          artifact kit
+          artifactory
           <span className="ml-2 rounded border border-border px-2 py-1 font-mono text-[9px] text-muted-foreground">
             {t("login.controlPlane")}
           </span>

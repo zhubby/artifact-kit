@@ -18,17 +18,17 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/artifact-kit/agent/gen/agentv1"
-	"github.com/artifact-kit/agent/internal/config"
+	pb "github.com/zhubby/artifact-kit/agent/gen/agentv1"
+	"github.com/zhubby/artifact-kit/agent/internal/config"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 func TestLiveRustGoProtocol(test *testing.T) {
-	if os.Getenv("AK_LIVE_TESTS") != "1" {
+	if os.Getenv("ARTIFACTORY_LIVE_TESTS") != "1" {
 		test.Skip("requires live Rust control, PostgreSQL, S3 and scripts/acceptance.py --keep-alive")
 	}
-	base := os.Getenv("AK_LIVE_HTTP_URL")
+	base := os.Getenv("ARTIFACTORY_LIVE_HTTP_URL")
 	if base == "" {
 		base = "http://127.0.0.1:8080"
 	}
@@ -42,7 +42,7 @@ func TestLiveRustGoProtocol(test *testing.T) {
 			test.Fatal(err)
 		}
 		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set("x-artifact-csrf", "1")
+		request.Header.Set("x-artifactory-csrf", "1")
 		response, err := browser.Do(request)
 		if err != nil {
 			test.Fatal(err)
@@ -57,8 +57,8 @@ func TestLiveRustGoProtocol(test *testing.T) {
 		}
 		return result
 	}
-	call("POST", "/auth/login", map[string]string{"username": os.Getenv("AK_BOOTSTRAP_USERNAME"), "password": os.Getenv("AK_BOOTSTRAP_PASSWORD")})
-	existing, err := config.Load(os.Getenv("AK_LIVE_AGENT_CONFIG"))
+	call("POST", "/auth/login", map[string]string{"username": os.Getenv("ARTIFACTORY_BOOTSTRAP_USERNAME"), "password": os.Getenv("ARTIFACTORY_BOOTSTRAP_PASSWORD")})
+	existing, err := config.Load(os.Getenv("ARTIFACTORY_LIVE_AGENT_CONFIG"))
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestLiveRustGoProtocol(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	source := call("GET", "/projects/"+os.Getenv("AK_LIVE_PROJECT_ID"), nil)
+	source := call("GET", "/projects/"+os.Getenv("ARTIFACTORY_LIVE_PROJECT_ID"), nil)
 	profiles := source["signing_profiles"]
 	nodeSettings := map[string]any{"draining": false, "revoked": false, "slots": 1, "labels": map[string]string{}, "signing_profiles": profiles, "pool_id": pool}
 	call("PATCH", "/nodes/"+cfg.AgentID, nodeSettings)
@@ -119,7 +119,7 @@ func TestLiveRustGoProtocol(test *testing.T) {
 	if err = stream.Send(hello); err != nil {
 		test.Fatal(err)
 	}
-	build := call("POST", "/projects/"+project+"/builds", map[string]any{"ref": "main", "targets": []string{"native"}})["id"].(string)
+	build := historicalBuild(test, project)
 	assignment, err := stream.Recv()
 	if err != nil {
 		test.Fatal(err)
@@ -142,7 +142,7 @@ func TestLiveRustGoProtocol(test *testing.T) {
 	}
 	probeStorage := func(name string, operation func(context.Context) error) {
 		test.Helper()
-		container := os.Getenv("AK_LIVE_S3_CONTAINER")
+		container := os.Getenv("ARTIFACTORY_LIVE_S3_CONTAINER")
 		if container == "" {
 			return
 		}
@@ -365,4 +365,24 @@ func TestLiveRustGoProtocol(test *testing.T) {
 		test.Fatalf("revoked certificate accepted: %v", err)
 	}
 	test.Log("live checks: mTLS, version negotiation, one-use enrollment, duplicate accept/events, ordered/replayed logs, corrupt upload rejection, immutable promotion, cancellation, late result fencing, irreversible revocation")
+}
+
+// Protocol regressions operate on migrated pre-AI records. New API builds
+// always use real AI planning, tested separately with the Pi worker.
+func historicalBuild(test *testing.T, project string) string {
+	test.Helper()
+	body, _ := json.Marshal(map[string]any{"project": project, "body": map[string]any{"ref": "main", "targets": []string{"native"}}})
+	command := exec.Command("python3", "../../../scripts/legacy_fixture.py")
+	command.Stdin = bytes.NewReader(body)
+	output, err := command.Output()
+	if err != nil {
+		test.Fatal("cannot seed historical build fixture:", err)
+	}
+	var value struct {
+		ID string `json:"id"`
+	}
+	if err = json.Unmarshal(output, &value); err != nil || value.ID == "" {
+		test.Fatal("invalid historical build fixture result")
+	}
+	return value.ID
 }

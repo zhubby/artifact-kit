@@ -1,58 +1,58 @@
-name: artifact-kit
+name: artifactory
 services:
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: artifact
-      POSTGRES_USER: artifact
-      POSTGRES_PASSWORD: ${AK_DATABASE_PASSWORD:?run scripts/init-deploy.sh}
+      POSTGRES_DB: artifactory
+      POSTGRES_USER: artifactory
+      POSTGRES_PASSWORD: ${ARTIFACTORY_DATABASE_PASSWORD:?run scripts/init-deploy.sh}
     volumes:
       - postgres:/var/lib/postgresql/data
     healthcheck:
-      test: [CMD-SHELL, pg_isready -U artifact -d artifact]
+      test: [CMD-SHELL, pg_isready -U artifactory -d artifactory]
       interval: 5s
       timeout: 3s
       retries: 20
   s3:
     image: chrislusf/seaweedfs:4.53
     restart: unless-stopped
-    entrypoint: [/bin/sh, /run/artifact-s3-entrypoint.sh]
-    command: [mini, -dir=/data, -s3.port=8333, -s3.config=/run/artifact-s3/s3.json, -s3.iam.readOnly=true, -admin.ui=false, -ip.bind=0.0.0.0]
+    entrypoint: [/bin/sh, /run/artifactory-s3-entrypoint.sh]
+    command: [mini, -dir=/data, -s3.port=8333, -s3.config=/run/artifactory-s3/s3.json, -s3.iam.readOnly=true, -admin.ui=false, -ip.bind=0.0.0.0]
     volumes:
       - objects:/data
       - ./.deploy/s3.json:/etc/seaweed/s3.json:ro
-      - ./deploy/seaweed-entrypoint.sh:/run/artifact-s3-entrypoint.sh:ro
+      - ./deploy/seaweed-entrypoint.sh:/run/artifactory-s3-entrypoint.sh:ro
   control:
     build: .
     restart: unless-stopped
-    user: ${AK_UID:-10001}:${AK_GID:-10001}
+    user: ${ARTIFACTORY_UID:-10001}:${ARTIFACTORY_GID:-10001}
     depends_on:
       postgres:
         condition: service_healthy
       s3:
         condition: service_started
     environment:
-      DATABASE_URL: postgres://artifact:${AK_DATABASE_PASSWORD}@postgres:5432/artifact
-      AK_HTTP_BIND: 0.0.0.0:8080
-      AK_GRPC_BIND: 0.0.0.0:8443
-      AK_PUBLIC_URL: https://${AK_DOMAIN:?set AK_DOMAIN}
-      AK_MASTER_KEY: ${AK_MASTER_KEY:?run scripts/init-deploy.sh}
-      AK_PKI_DIR: /run/artifact-pki
-      AK_DATA_DIR: /var/lib/artifact
-      AK_S3_ENDPOINT: https://${AK_S3_DOMAIN:?set AK_S3_DOMAIN}
-      AK_S3_PUBLIC_ENDPOINT: https://${AK_S3_DOMAIN}
-      AK_S3_BUCKET: artifact-kit
-      AK_S3_REGION: us-east-1
-      AK_S3_ACCESS_KEY: ${AK_S3_ACCESS_KEY}
-      AK_S3_SECRET_KEY: ${AK_S3_SECRET_KEY}
-      AK_BOOTSTRAP_USERNAME: ${AK_BOOTSTRAP_USERNAME:-admin}
-      AK_BOOTSTRAP_PASSWORD: ${AK_BOOTSTRAP_PASSWORD:?run scripts/init-deploy.sh}
+      DATABASE_URL: postgres://artifactory:${ARTIFACTORY_DATABASE_PASSWORD}@postgres:5432/artifactory
+      ARTIFACTORY_HTTP_BIND: 0.0.0.0:8080
+      ARTIFACTORY_GRPC_BIND: 0.0.0.0:8443
+      ARTIFACTORY_PUBLIC_URL: https://${ARTIFACTORY_DOMAIN:?set ARTIFACTORY_DOMAIN}
+      ARTIFACTORY_MASTER_KEY: ${ARTIFACTORY_MASTER_KEY:?run scripts/init-deploy.sh}
+      ARTIFACTORY_PKI_DIR: /run/artifactory-pki
+      ARTIFACTORY_DATA_DIR: /var/lib/artifactory
+      ARTIFACTORY_S3_ENDPOINT: https://${ARTIFACTORY_S3_DOMAIN:?set ARTIFACTORY_S3_DOMAIN}
+      ARTIFACTORY_S3_PUBLIC_ENDPOINT: https://${ARTIFACTORY_S3_DOMAIN}
+      ARTIFACTORY_S3_BUCKET: artifactory
+      ARTIFACTORY_S3_REGION: us-east-1
+      ARTIFACTORY_S3_ACCESS_KEY: ${ARTIFACTORY_S3_ACCESS_KEY}
+      ARTIFACTORY_S3_SECRET_KEY: ${ARTIFACTORY_S3_SECRET_KEY}
+      ARTIFACTORY_BOOTSTRAP_USERNAME: ${ARTIFACTORY_BOOTSTRAP_USERNAME:-admin}
+      ARTIFACTORY_BOOTSTRAP_PASSWORD: ${ARTIFACTORY_BOOTSTRAP_PASSWORD:?run scripts/init-deploy.sh}
     volumes:
-      - ./.deploy/pki:/run/artifact-pki:ro
-      - ./.deploy/control:/var/lib/artifact
+      - ./.deploy/pki:/run/artifactory-pki:ro
+      - ./.deploy/control:/var/lib/artifactory
     ports:
-      - ${AK_GRPC_LISTEN:-0.0.0.0}:8443:8443
+      - ${ARTIFACTORY_GRPC_LISTEN:-0.0.0.0}:8443:8443
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     read_only: true
@@ -63,12 +63,30 @@ services:
     depends_on: [control]
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
+  ai-worker:
+    build:
+      context: .
+      dockerfile: ai-worker/Dockerfile
+    restart: unless-stopped
+    user: ${ARTIFACTORY_UID:-10001}:${ARTIFACTORY_GID:-10001}
+    depends_on: [control]
+    environment:
+      ARTIFACTORY_AI_ENDPOINT: control:8443
+      ARTIFACTORY_AI_SERVER_NAME: ${ARTIFACTORY_GRPC_HOST}
+      ARTIFACTORY_AI_CA_FILE: /run/artifactory-pki/ca.pem
+    volumes:
+      - ./.deploy/pki/ca.pem:/run/artifactory-pki/ca.pem:ro
+      - ./.deploy/ai-worker:/var/lib/artifactory-ai-worker
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: ["/tmp:size=256m,mode=1777"]
   gateway:
     image: caddy:2-alpine
     restart: unless-stopped
     environment:
-      AK_DOMAIN: ${AK_DOMAIN}
-      AK_S3_DOMAIN: ${AK_S3_DOMAIN}
+      ARTIFACTORY_DOMAIN: ${ARTIFACTORY_DOMAIN}
+      ARTIFACTORY_S3_DOMAIN: ${ARTIFACTORY_S3_DOMAIN}
     ports: [80:80, 443:443]
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro

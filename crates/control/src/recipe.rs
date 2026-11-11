@@ -190,7 +190,7 @@ impl Recipe {
         }
         Ok(environment
             .into_iter()
-            .map(|(name, value)| (format!("AK_PARAM_{name}"), value))
+            .map(|(name, value)| (format!("ARTIFACTORY_PARAM_{name}"), value))
             .collect())
     }
 }

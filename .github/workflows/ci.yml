@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      AK_TEST_DATABASE_URL: postgres://artifact:local-test-only@127.0.0.1:15432/artifact
+      ARTIFACTORY_TEST_DATABASE_URL: postgres://artifactory:local-test-only@127.0.0.1:15432/artifactory
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
@@ -15,11 +15,11 @@ jobs:
           version: v3.19.0
       - name: Validate production and kind Helm manifests
         run: |
-          helm lint charts/artifact-kit --strict
-          helm lint charts/artifact-kit --strict -f charts/artifact-kit/values-kind.yaml
-          helm template artifact-kit charts/artifact-kit --set ingress.enabled=true > /dev/null
-          helm template artifact-kit charts/artifact-kit -f charts/artifact-kit/values-kind.yaml > /dev/null
-          if helm template artifact-kit charts/artifact-kit --set console.publicUrl=http://build.example.com > /dev/null 2>&1; then
+          helm lint charts/artifactory --strict
+          helm lint charts/artifactory --strict -f charts/artifactory/values-kind.yaml
+          helm template artifactory charts/artifactory --set ingress.enabled=true > /dev/null
+          helm template artifactory charts/artifactory -f charts/artifactory/values-kind.yaml > /dev/null
+          if helm template artifactory charts/artifactory --set console.publicUrl=http://build.example.com > /dev/null 2>&1; then
             echo 'Production HTTP must be rejected' >&2
             exit 1
           fi
@@ -29,16 +29,18 @@ jobs:
           cache-dependency-path: agent/go.sum
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler openssh-server postgresql-client rclone && sudo mkdir -p /run/sshd
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler openssh-server postgresql-client rclone git-lfs && sudo mkdir -p /run/sshd
+      - run: npm ci && npm run check && npm test
+        working-directory: ai-worker
       - run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy && rustup default 1.95.0
       - run: sh scripts/local-services.sh
       - run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
       - run: cargo fmt --all --check && cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked --all-targets -- --include-ignored
-      - run: go vet ./... && go test -race ./... && CGO_ENABLED=0 go build -o bin/artifact-agent ./cmd/artifact-agent
+      - run: go vet ./... && go test -race ./... && CGO_ENABLED=0 go build -o bin/artifactory-agent ./cmd/artifactory-agent
         working-directory: agent
       - run: sh scripts/cross-build-agent.sh
       - run: npm ci && npm run typecheck && npm run build && npx playwright install --with-deps chromium
@@ -47,8 +49,8 @@ jobs:
         run: npm run test:ui
         working-directory: web
         env:
-          AK_UI_PRODUCTION: '1'
-      - run: cargo build --locked --bin artifact-control
+          ARTIFACTORY_UI_PRODUCTION: '1'
+      - run: cargo build --locked --bin artifactory-control
       - name: Real Rust / Go / PostgreSQL / private S3 / browser
         shell: bash
         run: |
@@ -72,11 +74,11 @@ jobs:
           done
           grep -q 'ACCEPTANCE READY' .local/acceptance-run.log
           test -f .local/acceptance/latest.json
-          export AK_LIVE_TESTS=1
-          export AK_LIVE_S3_CONTAINER=artifact-kit-s3-test
-          AK_LIVE_AGENT_CONFIG="$(python3 -c 'import json; print(json.load(open(".local/acceptance/latest.json"))["agent_config"])')"
-          AK_LIVE_PROJECT_ID="$(python3 -c 'import json; print(json.load(open(".local/acceptance/latest.json"))["project_id"])')"
-          export AK_LIVE_AGENT_CONFIG AK_LIVE_PROJECT_ID
+          export ARTIFACTORY_LIVE_TESTS=1
+          export ARTIFACTORY_LIVE_S3_CONTAINER=artifactory-s3-test
+          ARTIFACTORY_LIVE_AGENT_CONFIG="$(python3 -c 'import json; print(json.load(open(".local/acceptance/latest.json"))["agent_config"])')"
+          ARTIFACTORY_LIVE_PROJECT_ID="$(python3 -c 'import json; print(json.load(open(".local/acceptance/latest.json"))["project_id"])')"
+          export ARTIFACTORY_LIVE_AGENT_CONFIG ARTIFACTORY_LIVE_PROJECT_ID
           (cd agent && go test -race -v ./internal/client -run TestLiveRustGoProtocol | tee ../.local/protocol-live.log)
           (cd web && npm test)
           python3 -u scripts/ssh_acceptance.py --sudo-sshd
@@ -130,11 +132,11 @@ jobs:
       - run: go test -race ./...
         working-directory: agent
       - name: Native service lifecycle on a disposable VM
-        run: go test -race ./cmd/artifact-agent -run '^TestNativeServiceLifecycle$' -count=1 -v -timeout=10m
+        run: go test -race ./cmd/artifactory-agent -run '^TestNativeServiceLifecycle$' -count=1 -v -timeout=10m
         working-directory: agent
         env:
-          AK_NATIVE_SERVICE_TESTS: '1'
-          AK_NATIVE_EXPECTED_PLATFORM: ${{ matrix.platform }}
+          ARTIFACTORY_NATIVE_SERVICE_TESTS: '1'
+          ARTIFACTORY_NATIVE_EXPECTED_PLATFORM: ${{ matrix.platform }}
   compose-tls:
     runs-on: ubuntu-latest
     timeout-minutes: 40

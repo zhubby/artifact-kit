@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/artifact-kit/agent/internal/executor"
+	"github.com/zhubby/artifact-kit/agent/internal/executor"
 )
 
 // Initialize is an administrator bootstrap operation. The service account must
@@ -41,7 +41,7 @@ func Initialize(configPath, directory, binary, version string, keys []string) er
 	if err = os.MkdirAll(directoryPath, 0700); err != nil {
 		return err
 	}
-	name := "artifact-agent"
+	name := "artifactory-agent"
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
@@ -69,7 +69,7 @@ type child struct {
 
 func startChild(configPath, directory, path, launcher string) (*child, error) {
 	command := exec.Command(path, "run", "--config", configPath)
-	command.Env = append(os.Environ(), "AK_OTA_DIRECTORY="+directory, "AK_OTA_LAUNCHER_VERSION="+launcher)
+	command.Env = append(os.Environ(), "ARTIFACTORY_OTA_DIRECTORY="+directory, "ARTIFACTORY_OTA_LAUNCHER_VERSION="+launcher)
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	control, err := command.StdinPipe()
@@ -153,7 +153,7 @@ func download(ctx context.Context, cfg Config, request Request) (Image, error) {
 	if err != nil {
 		return image, err
 	}
-	name := "artifact-agent"
+	name := "artifactory-agent"
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}

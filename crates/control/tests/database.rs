@@ -1,4 +1,4 @@
-use artifact_control::{
+use artifactory_control::{
     api, crypto,
     protocol::Command,
     recipe::Recipe,
@@ -17,16 +17,613 @@ use tokio::sync::{RwLock, mpsc};
 use tower::ServiceExt;
 use uuid::Uuid;
 
+#[tokio::test]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL and git-lfs"]
+async fn evicted_source_restores_pinned_objects_after_upstream_refs_move() {
+    use artifactory_control::source_cache::{self, LfsObject, Repository, Snapshot};
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let database = Database::new().await;
+    let (project, build, _) = database.fixture().await;
+    let upstream = tempfile::tempdir().unwrap();
+    let origin = upstream.path().join("repo.git");
+    tokio::fs::create_dir(&origin).await.unwrap();
+    for args in [
+        vec!["init", "-b", "main"],
+        vec!["config", "user.name", "Source test"],
+        vec!["config", "user.email", "source@localhost"],
+        vec!["config", "commit.gpgsign", "false"],
+        vec!["config", "filter.lfs.clean", "git-lfs clean -- %f"],
+        vec!["config", "filter.lfs.smudge", "git-lfs smudge -- %f"],
+        vec!["config", "filter.lfs.process", "git-lfs filter-process"],
+        vec!["config", "filter.lfs.required", "true"],
+    ] {
+        source_cache::git(&origin, &args).await.unwrap();
+    }
+    let payload = b"original-lfs-payload\n";
+    tokio::fs::write(
+        origin.join(".gitattributes"),
+        b"payload.dat filter=lfs diff=lfs merge=lfs -text\n",
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(origin.join("payload.dat"), payload)
+        .await
+        .unwrap();
+    tokio::fs::write(origin.join("main.c"), b"original source\n")
+        .await
+        .unwrap();
+    source_cache::git(&origin, &["add", "."]).await.unwrap();
+    source_cache::git(&origin, &["commit", "-m", "original"])
+        .await
+        .unwrap();
+    source_cache::git(&origin, &["tag", "-a", "frozen-v1", "-m", "original tag"])
+        .await
+        .unwrap();
+    let commit = String::from_utf8(
+        source_cache::git(&origin, &["rev-parse", "HEAD"])
+            .await
+            .unwrap(),
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    let tag = String::from_utf8(
+        source_cache::git(&origin, &["rev-parse", "frozen-v1"])
+            .await
+            .unwrap(),
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    // Retain the old tag through another annotated tag, so both original
+    // objects remain reachable without being advertised as reference tips.
+    source_cache::git(
+        &origin,
+        &["tag", "-a", "archive-v1", "frozen-v1", "-m", "retained tag"],
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(origin.join("payload.dat"), b"new-lfs-payload\n")
+        .await
+        .unwrap();
+    tokio::fs::write(origin.join("main.c"), b"new source\n")
+        .await
+        .unwrap();
+    source_cache::git(&origin, &["add", "."]).await.unwrap();
+    source_cache::git(&origin, &["commit", "-m", "moved branch"])
+        .await
+        .unwrap();
+    source_cache::git(
+        &origin,
+        &["tag", "-f", "-a", "frozen-v1", "-m", "moved tag"],
+    )
+    .await
+    .unwrap();
+    let refs = source_cache::git(&origin, &["show-ref"]).await.unwrap();
+    let mut server = tokio::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/source_http.py"
+        ))
+        .arg(upstream.path())
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut port = String::new();
+    BufReader::new(server.stdout.take().unwrap())
+        .read_line(&mut port)
+        .await
+        .unwrap();
+    let repository = Uuid::new_v4();
+    sqlx::query("INSERT INTO source_repositories(id,project_id,repository_url,cache_key) VALUES($1,$2,$3,$4)")
+        .bind(repository).bind(project).bind(format!("http://127.0.0.1:{}/repo.git", port.trim())).bind(crypto::hash(repository.to_string())).execute(&database.state.pool).await.unwrap();
+    let snapshot = Snapshot {
+        id: Uuid::new_v4(),
+        project_id: project,
+        commit: commit.clone(),
+        repositories: vec![Repository {
+            id: Uuid::new_v4(),
+            repository_id: repository,
+            path: String::new(),
+            commit: commit.clone(),
+            tags: [("frozen-v1".into(), tag.clone())].into(),
+            lfs: vec![LfsObject {
+                path: "payload.dat".into(),
+                oid: crypto::hash(payload),
+                size: payload.len() as u64,
+            }],
+        }],
+    };
+    sqlx::query("INSERT INTO source_snapshots(id,project_id,root_repository_id,commit_sha,manifest,digest) VALUES($1,$2,$3,$4,$5,$6)").bind(snapshot.id).bind(project).bind(repository).bind(&commit).bind(serde_json::to_value(&snapshot).unwrap()).bind(snapshot.id.to_string()).execute(&database.state.pool).await.unwrap();
+    sqlx::query("UPDATE builds SET source_snapshot_id=$2,status='running' WHERE id=$1")
+        .bind(build)
+        .bind(snapshot.id)
+        .execute(&database.state.pool)
+        .await
+        .unwrap();
+    let repo = source_cache::repository_path(&database.state, repository)
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        source_cache::ensure_available(&database.state, &snapshot)
+            .await
+            .unwrap();
+        let prefix = format!(
+            "refs/namespaces/{}/refs",
+            source_cache::namespace(snapshot.id, snapshot.repositories[0].id)
+        );
+        assert_eq!(
+            source_cache::git(&repo, &["show", &format!("{prefix}/heads/source:main.c")])
+                .await
+                .unwrap(),
+            b"original source\n"
+        );
+        assert_eq!(
+            String::from_utf8(
+                source_cache::git(&repo, &["rev-parse", &format!("{prefix}/tags/frozen-v1")])
+                    .await
+                    .unwrap()
+            )
+            .unwrap()
+            .trim(),
+            tag
+        );
+        assert_eq!(
+            tokio::fs::read(source_cache::lfs_path(&repo, &crypto::hash(payload)).unwrap())
+                .await
+                .unwrap(),
+            payload
+        );
+        source_cache::collect(&database.state, 0).await.unwrap();
+        assert!(
+            repo.join("HEAD").exists(),
+            "running snapshot must remain protected"
+        );
+        sqlx::query("UPDATE builds SET status='succeeded' WHERE id=$1")
+            .bind(build)
+            .execute(&database.state.pool)
+            .await
+            .unwrap();
+        source_cache::collect(&database.state, 0).await.unwrap();
+        assert!(!repo.exists(), "terminal cache should be evicted");
+        sqlx::query("UPDATE builds SET status='running' WHERE id=$1")
+            .bind(build)
+            .execute(&database.state.pool)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        source_cache::git(&origin, &["show-ref"]).await.unwrap(),
+        refs
+    );
+    source_cache::git(&origin, &["tag", "-d", "archive-v1"])
+        .await
+        .unwrap();
+    source_cache::git(&origin, &["reflog", "expire", "--expire=now", "--all"])
+        .await
+        .unwrap();
+    source_cache::git(&origin, &["gc", "--prune=now"])
+        .await
+        .unwrap();
+    let error = source_cache::ensure_available(&database.state, &snapshot)
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("pinned tag object is no longer available upstream"));
+    let _ = tokio::fs::remove_dir_all(repo).await;
+    server.kill().await.unwrap();
+    database.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
+async fn source_download_rechecks_authorization_after_cache_lock() {
+    use artifactory_control::source_cache::{self, LfsObject, Repository, Snapshot};
+    let database = Database::new().await;
+    let (project, build, job) = database.fixture().await;
+    let node = database.node().await;
+    let repository = Uuid::new_v4();
+    let entry = Uuid::new_v4();
+    let snapshot = Uuid::new_v4();
+    let attempt = Uuid::new_v4();
+    let key = crypto::hash(repository.to_string());
+    let oid = crypto::hash("data");
+    sqlx::query("INSERT INTO source_repositories(id,project_id,repository_url,cache_key) VALUES($1,$2,'https://example.com/repo.git',$3)").bind(repository).bind(project).bind(&key).execute(&database.state.pool).await.unwrap();
+    let manifest = Snapshot {
+        id: snapshot,
+        project_id: project,
+        commit: "0".repeat(40),
+        repositories: vec![Repository {
+            id: entry,
+            repository_id: repository,
+            path: String::new(),
+            commit: "0".repeat(40),
+            tags: Default::default(),
+            lfs: vec![LfsObject {
+                path: "payload.dat".into(),
+                oid: oid.clone(),
+                size: 4,
+            }],
+        }],
+    };
+    sqlx::query("INSERT INTO source_snapshots(id,project_id,root_repository_id,commit_sha,manifest,digest) VALUES($1,$2,$3,$4,$5,$6)").bind(snapshot).bind(project).bind(repository).bind("0".repeat(40)).bind(serde_json::to_value(manifest).unwrap()).bind(snapshot.to_string()).execute(&database.state.pool).await.unwrap();
+    sqlx::query("UPDATE builds SET source_snapshot_id=$2,status='running' WHERE id=$1")
+        .bind(build)
+        .bind(snapshot)
+        .execute(&database.state.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO attempts(id,job_id,node_id,lease_token,lease_expires_at,status,command_id) VALUES($1,$2,$3,'lease',now()+interval '1 minute','running',$4)").bind(attempt).bind(job).bind(node).bind(Uuid::new_v4()).execute(&database.state.pool).await.unwrap();
+    sqlx::query("INSERT INTO source_tokens(token_hash,snapshot_id,attempt_id,expires_at) VALUES($1,$2,$3,now()+interval '1 hour')").bind(crypto::hash("download-token")).bind(snapshot).bind(attempt).execute(&database.state.pool).await.unwrap();
+    let repo = source_cache::repository_path(&database.state, repository)
+        .await
+        .unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "--bare", "--quiet"])
+            .arg(&repo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let lfs = source_cache::lfs_path(&repo, &oid).unwrap();
+    tokio::fs::create_dir_all(lfs.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::write(&lfs, b"data").await.unwrap();
+    let router = api::router(database.state.clone());
+    let mut actual = Vec::new();
+    for kind in ["git", "lfs"] {
+        for invalidation in ["cancel", "revoke", "expire"] {
+            sqlx::query("UPDATE builds SET cancel_requested=false WHERE id=$1")
+                .bind(build)
+                .execute(&database.state.pool)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE nodes SET revoked=false WHERE id=$1")
+                .bind(node)
+                .execute(&database.state.pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "UPDATE attempts SET lease_expires_at=now()+interval '1 minute' WHERE id=$1",
+            )
+            .bind(attempt)
+            .execute(&database.state.pool)
+            .await
+            .unwrap();
+            let suffix = if kind == "git" {
+                "git/info/refs?service=git-upload-pack".to_string()
+            } else {
+                format!("lfs/objects/{oid}")
+            };
+            let request = || {
+                Request::builder()
+                    .uri(format!("/api/v1/source/{snapshot}/{entry}/{suffix}"))
+                    .header("authorization", "Bearer download-token")
+                    .body(Body::empty())
+                    .unwrap()
+            };
+            let valid = router.clone().oneshot(request()).await.unwrap();
+            assert_eq!(valid.status(), StatusCode::OK);
+            axum::body::to_bytes(valid.into_body(), 65536)
+                .await
+                .unwrap();
+            let mut lock = database.state.pool.begin().await.unwrap();
+            let backend: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                .fetch_one(&mut *lock)
+                .await
+                .unwrap();
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+                .bind(&key)
+                .execute(&mut *lock)
+                .await
+                .unwrap();
+            let waiting_router = router.clone();
+            let pending = request();
+            let download =
+                tokio::spawn(async move { waiting_router.oneshot(pending).await.unwrap() });
+            let mut blocked = false;
+            for _ in 0..100 {
+                blocked = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))").bind(backend).fetch_one(&database.state.pool).await.unwrap();
+                if blocked {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            assert!(
+                blocked,
+                "source request must be waiting on the real cache lock"
+            );
+            let (query, id) = match invalidation {
+                "cancel" => ("UPDATE builds SET cancel_requested=true WHERE id=$1", build),
+                "revoke" => ("UPDATE nodes SET revoked=true WHERE id=$1", node),
+                _ => (
+                    "UPDATE attempts SET lease_expires_at=now()-interval '1 second' WHERE id=$1",
+                    attempt,
+                ),
+            };
+            sqlx::query(query)
+                .bind(id)
+                .execute(&database.state.pool)
+                .await
+                .unwrap();
+            lock.commit().await.unwrap();
+            actual.push(download.await.unwrap().status());
+        }
+    }
+    tokio::fs::remove_dir_all(repo).await.unwrap();
+    database.close().await;
+    assert_eq!(actual, vec![StatusCode::UNAUTHORIZED; 6]);
+}
+
+async fn planning_fixture(database: &Database) -> (Uuid, Uuid, Uuid) {
+    let (_, build, _) = database.fixture().await;
+    let worker = Uuid::new_v4();
+    let run = Uuid::new_v4();
+    sqlx::query("INSERT INTO ai_workers(id,name,certificate_hash,certificate_expires_at) VALUES($1,'planner',$2,now()+interval '1 day')").bind(worker).bind(worker.to_string()).execute(&database.state.pool).await.unwrap();
+    sqlx::query("UPDATE builds SET status='planning',goal='Build project' WHERE id=$1")
+        .bind(build)
+        .execute(&database.state.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO planning_runs(id,build_id,worker_id,purpose,state,model_config,lease_hash,lease_expires_at,deadline_at) VALUES($1,$2,$3,'initial','leased','{}',$4,now()-interval '1 second',now()+interval '5 minutes')").bind(run).bind(build).bind(worker).bind(crypto::hash("lease")).execute(&database.state.pool).await.unwrap();
+    (build, run, worker)
+}
+
+#[tokio::test]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
+async fn planner_reaper_rechecks_renewal_after_waiting_for_build_lock() {
+    let database = Database::new().await;
+    let (build, run, _) = planning_fixture(&database).await;
+    let mut lock = database.state.pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM builds WHERE id=$1 FOR UPDATE")
+        .bind(build)
+        .execute(&mut *lock)
+        .await
+        .unwrap();
+    let state = database.state.clone();
+    let reaper = tokio::spawn(async move { artifactory_control::planning::reap(&state).await });
+    let mut blocked = false;
+    for _ in 0..100 {
+        blocked=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE 'SELECT id FROM builds WHERE id=$1 FOR UPDATE%')").fetch_one(&database.state.pool).await.unwrap();
+        if blocked {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(blocked, "reaper did not wait for the build lock");
+    sqlx::query("UPDATE planning_runs SET lease_expires_at=now()+interval '1 minute' WHERE id=$1")
+        .bind(run)
+        .execute(&mut *lock)
+        .await
+        .unwrap();
+    lock.commit().await.unwrap();
+    reaper.await.unwrap().unwrap();
+    let state: String = sqlx::query_scalar("SELECT state FROM planning_runs WHERE id=$1")
+        .bind(run)
+        .fetch_one(&database.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "leased");
+    sqlx::query("UPDATE planning_runs SET lease_expires_at=now()-interval '1 second' WHERE id=$1")
+        .bind(run)
+        .execute(&database.state.pool)
+        .await
+        .unwrap();
+    artifactory_control::planning::reap(&database.state)
+        .await
+        .unwrap();
+    let state: (String, Option<String>) =
+        sqlx::query_as("SELECT state,lease_hash FROM planning_runs WHERE id=$1")
+            .bind(run)
+            .fetch_one(&database.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(state, ("queued".into(), None));
+    database.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
+async fn planner_deadline_finishes_build_and_failed_planning_does_not_loop() {
+    let database = Database::new().await;
+    let (build, run, _) = planning_fixture(&database).await;
+    sqlx::query("UPDATE planning_runs SET deadline_at=now()-interval '1 second' WHERE id=$1")
+        .bind(run)
+        .execute(&database.state.pool)
+        .await
+        .unwrap();
+    artifactory_control::planning::reap(&database.state)
+        .await
+        .unwrap();
+    let state:(String,String)=sqlx::query_as("SELECT b.status,r.state FROM builds b JOIN planning_runs r ON r.build_id=b.id WHERE b.id=$1").bind(build).fetch_one(&database.state.pool).await.unwrap();
+    assert_eq!(state, ("failed".into(), "failed".into()));
+    scheduler::queue_revisions(&database.state).await.unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM planning_runs WHERE build_id=$1")
+        .bind(build)
+        .fetch_one(&database.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+    database.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
+async fn model_profile_queries_mask_keys_and_validate_runtime_parameters() {
+    let database = Database::new().await;
+    let user = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO users(id,username,password_hash,role) VALUES($1,'admin','unused','admin')",
+    )
+    .bind(user)
+    .execute(&database.state.pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO sessions VALUES($1,$2,now()+interval '1 hour')")
+        .bind(crypto::hash("ai-session"))
+        .bind(user)
+        .execute(&database.state.pool)
+        .await
+        .unwrap();
+    let router = api::router(database.state.clone());
+    for (parameters, expected) in [
+        (
+            serde_json::json!({"max_tokens":-1}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            serde_json::json!({"thinking_level":"invalid"}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            serde_json::json!({"headers":{"Authorization":"override"}}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            serde_json::json!({"max_tokens":1024,"requests_per_minute":3}),
+            StatusCode::OK,
+        ),
+    ] {
+        let body = serde_json::json!({"name":"real","api":"openai-completions","base_url":"https://model.example/v1","model":"test","api_key":"private-model-key","parameters":parameters,"is_default":true});
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/model-profiles")
+                    .header("cookie", "artifactory_session=ai-session")
+                    .header("origin", "http://localhost:3000")
+                    .header("x-artifactory-csrf", "1")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/model-profiles")
+                .header("cookie", "artifactory_session=ai-session")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), 65536)
+        .await
+        .unwrap();
+    let body = String::from_utf8(body.to_vec()).unwrap();
+    assert!(!body.contains("private-model-key"));
+    assert!(!body.contains("key_ciphertext"));
+    assert!(body.contains("********"));
+    let ciphertext: String = sqlx::query_scalar("SELECT key_ciphertext FROM model_profiles")
+        .fetch_one(&database.state.pool)
+        .await
+        .unwrap();
+    assert_ne!(ciphertext, "private-model-key");
+    assert_eq!(
+        crypto::open(&database.state.settings.master_key, &ciphertext).unwrap(),
+        b"private-model-key"
+    );
+    database.close().await;
+}
+
 struct Database {
     state: AppState,
     admin: PgPool,
     schema: String,
 }
 
+#[tokio::test]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
+async fn revision_budget_excludes_source_authorization_and_transport_failures() {
+    let database = Database::new().await;
+    let node = database.node().await;
+    for failure in [
+        "execution",
+        "source",
+        "authorization",
+        "artifact_transport",
+        "agent",
+    ] {
+        let (project, build, job) = database.fixture().await;
+        let repo = Uuid::new_v4();
+        let snapshot = Uuid::new_v4();
+        let run = Uuid::new_v4();
+        let plan = Uuid::new_v4();
+        sqlx::query("INSERT INTO source_repositories(id,project_id,repository_url,cache_key) VALUES($1,$2,'https://example.com/source.git',$3)")
+            .bind(repo).bind(project).bind(repo.to_string()).execute(&database.state.pool).await.unwrap();
+        sqlx::query("INSERT INTO source_snapshots(id,project_id,root_repository_id,commit_sha,manifest,digest) VALUES($1,$2,$3,$4,'{}',$5)")
+            .bind(snapshot).bind(project).bind(repo).bind("0".repeat(40)).bind(snapshot.to_string()).execute(&database.state.pool).await.unwrap();
+        sqlx::query("INSERT INTO planning_runs(id,build_id,purpose,state,model_config) VALUES($1,$2,'initial','succeeded','{}')")
+            .bind(run).bind(build).execute(&database.state.pool).await.unwrap();
+        sqlx::query("INSERT INTO plan_revisions(id,build_id,run_id,revision,source_snapshot_id,contents,sha256) VALUES($1,$2,$3,0,$4,'{}','digest')")
+            .bind(plan).bind(build).bind(run).bind(snapshot).execute(&database.state.pool).await.unwrap();
+        sqlx::query("UPDATE builds SET goal='Build CLI',model_config_snapshot='{}',current_plan_id=$2,source_snapshot_id=$3,status='failed' WHERE id=$1")
+            .bind(build).bind(plan).bind(snapshot).execute(&database.state.pool).await.unwrap();
+        sqlx::query("UPDATE jobs SET status='failed',plan_revision_id=$2 WHERE id=$1")
+            .bind(job)
+            .bind(plan)
+            .execute(&database.state.pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO attempts(id,job_id,node_id,lease_token,lease_expires_at,status,command_id,error,failure_kind) VALUES($1,$2,$3,'test',now(),'failed',$4,'controlled failure',$5)")
+            .bind(Uuid::new_v4()).bind(job).bind(node).bind(Uuid::new_v4()).bind(failure).execute(&database.state.pool).await.unwrap();
+        scheduler::queue_revisions(&database.state).await.unwrap();
+        let (status, count): (String, i32) =
+            sqlx::query_as("SELECT status,revision_count FROM builds WHERE id=$1")
+                .bind(build)
+                .fetch_one(&database.state.pool)
+                .await
+                .unwrap();
+        if failure == "execution" {
+            assert_eq!((status, count), ("replanning".into(), 1));
+            // A later execution failure can consume the second revision, then
+            // the same scheduler must leave the terminal failure untouched.
+            sqlx::query("UPDATE planning_runs SET state='succeeded' WHERE build_id=$1")
+                .bind(build)
+                .execute(&database.state.pool)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE builds SET status='failed' WHERE id=$1")
+                .bind(build)
+                .execute(&database.state.pool)
+                .await
+                .unwrap();
+            scheduler::queue_revisions(&database.state).await.unwrap();
+            sqlx::query("UPDATE planning_runs SET state='succeeded' WHERE build_id=$1")
+                .bind(build)
+                .execute(&database.state.pool)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE builds SET status='failed' WHERE id=$1")
+                .bind(build)
+                .execute(&database.state.pool)
+                .await
+                .unwrap();
+            scheduler::queue_revisions(&database.state).await.unwrap();
+            let count: i32 = sqlx::query_scalar("SELECT revision_count FROM builds WHERE id=$1")
+                .bind(build)
+                .fetch_one(&database.state.pool)
+                .await
+                .unwrap();
+            assert_eq!(count, 2);
+        } else {
+            assert_eq!((status, count), ("failed".into(), 0));
+        }
+    }
+    database.close().await;
+}
+
 impl Database {
     async fn new() -> Self {
-        let url = std::env::var("AK_TEST_DATABASE_URL")
-            .expect("AK_TEST_DATABASE_URL is required for explicit database tests");
+        let url = std::env::var("ARTIFACTORY_TEST_DATABASE_URL")
+            .expect("ARTIFACTORY_TEST_DATABASE_URL is required for explicit database tests");
         let admin = PgPoolOptions::new()
             .max_connections(2)
             .connect(&url)
@@ -118,7 +715,7 @@ impl Database {
 }
 
 #[tokio::test]
-#[ignore = "requires AK_TEST_DATABASE_URL"]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
 async fn concurrent_schedulers_do_not_double_assign_or_exceed_slots() {
     let database = Database::new().await;
     let (_, _, job) = database.fixture().await;
@@ -146,7 +743,7 @@ async fn concurrent_schedulers_do_not_double_assign_or_exceed_slots() {
 }
 
 #[tokio::test]
-#[ignore = "requires AK_TEST_DATABASE_URL"]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
 async fn queued_signing_authorization_is_rechecked() {
     let database = Database::new().await;
     let (project, _, _) = database.fixture().await;
@@ -183,7 +780,7 @@ async fn queued_signing_authorization_is_rechecked() {
 }
 
 #[tokio::test]
-#[ignore = "requires AK_TEST_DATABASE_URL"]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
 async fn scoped_retry_cannot_enable_publication_and_source_is_snapshotted() {
     let database = Database::new().await;
     let (project, _, job) = database.fixture().await;
@@ -237,7 +834,7 @@ async fn scoped_retry_cannot_enable_publication_and_source_is_snapshotted() {
 }
 
 #[tokio::test]
-#[ignore = "requires AK_TEST_DATABASE_URL"]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
 async fn incomplete_artifacts_never_make_a_release_visible() {
     let database = Database::new().await;
     let (_, build, _) = database.fixture().await;
@@ -266,7 +863,7 @@ async fn incomplete_artifacts_never_make_a_release_visible() {
 }
 
 #[tokio::test]
-#[ignore = "requires AK_TEST_DATABASE_URL"]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
 async fn expired_started_tasks_are_lost_and_unstarted_tasks_requeue() {
     let database = Database::new().await;
     let (_, _, job) = database.fixture().await;
@@ -296,7 +893,7 @@ async fn expired_started_tasks_are_lost_and_unstarted_tasks_requeue() {
 }
 
 #[tokio::test]
-#[ignore = "requires AK_TEST_DATABASE_URL"]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
 async fn publication_is_atomic_immutable_and_idempotent() {
     let database = Database::new().await;
     let (_, build, job) = database.fixture().await;
@@ -333,7 +930,7 @@ async fn publication_is_atomic_immutable_and_idempotent() {
 }
 
 #[tokio::test]
-#[ignore = "requires AK_TEST_DATABASE_URL"]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
 async fn real_http_authorization_rejects_csrf_and_scope_escalation() {
     let database = Database::new().await;
     let (project, _, _) = database.fixture().await;
@@ -351,7 +948,7 @@ async fn real_http_authorization_rejects_csrf_and_scope_escalation() {
         .method("POST")
         .uri(format!("/api/v1/projects/{project}/builds"))
         .header("content-type", "application/json")
-        .header("cookie", "ak_session=session")
+        .header("cookie", "artifactory_session=session")
         .body(Body::from(r#"{"ref":"main"}"#))
         .unwrap();
     assert_eq!(
@@ -382,7 +979,7 @@ async fn real_http_authorization_rejects_csrf_and_scope_escalation() {
 }
 
 #[tokio::test]
-#[ignore = "requires AK_TEST_DATABASE_URL"]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
 async fn node_revocation_audit_records_effective_irreversible_state() {
     let database = Database::new().await;
     let node = database.node().await;
@@ -406,8 +1003,8 @@ async fn node_revocation_audit_records_effective_irreversible_state() {
             .method("PATCH")
             .uri(format!("/api/v1/nodes/{node}"))
             .header("content-type", "application/json")
-            .header("cookie", "ak_session=admin-session")
-            .header("x-artifact-csrf", "1")
+            .header("cookie", "artifactory_session=admin-session")
+            .header("x-artifactory-csrf", "1")
             .header("origin", "http://localhost:3000")
             .body(Body::from(
                 serde_json::json!({
@@ -444,7 +1041,7 @@ async fn node_revocation_audit_records_effective_irreversible_state() {
 }
 
 #[tokio::test]
-#[ignore = "requires AK_TEST_DATABASE_URL"]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
 async fn ota_uses_node_lock_and_pool_limit_and_never_changes_admin_drain() {
     let database = Database::new().await;
     let (_, _, _job) = database.fixture().await;
@@ -452,7 +1049,7 @@ async fn ota_uses_node_lock_and_pool_limit_and_never_changes_admin_drain() {
     let second = database.node().await;
     let release = Uuid::new_v4();
     sqlx::query("INSERT INTO agent_releases(id,version,manifest,signature,manifest_hash) VALUES($1,'v-next',$2,'test','hash')")
-        .bind(release).bind(serde_json::json!({"assets":[{"os":"linux","arch":"amd64","name":"artifact-agent-linux-amd64"}]}).to_string()).execute(&database.state.pool).await.unwrap();
+        .bind(release).bind(serde_json::json!({"assets":[{"os":"linux","arch":"amd64","name":"artifactory-agent-linux-amd64"}]}).to_string()).execute(&database.state.pool).await.unwrap();
     sqlx::query("UPDATE nodes SET capabilities=capabilities || '[\"agent-ota-v1\"]'::jsonb,agent_current_version='v-old',agent_launcher_version='v-old',draining=true").execute(&database.state.pool).await.unwrap();
     sqlx::query("UPDATE node_pools SET agent_target_release=$1")
         .bind(release)
@@ -493,7 +1090,7 @@ async fn ota_uses_node_lock_and_pool_limit_and_never_changes_admin_drain() {
 }
 
 #[tokio::test]
-#[ignore = "requires AK_TEST_DATABASE_URL"]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
 async fn ota_management_rejects_operator_and_project_tokens() {
     let database = Database::new().await;
     let (project, _, _) = database.fixture().await;
@@ -540,11 +1137,11 @@ async fn ota_management_rejects_operator_and_project_tokens() {
                 .uri(&path)
                 .header("content-type", "application/json")
                 .header("origin", "http://localhost:3000")
-                .header("x-artifact-csrf", "1");
+                .header("x-artifactory-csrf", "1");
             request = if token {
                 request.header("authorization", "Bearer ota-token")
             } else {
-                request.header("cookie", "ak_session=ota-session")
+                request.header("cookie", "artifactory_session=ota-session")
             };
             assert_eq!(
                 router
@@ -562,12 +1159,12 @@ async fn ota_management_rejects_operator_and_project_tokens() {
 }
 
 #[tokio::test]
-#[ignore = "requires AK_TEST_DATABASE_URL"]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
 async fn ota_failed_activation_pauses_pool_and_fences_stale_sessions() {
     let database = Database::new().await;
     let node = database.node().await;
     let release = Uuid::new_v4();
-    sqlx::query("INSERT INTO agent_releases(id,version,manifest,signature,manifest_hash) VALUES($1,'v-next',$2,'test','hash')").bind(release).bind(serde_json::json!({"assets":[{"os":"linux","arch":"amd64","name":"artifact-agent-linux-amd64"}]}).to_string()).execute(&database.state.pool).await.unwrap();
+    sqlx::query("INSERT INTO agent_releases(id,version,manifest,signature,manifest_hash) VALUES($1,'v-next',$2,'test','hash')").bind(release).bind(serde_json::json!({"assets":[{"os":"linux","arch":"amd64","name":"artifactory-agent-linux-amd64"}]}).to_string()).execute(&database.state.pool).await.unwrap();
     sqlx::query("UPDATE nodes SET capabilities=capabilities || '[\"agent-ota-v1\"]'::jsonb,agent_current_version='v-old',agent_target_release=$1,draining=true WHERE id=$2").bind(release).bind(node).execute(&database.state.pool).await.unwrap();
     scheduler::tick(&database.state).await.unwrap();
     let id: Uuid = sqlx::query_scalar("SELECT id FROM agent_updates WHERE node_id=$1")
@@ -578,7 +1175,7 @@ async fn ota_failed_activation_pauses_pool_and_fences_stale_sessions() {
     let session = database.state.connections.read().await[&node].session;
     let payload = serde_json::json!({"diagnostics":{"agent_version":"v-old"},"ota":{"update_id":id,"phase":"rolled_back","launcher_version":"v-old","error":"candidate crashed"}});
     assert!(
-        artifact_control::ota::report(&database.state, node, Uuid::new_v4(), &payload)
+        artifactory_control::ota::report(&database.state, node, Uuid::new_v4(), &payload)
             .await
             .is_err()
     );
@@ -590,13 +1187,13 @@ async fn ota_failed_activation_pauses_pool_and_fences_stale_sessions() {
     assert_eq!(status, "offered");
     let preparing = serde_json::json!({"diagnostics":{"agent_version":"v-old"},"ota":{"update_id":id,"phase":"activating","activation_pending":true,"launcher_version":"v-old"}});
     assert!(
-        artifact_control::ota::report(&database.state, node, session, &preparing)
+        artifactory_control::ota::report(&database.state, node, session, &preparing)
             .await
             .unwrap(),
         "old runtime must receive acknowledgment before yielding to a candidate"
     );
     assert!(
-        artifact_control::ota::report(&database.state, node, session, &payload)
+        artifactory_control::ota::report(&database.state, node, session, &payload)
             .await
             .unwrap()
     );
@@ -615,13 +1212,13 @@ async fn ota_failed_activation_pauses_pool_and_fences_stale_sessions() {
         .await
         .unwrap();
     assert!(
-        artifact_control::ota::report(&database.state, node, session, &payload)
+        artifactory_control::ota::report(&database.state, node, session, &payload)
             .await
             .is_err()
     );
     sqlx::query("UPDATE nodes SET revoked=false,certificate_expires_at=now()-interval '1 minute' WHERE id=$1").bind(node).execute(&database.state.pool).await.unwrap();
     assert!(
-        artifact_control::ota::report(&database.state, node, session, &payload)
+        artifactory_control::ota::report(&database.state, node, session, &payload)
             .await
             .is_err()
     );
@@ -629,7 +1226,7 @@ async fn ota_failed_activation_pauses_pool_and_fences_stale_sessions() {
 }
 
 #[tokio::test]
-#[ignore = "requires AK_TEST_DATABASE_URL"]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
 async fn ota_retry_after_pool_move_respects_new_pool_capacity() {
     let database = Database::new().await;
     let node = database.node().await;
@@ -675,8 +1272,8 @@ async fn ota_retry_after_pool_move_respects_new_pool_capacity() {
         .method("POST")
         .uri(format!("/api/v1/agent-updates/{prior}/retry"))
         .header("content-type", "application/json")
-        .header("cookie", "ak_session=admin-session")
-        .header("x-artifact-csrf", "1")
+        .header("cookie", "artifactory_session=admin-session")
+        .header("x-artifactory-csrf", "1")
         .header("origin", "http://localhost:3000")
         .body(Body::from("{}"))
         .unwrap();

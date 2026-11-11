@@ -17,7 +17,7 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
-LABEL = 'artifact-kit.acceptance.run'
+LABEL = 'artifactory.acceptance.run'
 
 
 def execute(arguments, **kwargs):
@@ -47,13 +47,14 @@ def main():
     parser.add_argument('--image-prefix', default='', help='optional pull-through registry, such as docker.m.daocloud.io')
     parser.add_argument('--control-image', help='reuse an image labelled with the exact current Git revision')
     parser.add_argument('--web-image', help='reuse an image labelled with the exact current Git revision')
+    parser.add_argument('--ai-worker-image', help='reuse an AI worker image labelled with the exact current Git revision')
     parser.add_argument('--probe-image', help='reuse a Linux test-tooling image with python3, Git, cc and OpenSSL')
     options = parser.parse_args()
     if os.getuid() == 0:
         parser.error('run as a non-root deployment account with Docker access')
     source_sha = capture(['git', 'rev-parse', 'HEAD'], cwd=ROOT)
     run_id = uuid.uuid4().hex[:12]
-    project = 'artifact-kit-tls-' + run_id
+    project = 'artifactory-tls-' + run_id
     directory = ROOT / '.local/compose-tls' / run_id
     directory.mkdir(parents=True, mode=0o700)
     snapshot = directory / 'source'
@@ -64,6 +65,7 @@ def main():
     probe = directory / 'probe'
     probe.mkdir()
     shutil.copyfile(ROOT / 'scripts/compose_probe.py', probe / 'probe.py')
+    shutil.copyfile(ROOT / 'scripts/legacy_fixture.py', probe / 'legacy_fixture.py')
     shutil.copyfile(Path(__file__), directory / 'executed-controller.py')
     evidence = {'kind': 'isolated-compose-tls', 'run_id': run_id, 'project': project, 'source_sha': source_sha, 'controller_sha256': hashlib.sha256((directory / 'executed-controller.py').read_bytes()).hexdigest(), 'probe_sha256': hashlib.sha256((probe / 'probe.py').read_bytes()).hexdigest(), 'image_prefix': options.image_prefix, 'checks': []}
     print('COMPOSE RUN', run_id, str(directory), flush=True)
@@ -84,12 +86,12 @@ def main():
         if image:
             details = json.loads(capture(['docker', 'image', 'inspect', image]))[0]
             labels = details['Config'].get('Labels') or {}
-            check(name + ' reused image matches current source and Dockerfile', labels.get('org.opencontainers.image.revision') == source_sha and labels.get('artifact-kit.dockerfile.sha256') == digest)
+            check(name + ' reused image matches current source and Dockerfile', labels.get('org.opencontainers.image.revision') == source_sha and labels.get('artifactory.dockerfile.sha256') == digest)
             return image
-        tag = 'artifact-kit-' + name + ':compose-' + run_id
+        tag = 'artifactory-' + name + ':compose-' + run_id
         modified = re.sub(r'(?m)^FROM ([^ \n]+)', lambda match: 'FROM ' + registry(match.group(1)), dockerfile) if name != 'probe' else dockerfile
         print('BUILD', name, flush=True)
-        arguments = ['docker', 'build', '--progress=plain', '--label', 'org.opencontainers.image.revision=' + source_sha, '--label', 'artifact-kit.dockerfile.sha256=' + digest]
+        arguments = ['docker', 'build', '--progress=plain', '--label', 'org.opencontainers.image.revision=' + source_sha, '--label', 'artifactory.dockerfile.sha256=' + digest]
         if platform:
             arguments += ['--platform', platform]
         with (directory / (name + '-build.log')).open('w') as log:
@@ -104,7 +106,7 @@ def main():
     worker_name = project + '-probe'
     resources = {}
     baseline = {}
-    for name in ('artifact-kit-postgres-test', 'artifact-kit-s3-test'):
+    for name in ('artifactory-postgres-test', 'artifactory-s3-test'):
         result = subprocess.run(['docker', 'inspect', name], capture_output=True, text=True, timeout=15)
         if result.returncode == 0:
             state = json.loads(result.stdout)[0]
@@ -127,17 +129,18 @@ def main():
             check('unique Compose ' + kind + ' namespace is unused', not capture(['docker', kind, 'ls', '-q'] + (['-a'] if kind == 'container' else []) + ['--filter', 'label=com.docker.compose.project=' + project]))
         control_image = build('control', snapshot, (snapshot / 'Dockerfile').read_text(), options.control_image)
         web_image = build('web', snapshot / 'web', (snapshot / 'web/Dockerfile').read_text(), options.web_image)
+        ai_worker_image = build('ai-worker', snapshot, (snapshot / 'ai-worker/Dockerfile').read_text(), options.ai_worker_image)
         architecture = capture(['docker', 'image', 'inspect', control_image, '--format', '{{.Architecture}}'])
         check('probe image uses a supported Agent architecture', architecture in ('amd64', 'arm64'))
-        probe_dockerfile = f'FROM {control_image}\nUSER 0\nRUN apt-get update && apt-get install -y --no-install-recommends python3 gcc libc6-dev && rm -rf /var/lib/apt/lists/*\nUSER 10001:10001\n'
+        probe_dockerfile = f'FROM {control_image}\nUSER 0\nRUN apt-get update && apt-get install -y --no-install-recommends python3 gcc libc6-dev postgresql-client && rm -rf /var/lib/apt/lists/*\nUSER 10001:10001\n'
         probe_image = options.probe_image or build('probe', snapshot, probe_dockerfile, platform='linux/' + architecture)
         architecture = capture(['docker', 'image', 'inspect', probe_image, '--format', '{{.Architecture}}'])
         check('test tooling supports the compiled Agent architecture', architecture in ('amd64', 'arm64'))
-        execute(['go', 'build', '-trimpath', '-o', str(probe / 'artifact-agent'), './cmd/artifact-agent'], cwd=snapshot / 'agent', env=dict(os.environ, GOOS='linux', GOARCH=architecture, CGO_ENABLED='0'), timeout=180)
+        execute(['go', 'build', '-trimpath', '-o', str(probe / 'artifactory-agent'), './cmd/artifactory-agent'], cwd=snapshot / 'agent', env=dict(os.environ, GOOS='linux', GOARCH=architecture, CGO_ENABLED='0'), timeout=180)
         console = 'console-' + run_id + '.test'
         objects = 'objects-' + run_id + '.test'
-        environment = {key: value for key, value in os.environ.items() if not key.startswith(('AK_', 'COMPOSE_')) and key != 'DATABASE_URL'}
-        execute(['sh', str(snapshot / 'scripts/init-deploy.sh')], cwd=snapshot, env=dict(environment, AK_DOMAIN=console, AK_S3_DOMAIN=objects, AK_GRPC_HOST='control'), capture_output=True, text=True)
+        environment = {key: value for key, value in os.environ.items() if not key.startswith(('ARTIFACTORY_', 'COMPOSE_')) and key != 'DATABASE_URL'}
+        execute(['sh', str(snapshot / 'scripts/init-deploy.sh')], cwd=snapshot, env=dict(environment, ARTIFACTORY_DOMAIN=console, ARTIFACTORY_S3_DOMAIN=objects, ARTIFACTORY_GRPC_HOST='control'), capture_output=True, text=True)
         settings = dict(line.split('=', 1) for line in (snapshot / '.deploy/env').read_text().splitlines())
         shutil.copyfile(snapshot / '.deploy/pki/ca.pem', probe / 'grpc-ca.pem')
         with (directory / 'certificate-generation.log').open('w') as log:
@@ -146,17 +149,18 @@ def main():
             execute(['openssl', 'x509', '-req', '-in', str(probe / 'git.csr'), '-CA', str(snapshot / '.deploy/pki/ca.pem'), '-CAkey', str(snapshot / '.deploy/pki/ca.key'), '-CAcreateserial', '-out', str(probe / 'git.pem'), '-days', '1', '-sha256', '-extfile', str(probe / 'git.ext')], stdout=log, stderr=log)
         caddy = snapshot / 'deploy/Caddyfile'
         source_caddy = caddy.read_text()
-        for name in ('AK_DOMAIN', 'AK_S3_DOMAIN'):
+        for name in ('ARTIFACTORY_DOMAIN', 'ARTIFACTORY_S3_DOMAIN'):
             token = '{$' + name + '} {'
             if source_caddy.count(token) != 1:
                 raise RuntimeError('production Caddy host blocks changed; review the acceptance override')
             source_caddy = source_caddy.replace(token, token + '\n    tls internal')
         caddy.write_text('{\n    admin off\n    auto_https disable_redirects\n    skip_install_trust\n}\n\n' + source_caddy)
         manifest = json.loads(capture(['docker', 'compose', '--project-name', project, '--project-directory', str(snapshot), '--env-file', str(snapshot / '.deploy/env'), '-f', str(snapshot / 'compose.yaml'), 'config', '--format', 'json'], env=environment))
-        check('all five production Compose services are retained', set(manifest['services']) == {'postgres', 's3', 'control', 'web', 'gateway'})
+        check('all six production Compose services are retained', set(manifest['services']) == {'postgres', 's3', 'control', 'web', 'gateway','ai-worker'})
         manifest['services']['control']['image'] = control_image
         manifest['services']['web']['image'] = web_image
-        for name in ('control', 'web'):
+        manifest['services']['ai-worker']['image'] = ai_worker_image
+        for name in ('control', 'web', 'ai-worker'):
             manifest['services'][name].pop('build', None)
         for name in ('postgres', 's3', 'gateway'):
             service = manifest['services'][name]
@@ -165,7 +169,7 @@ def main():
         manifest['services']['gateway']['ports'] = [{'target': 80, 'published': str(http_port), 'host_ip': '127.0.0.1', 'protocol': 'tcp'}, {'target': 443, 'published': str(https_port), 'host_ip': '127.0.0.1', 'protocol': 'tcp'}]
         manifest['services']['control']['ports'] = [{'target': 8443, 'published': str(grpc_port), 'host_ip': '127.0.0.1', 'protocol': 'tcp'}]
         manifest['services']['gateway']['networks'] = {'default': {'aliases': [console, objects]}}
-        manifest['services']['control']['environment'].update({'SSL_CERT_FILE': '/run/acceptance/https-ca.pem', 'GIT_SSL_CAINFO': '/run/artifact-pki/ca.pem'})
+        manifest['services']['control']['environment'].update({'SSL_CERT_FILE': '/run/acceptance/https-ca.pem', 'GIT_SSL_CAINFO': '/run/artifactory-pki/ca.pem'})
         manifest['services']['control']['volumes'].append({'type': 'bind', 'source': str(probe / 'https-ca.pem'), 'target': '/run/acceptance/https-ca.pem', 'read_only': True, 'bind': {'create_host_path': False}})
         for kind in ('services', 'volumes', 'networks'):
             for value in manifest.get(kind, {}).values():
@@ -173,9 +177,9 @@ def main():
         resources = {kind: [value['name'] for value in manifest.get(kind, {}).values()] for kind in ('volumes', 'networks')}
         check('volumes and networks belong exclusively to this project', all(value['name'].startswith(project + '_') and not value.get('external') for kind in ('volumes', 'networks') for value in manifest.get(kind, {}).values()))
         check('all host mounts belong to the private acceptance directory', all(Path(volume['source']).resolve().is_relative_to(directory.resolve()) for service in manifest['services'].values() for volume in service.get('volumes', []) if volume['type'] == 'bind'))
-        check('production insecure-development bypass stays disabled', manifest['services']['control']['environment'].get('AK_INSECURE_DEV') != 'true')
+        check('production insecure-development bypass stays disabled', manifest['services']['control']['environment'].get('ARTIFACTORY_INSECURE_DEV') != 'true')
         evidence.update({'images': {}, 'image_platforms': {}, 'ports': {'https': https_port, 'http': http_port, 'grpc': grpc_port}})
-        for name, image in [('control', control_image), ('web', web_image), ('probe', probe_image), *[(name, manifest['services'][name]['image']) for name in ('postgres', 's3', 'gateway')]]:
+        for name, image in [('control', control_image), ('web', web_image), ('ai-worker', ai_worker_image), ('probe', probe_image), *[(name, manifest['services'][name]['image']) for name in ('postgres', 's3', 'gateway')]]:
             # Pull infrastructure images through the chosen registry without changing global Docker settings.
             inspected = subprocess.run(['docker', 'image', 'inspect', image], capture_output=True, text=True, timeout=15)
             if inspected.returncode:
@@ -200,16 +204,16 @@ def main():
                 if time.monotonic() > deadline:
                     raise TimeoutError('Caddy did not create the isolated HTTPS CA')
                 time.sleep(1)
-            execute(compose + ['up', '-d', '--no-build', '--pull', 'never', 'control'], stdout=log, stderr=log, timeout=180)
+            execute(compose + ['up', '-d', '--no-build', '--pull', 'never', 'control', 'ai-worker'], stdout=log, stderr=log, timeout=180)
         details = json.loads(capture(['docker', 'inspect', capture(compose + ['ps', '-q', 'control'])]))[0]
         check('control runs non-root with a read-only root filesystem and no capabilities', details['Config']['User'].split(':')[0] != '0' and details['HostConfig']['ReadonlyRootfs'] and 'ALL' in (details['HostConfig']['CapDrop'] or []) and 'no-new-privileges:true' in (details['HostConfig']['SecurityOpt'] or []))
-        for service in ('postgres', 's3', 'web', 'gateway', 'control'):
+        for service in ('postgres', 's3', 'web', 'gateway', 'control', 'ai-worker'):
             details = json.loads(capture(['docker', 'inspect', capture(compose + ['ps', '-aq', service])]))[0]
             bindings = details['HostConfig'].get('PortBindings') or {}
             check(service + ' exposes no non-loopback host ports', all(binding['HostIp'] == '127.0.0.1' for values in bindings.values() for binding in values))
-        worker_environment = dict(environment, AK_BOOTSTRAP_PASSWORD=settings['AK_BOOTSTRAP_PASSWORD'], AK_COMPOSE_CONSOLE_URL='https://' + console, AK_COMPOSE_S3_URL='https://' + objects, SSL_CERT_FILE='/acceptance/https-ca.pem')
+        worker_environment = dict(environment, ARTIFACTORY_BOOTSTRAP_PASSWORD=settings['ARTIFACTORY_BOOTSTRAP_PASSWORD'], ARTIFACTORY_COMPOSE_CONSOLE_URL='https://' + console, ARTIFACTORY_COMPOSE_S3_URL='https://' + objects, SSL_CERT_FILE='/acceptance/https-ca.pem', DATABASE_URL=manifest['services']['control']['environment']['DATABASE_URL'])
         arguments = ['docker', 'run', '--init', '--platform', evidence['image_platforms']['probe'], '--name', worker_name, '--label', LABEL + '=' + run_id, '--network', manifest['networks']['default']['name'], '--network-alias', 'probe', '--user', f'{os.getuid()}:{os.getgid()}', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--tmpfs', '/tmp:mode=1777', '--mount', 'type=bind,src=' + str(probe) + ',dst=/acceptance', '--workdir', '/acceptance']
-        for name in ('AK_BOOTSTRAP_PASSWORD', 'AK_COMPOSE_CONSOLE_URL', 'AK_COMPOSE_S3_URL', 'SSL_CERT_FILE'):
+        for name in ('ARTIFACTORY_BOOTSTRAP_PASSWORD', 'ARTIFACTORY_COMPOSE_CONSOLE_URL', 'ARTIFACTORY_COMPOSE_S3_URL', 'SSL_CERT_FILE', 'DATABASE_URL'):
             arguments += ['--env', name]
         with (directory / 'probe.log').open('w') as log:
             worker = subprocess.Popen(arguments + ['--entrypoint', 'python3', probe_image, '/acceptance/probe.py'], env=worker_environment, stdout=log, stderr=log)
@@ -243,7 +247,7 @@ def main():
         fault = evidence['probe']['log_buffer_fault']
         attempt = str(uuid.UUID(fault['attempt_id']))
         query = f"SELECT coalesce(json_agg(json_build_object('sequence',sequence,'size',size,'sha256',sha256) ORDER BY sequence),'[]'::json) FROM log_chunks WHERE attempt_id='{attempt}'"
-        chunks = json.loads(capture(compose + ['exec', '-T', 'postgres', 'psql', '-U', 'artifact', '-d', 'artifact', '-tA', '-c', query]))
+        chunks = json.loads(capture(compose + ['exec', '-T', 'postgres', 'psql', '-U', 'artifactory', '-d', 'artifactory', '-tA', '-c', query]))
         check('PostgreSQL confirms consecutive delivered log sequences after overflow', [chunk['sequence'] for chunk in chunks] == list(range(1, len(chunks) + 1)))
         expected = fault['retained_chunks']
         check('PostgreSQL log sizes and hashes match the retained unacknowledged chunks', chunks[expected[0]['sequence'] - 1:] == expected)

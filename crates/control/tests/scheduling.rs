@@ -1,4 +1,4 @@
-use artifact_control::{recipe::Recipe, scheduler::matches};
+use artifactory_control::{recipe::Recipe, scheduler::matches};
 use serde_json::json;
 
 #[test]

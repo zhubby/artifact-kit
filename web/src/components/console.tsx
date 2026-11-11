@@ -178,7 +178,7 @@ export function Console() {
           <span className="brand-mark">
             <Box size={22} />
           </span>
-          artifact kit
+          artifactory
         </Link>
         <div className="nav-label">{t("navigation.workspaceGroup")}</div>
         <nav>
@@ -469,7 +469,7 @@ export function Console() {
                   <br />
                   {t("overview.configPrefix")}{" "}
                   <code className="text-xs text-primary">
-                    artifact-kit.yaml
+                    ExecutionPlan v1
                   </code>{" "}
                   {t("overview.configSuffix")}
                 </div>

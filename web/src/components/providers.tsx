@@ -68,8 +68,8 @@ export function Providers({
     document.documentElement.lang = locale;
     document.title =
       locale === "en"
-        ? "Artifact Kit · Build console"
-        : "Artifact Kit · 构建控制台";
+        ? "artifactory · Build console"
+        : "artifactory · 构建控制台";
   }, [locale]);
   const motion = ready && effects && !reduced;
   useEffect(() => {

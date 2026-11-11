@@ -12,8 +12,8 @@ export async function generateMetadata(): Promise<Metadata> {
   const english = (await cookies()).get(localeCookie)?.value === "en";
   return {
     title: english
-      ? "Artifact Kit · Build console"
-      : "Artifact Kit · 构建控制台",
+      ? "artifactory · Build console"
+      : "artifactory · 构建控制台",
     description: english
       ? "From source to delivery. Cross-platform builds and private distribution for trusted teams."
       : "从源码到交付。可信团队的跨平台应用构建与内部分发控制台。",

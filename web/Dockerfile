@@ -1,6 +1,6 @@
 FROM node:22-bookworm-slim AS builder
 WORKDIR /app
-ENV NEXT_TELEMETRY_DISABLED=1 AK_API_URL=http://control:8080
+ENV NEXT_TELEMETRY_DISABLED=1 ARTIFACTORY_API_URL=http://control:8080
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .

@@ -52,7 +52,7 @@ endpoint = 'https://localhost:' + str(server.server_port)
 
 
 def rust_client(ca, address):
-    environment = dict(os.environ, AK_TEST_STORAGE_TLS_HELPER='1', AK_TEST_STORAGE_TLS_ENDPOINT=address, AK_TEST_STORAGE_TLS_DIRECTORY=str(directory), SSL_CERT_FILE=str(directory / ca), SSL_CERT_DIR=str(directory / 'empty-ca-directory'), NO_PROXY='localhost,127.0.0.1', no_proxy='localhost,127.0.0.1')
+    environment = dict(os.environ, ARTIFACTORY_TEST_STORAGE_TLS_HELPER='1', ARTIFACTORY_TEST_STORAGE_TLS_ENDPOINT=address, ARTIFACTORY_TEST_STORAGE_TLS_DIRECTORY=str(directory), SSL_CERT_FILE=str(directory / ca), SSL_CERT_DIR=str(directory / 'empty-ca-directory'), NO_PROXY='localhost,127.0.0.1', no_proxy='localhost,127.0.0.1')
     return subprocess.run([helper, '--exact', 'storage_tls_probe_helper', '--nocapture'], env=environment, capture_output=True, text=True, timeout=15)
 
 

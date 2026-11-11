@@ -1,13 +1,14 @@
 # Helm / Kubernetes 部署
 
-Chart 位于 `charts/artifact-kit`，包含单实例 control、Next.js / Caddy 网关、PostgreSQL 17、私有 SeaweedFS S3，以及三个独立 PVC。control、数据库、S3 使用 Recreate 升级，避免双调度器或两个写进程同时挂载同一数据目录；升级存在短暂停机。
+Chart 位于 `charts/artifactory`，包含单实例 control、Next.js / Caddy 网关、PostgreSQL 17、私有 SeaweedFS S3，独立 Pi AI worker，以及四个独立 PVC。control、数据库、S3 使用 Recreate 升级，避免双调度器或两个写进程同时挂载同一数据目录；升级存在短暂停机。
 
 ## Release 镜像
 
 GitHub `release-images` 工作流仅在 **Release published** 时执行，正式版本和预发布版本都构建。它检出该 Release 的 tag，在原生 AMD64、ARM64 runner 分别构建，再发布包含 `linux/amd64` / `linux/arm64` 的 GHCR manifest：
 
-- `ghcr.io/zhubby/artifact-kit-control:<release-tag>`
-- `ghcr.io/zhubby/artifact-kit-web:<release-tag>`
+- `ghcr.io/zhubby/artifactory-control:<release-tag>`
+- `ghcr.io/zhubby/artifactory-web:<release-tag>`
+- `ghcr.io/zhubby/artifactory-ai-worker:<release-tag>`
 
 标签包含原始 Release tag、完整 `sha-<commit>`；语义版本额外提供不带 `v` 的版本标签。只有正式 Release 更新 `latest`。工作流使用 `GITHUB_TOKEN` 的 `packages:write`，不需要另存 PAT；它不会创建 Release。发布前先让对应提交的 `platform-contracts` 检查通过。首次 GHCR 包如果为私有，需要设置包可见性，或通过 `imagePullSecrets` 提供有读取权限的凭据。
 
@@ -17,11 +18,11 @@ GitHub `release-images` 工作流仅在 **Release published** 时执行，正式
 
 ```sh
 python3 scripts/init-helm.py \
-  --namespace artifact-kit --release artifact-kit \
+  --namespace artifactory --release artifactory \
   --grpc-host agents.example.com \
   --output .deploy/helm/production
 
-kubectl --context YOUR_CONTEXT create namespace artifact-kit
+kubectl --context YOUR_CONTEXT create namespace artifactory
 kubectl --context YOUR_CONTEXT apply \
   -f .deploy/helm/production/credentials.json \
   -f .deploy/helm/production/pki.json
@@ -52,8 +53,8 @@ ingress:
   className: nginx
   consoleHost: build.example.com
   s3Host: artifacts.example.com
-  consoleTlsSecret: artifact-kit-console-tls
-  s3TlsSecret: artifact-kit-s3-tls
+  consoleTlsSecret: artifactory-console-tls
+  s3TlsSecret: artifactory-s3-tls
   annotations:
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
@@ -61,9 +62,9 @@ ingress:
 ```
 
 ```sh
-helm lint charts/artifact-kit --strict -f production-values.yaml
-helm upgrade --install artifact-kit charts/artifact-kit \
-  --kube-context YOUR_CONTEXT --namespace artifact-kit \
+helm lint charts/artifactory --strict -f production-values.yaml
+helm upgrade --install artifactory charts/artifactory \
+  --kube-context YOUR_CONTEXT --namespace artifactory \
   -f production-values.yaml --wait --timeout 10m
 ```
 
@@ -79,10 +80,10 @@ gRPC 使用独立的 `<release>-grpc:8443` Service，保留服务器 TLS 与节�
 
 ```sh
 python3 scripts/init-helm.py \
-  --namespace artifact-kit --release artifact-kit \
+  --namespace artifactory --release artifactory \
   --grpc-host 127.0.0.1 --grpc-host localhost \
   --output .deploy/helm/kind
-kubectl --context YOUR_KIND_CONTEXT create namespace artifact-kit
+kubectl --context YOUR_KIND_CONTEXT create namespace artifactory
 kubectl --context YOUR_KIND_CONTEXT apply \
   -f .deploy/helm/kind/credentials.json -f .deploy/helm/kind/pki.json
 ```
@@ -90,15 +91,15 @@ kubectl --context YOUR_KIND_CONTEXT apply \
 未发布 Release 时，可以从本次源码构建并加载本地镜像：
 
 ```sh
-docker build -t artifact-kit-control:kind .
-docker build -t artifact-kit-web:kind web
-kind load docker-image --name YOUR_CLUSTER artifact-kit-control:kind artifact-kit-web:kind
+docker build -t artifactory-control:kind .
+docker build -t artifactory-web:kind web
+kind load docker-image --name YOUR_CLUSTER artifactory-control:kind artifactory-web:kind
 
-helm upgrade --install artifact-kit charts/artifact-kit \
-  --kube-context YOUR_KIND_CONTEXT --namespace artifact-kit \
-  -f charts/artifact-kit/values-kind.yaml \
-  --set images.control.repository=artifact-kit-control --set images.control.tag=kind \
-  --set images.web.repository=artifact-kit-web --set images.web.tag=kind \
+helm upgrade --install artifactory charts/artifactory \
+  --kube-context YOUR_KIND_CONTEXT --namespace artifactory \
+  -f charts/artifactory/values-kind.yaml \
+  --set images.control.repository=artifactory-control --set images.control.tag=kind \
+  --set images.web.repository=artifactory-web --set images.web.tag=kind \
   --wait --timeout 10m
 ```
 
@@ -107,9 +108,9 @@ helm upgrade --install artifact-kit charts/artifact-kit \
 macOS 常规 kind 网络不能直接访问节点 NodePort。默认 values 使用 loopback，分别在三个终端运行：
 
 ```sh
-kubectl --context YOUR_KIND_CONTEXT -n artifact-kit port-forward service/artifact-kit-web 31080:80
-kubectl --context YOUR_KIND_CONTEXT -n artifact-kit port-forward service/artifact-kit-s3 31333:8333
-kubectl --context YOUR_KIND_CONTEXT -n artifact-kit port-forward service/artifact-kit-grpc 31443:8443
+kubectl --context YOUR_KIND_CONTEXT -n artifactory port-forward service/artifactory-web 31080:80
+kubectl --context YOUR_KIND_CONTEXT -n artifactory port-forward service/artifactory-s3 31333:8333
+kubectl --context YOUR_KIND_CONTEXT -n artifactory port-forward service/artifactory-grpc 31443:8443
 ```
 
 浏览器访问 `http://127.0.0.1:31080`。Agent 注册使用 `127.0.0.1:31443`、本次 `pki/ca.pem`，并仅在这个开发环境添加 `--allow-http-uploads`。若 OrbStack 等环境允许直接访问节点 IP，可将 `console.publicUrl` / `s3.publicEndpoint` 改为实际节点 IP 和 NodePort；初始化时也须将该 IP 加入 `--grpc-host`。浏览器 Origin、配置 URL 及签名 S3 地址必须一致，不要随意切换 localhost / IP。
@@ -117,9 +118,9 @@ kubectl --context YOUR_KIND_CONTEXT -n artifact-kit port-forward service/artifac
 ## 检查与升级
 
 ```sh
-kubectl --context YOUR_CONTEXT -n artifact-kit get pods,pvc,services
+kubectl --context YOUR_CONTEXT -n artifactory get pods,pvc,services
 curl -fsS https://build.example.com/healthz
-helm --kube-context YOUR_CONTEXT -n artifact-kit history artifact-kit
+helm --kube-context YOUR_CONTEXT -n artifactory history artifactory
 ```
 
 健康检查成功后，仍需验证真实登录、CSRF、Agent mTLS 注册/心跳、SSE 和一次制品构建/下载。HTTP kind 联测不代表公网 TLS、真实业务应用、实体机启动恢复、发行签名或生产备份恢复已验收。
@@ -127,3 +128,7 @@ helm --kube-context YOUR_CONTEXT -n artifact-kit history artifact-kit
 升级使用同一命名空间、release 名、Secret 和 PVC，显式指定新镜像 tag。保持 control 副本数为一；升级前排空 Agent，协调备份数据库、对象存储、control 数据、主密钥与 CA。Secret 更新后容器环境变量不会自动刷新，需要安排相关 Deployment 重启；数据库用户密码也不会因更改初始化环境变量而自动更新。
 
 三个 PVC 带有 `helm.sh/resource-policy: keep`，`helm uninstall` 会保留它们；外部 Secret 同样保留。**删除命名空间仍会删除这些资源**。不要将卸载、删除命名空间或重建 kind 集群用作升级流程。
+
+## AI worker
+
+默认启用 `aiWorker.enabled`，使用独立身份 PVC、只读 CA 和单副本 Recreate。`images.ai-worker` 需与 control/web 使用同一候选版本；配置 `aiWorker.serverName` 时必须匹配服务器证书 SAN。初始 Pod 等待注册，按 [AI 构建指南](ai-builds.md) 从标准输入注册，并在管理界面配置真实模型。`sourceCache.maxBytes` 控制平台缓存配额，kind 默认 512 MiB。已有 PVC/Secret 不得重新初始化覆盖。

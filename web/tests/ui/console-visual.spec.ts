@@ -19,10 +19,10 @@ for (const locale of ["zh-CN", "en"] as const)
       await page
         .context()
         .addCookies([
-          { name: "ak-locale", value: locale, url: "http://127.0.0.1:3100" },
+          { name: "artifactory-locale", value: locale, url: "http://127.0.0.1:3100" },
         ]);
       await page.addInitScript(
-        (value) => localStorage.setItem("ak-theme", value),
+        (value) => localStorage.setItem("artifactory-theme", value),
         theme,
       );
       const directory = resolve(
@@ -63,6 +63,14 @@ for (const locale of ["zh-CN", "en"] as const)
       ];
       for (const [name, path, heading] of routes) {
         await page.goto(path);
+        await expect(page).toHaveTitle(
+          locale === "en"
+            ? "artifactory · Build console"
+            : "artifactory · 构建控制台",
+        );
+        if (name === "login")
+          await expect(page.locator(".login-story")).toContainText("artifactory");
+        else await expect(page.locator(".brand")).toHaveText("artifactory");
         await expect(
           page.getByRole("heading", { name: heading, exact: true }),
         ).toBeVisible();
@@ -174,7 +182,7 @@ test("localized readonly controls preserve permission boundaries", async ({
   await page
     .context()
     .addCookies([
-      { name: "ak-locale", value: "en", url: "http://127.0.0.1:3100" },
+      { name: "artifactory-locale", value: "en", url: "http://127.0.0.1:3100" },
     ]);
   await page.goto("/");
   await expect(

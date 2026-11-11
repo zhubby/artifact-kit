@@ -1,4 +1,4 @@
-use artifact_control::auth::Auth;
+use artifactory_control::auth::Auth;
 use uuid::Uuid;
 
 #[test]

@@ -3,10 +3,10 @@ param(
     [Parameter(Mandatory = $true)][string]$Directory
 )
 $ErrorActionPreference = 'Stop'
-if ($env:AK_NATIVE_SERVICE_TESTS -ne '1' -or $env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+if ($env:ARTIFACTORY_NATIVE_SERVICE_TESTS -ne '1' -or $env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
     throw 'Service account acceptance is restricted to explicitly enabled, disposable GitHub-hosted VMs.'
 }
-$account = 'ak-service-ci'
+$account = 'artifactory-ci'
 $marker = Join-Path $Directory 'owned-account.sid'
 if ($Action -eq 'remove') {
     if (Test-Path -LiteralPath $marker) {
@@ -22,8 +22,8 @@ if ($Action -eq 'remove') {
 if (Get-LocalUser -Name $account -ErrorAction SilentlyContinue) {
     throw 'Refusing to reuse an existing account.'
 }
-if (!$env:AK_TEST_SERVICE_PASSWORD) { throw 'Missing temporary test password.' }
-$password = ConvertTo-SecureString $env:AK_TEST_SERVICE_PASSWORD -AsPlainText -Force
+if (!$env:ARTIFACTORY_TEST_SERVICE_PASSWORD) { throw 'Missing temporary test password.' }
+$password = ConvertTo-SecureString $env:ARTIFACTORY_TEST_SERVICE_PASSWORD -AsPlainText -Force
 $user = New-LocalUser -Name $account -Password $password -AccountNeverExpires -UserMayNotChangePassword
 $user.SID.Value | Set-Content -LiteralPath $marker
 $users = Get-LocalGroup -SID 'S-1-5-32-545'

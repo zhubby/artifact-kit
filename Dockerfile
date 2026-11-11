@@ -4,12 +4,12 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY proto ./proto
-RUN cargo build --locked --release --bin artifact-control
+RUN cargo build --locked --release --bin artifactory-control
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git openssh-client openssl && rm -rf /var/lib/apt/lists/* && useradd --uid 10001 --create-home artifact && mkdir -p /var/lib/artifact && chown 10001:10001 /var/lib/artifact
-COPY --from=builder /build/target/release/artifact-control /usr/local/bin/artifact-control
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git git-lfs openssh-client openssl && rm -rf /var/lib/apt/lists/* && useradd --uid 10001 --create-home artifactory && mkdir -p /var/lib/artifactory && chown 10001:10001 /var/lib/artifactory
+COPY --from=builder /build/target/release/artifactory-control /usr/local/bin/artifactory-control
 USER 10001:10001
-WORKDIR /var/lib/artifact
+WORKDIR /var/lib/artifactory
 EXPOSE 8080 8443
-ENTRYPOINT ["artifact-control"]
+ENTRYPOINT ["artifactory-control"]

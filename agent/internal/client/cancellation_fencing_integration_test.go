@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"testing"
 
-	pb "github.com/artifact-kit/agent/gen/agentv1"
+	pb "github.com/zhubby/artifact-kit/agent/gen/agentv1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -14,7 +14,7 @@ import (
 // A committed build cancellation during either authorization lock wait must
 // prevent a start grant and override a late failure result to canceled.
 func TestLiveRustGoProtocolCancellationFencing(test *testing.T) {
-	if os.Getenv("AK_LIVE_TESTS") != "1" {
+	if os.Getenv("ARTIFACTORY_LIVE_TESTS") != "1" {
 		test.Skip("requires live Rust control, PostgreSQL, psql and acceptance fixtures")
 	}
 	for _, kind := range []string{"accept", "finished"} {

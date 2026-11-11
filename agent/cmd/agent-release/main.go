@@ -13,7 +13,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/artifact-kit/agent/internal/ota"
+	"github.com/zhubby/artifact-kit/agent/internal/ota"
 )
 
 func run() error {
@@ -21,14 +21,14 @@ func run() error {
 	version := flag.String("version", "", "GitHub release tag")
 	commit := flag.String("commit", "", "full Git commit")
 	flag.Parse()
-	seed, err := base64.StdEncoding.DecodeString(os.Getenv("AK_AGENT_RELEASE_SIGNING_SEED"))
+	seed, err := base64.StdEncoding.DecodeString(os.Getenv("ARTIFACTORY_AGENT_RELEASE_SIGNING_SEED"))
 	if err != nil || len(seed) != ed25519.SeedSize {
-		return fmt.Errorf("AK_AGENT_RELEASE_SIGNING_SEED must contain a base64 Ed25519 seed (32 bytes)")
+		return fmt.Errorf("ARTIFACTORY_AGENT_RELEASE_SIGNING_SEED must contain a base64 Ed25519 seed (32 bytes)")
 	}
 	key := ed25519.NewKeyFromSeed(seed)
 	m := ota.Manifest{Version: *version, Commit: *commit, ProtocolMin: 1, ProtocolMax: 1}
 	for _, platform := range [][2]string{{"linux", "amd64"}, {"linux", "arm64"}, {"darwin", "amd64"}, {"darwin", "arm64"}, {"windows", "amd64"}} {
-		a := ota.Asset{OS: platform[0], Arch: platform[1], Name: "artifact-agent-" + platform[0] + "-" + platform[1]}
+		a := ota.Asset{OS: platform[0], Arch: platform[1], Name: "artifactory-agent-" + platform[0] + "-" + platform[1]}
 		if a.OS == "windows" {
 			a.Name += ".exe"
 		}

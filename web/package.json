@@ -1,5 +1,5 @@
 {
-  "name": "artifact-kit-console",
+  "name": "artifactory-console",
   "version": "0.1.0",
   "private": true,
   "scripts": {

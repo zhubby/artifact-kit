@@ -1,4 +1,4 @@
-use artifact_control::crypto::{open, seal};
+use artifactory_control::crypto::{open, seal};
 
 #[test]
 fn authenticated_encryption_rejects_tampering_and_wrong_keys() {

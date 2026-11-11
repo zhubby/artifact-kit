@@ -1,6 +1,7 @@
 "use client";
 
 import { AgentSettings } from "@/components/agent-ota";
+import { AISettings } from "@/components/ai-settings";
 import { useUI } from "@/components/providers";
 
 import { useState } from "react";
@@ -54,6 +55,7 @@ export function Settings({
     { id: "agent", label: t("ota.title") },
     ...(user.role === "admin"
       ? [
+          { id: "ai", label: t("ai.settings") },
           { id: "credentials", label: t("security.credentials") },
           { id: "users", label: t("security.users") },
           { id: "audit", label: t("security.audit") },
@@ -67,7 +69,7 @@ export function Settings({
         title={t("navigation.security")}
         description={t("security.description")}
       >
-        {tab !== "audit" && tab !== "agent" && (
+        {tab !== "audit" && tab !== "agent" && tab !== "ai" && (
           <Button onClick={() => setAdding(true)}>
             <Plus />
             {tab === "tokens"
@@ -101,7 +103,7 @@ export function Settings({
           <span>{t("security.credentialNotice")}</span>
         </div>
       )}
-      {tab === "agent" ? <AgentSettings user={user} /> : <section className="panel">
+      {tab === "agent" ? <AgentSettings user={user} /> : tab === "ai" ? <AISettings /> : <section className="panel">
         <SectionTitle
           title={
             tabs.find((entry) => entry.id === tab)?.label ||

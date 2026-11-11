@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"testing"
 
-	pb "github.com/artifact-kit/agent/gen/agentv1"
+	pb "github.com/zhubby/artifact-kit/agent/gen/agentv1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -20,7 +20,7 @@ import (
 // authorization. Invalidating the owned attempt must prevent a committed ticket
 // or artifact record when that wait ends.
 func TestLiveRustGoProtocolArtifactFencing(test *testing.T) {
-	if os.Getenv("AK_LIVE_TESTS") != "1" {
+	if os.Getenv("ARTIFACTORY_LIVE_TESTS") != "1" {
 		test.Skip("requires live Rust control, PostgreSQL, psql and acceptance fixtures")
 	}
 	for _, stage := range []string{"prepare", "complete"} {
@@ -154,7 +154,7 @@ func TestLiveRustGoProtocolArtifactFencing(test *testing.T) {
 }
 
 func TestLiveRustGoProtocolArtifactConcurrency(test *testing.T) {
-	if os.Getenv("AK_LIVE_TESTS") != "1" {
+	if os.Getenv("ARTIFACTORY_LIVE_TESTS") != "1" {
 		test.Skip("requires live Rust control, PostgreSQL, psql and acceptance fixtures")
 	}
 	probe := newLeaseFencingProbe(test)

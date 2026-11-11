@@ -16,9 +16,9 @@ import (
 
 func TestJobObjectTerminatesDescendants(test *testing.T) {
 	marker := filepath.Join(test.TempDir(), "child.pid")
-	script := `$child = Start-Process powershell -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 60' -PassThru; [IO.File]::WriteAllText($env:AK_TEST_PID_FILE, [string]$child.Id); Start-Sleep -Seconds 60`
+	script := `$child = Start-Process powershell -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 60' -PassThru; [IO.File]::WriteAllText($env:ARTIFACTORY_TEST_PID_FILE, [string]$child.Id); Start-Sleep -Seconds 60`
 	command := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
-	command.Env = append(os.Environ(), "AK_TEST_PID_FILE="+marker)
+	command.Env = append(os.Environ(), "ARTIFACTORY_TEST_PID_FILE="+marker)
 	tree, err := StartProcess(command)
 	if err != nil {
 		test.Fatal(err)

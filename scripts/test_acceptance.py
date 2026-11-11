@@ -21,7 +21,7 @@ class ControlStartupTests(unittest.TestCase):
     def test_exited_control_reports_status_and_log_without_readiness_timeout(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            binary = root / "target/debug/artifact-control"
+            binary = root / "target/debug/artifactory-control"
             binary.parent.mkdir(parents=True)
             binary.write_text(
                 "#!/usr/bin/env python3\n"
@@ -50,7 +50,7 @@ class ControlStartupTests(unittest.TestCase):
     def test_startup_timeout_terminates_control(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            binary = root / "target/debug/artifact-control"
+            binary = root / "target/debug/artifactory-control"
             binary.parent.mkdir(parents=True)
             marker = root / "control.pid"
             binary.write_text(
@@ -88,7 +88,7 @@ class ControlStartupTests(unittest.TestCase):
     def test_ready_control_remains_running_until_cleanup(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            binary = root / "target/debug/artifact-control"
+            binary = root / "target/debug/artifactory-control"
             binary.parent.mkdir(parents=True)
             with socket.socket() as listener:
                 listener.bind(("127.0.0.1", 0))

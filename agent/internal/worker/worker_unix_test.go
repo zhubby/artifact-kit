@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/artifact-kit/agent/gen/agentv1"
-	"github.com/artifact-kit/agent/internal/config"
+	pb "github.com/zhubby/artifact-kit/agent/gen/agentv1"
+	"github.com/zhubby/artifact-kit/agent/internal/config"
 )
 
 func TestWorkerKillsProcessTreeOnParentDeathAndLeaseExpiry(test *testing.T) {
@@ -23,12 +23,12 @@ func TestWorkerKillsProcessTreeOnParentDeathAndLeaseExpiry(test *testing.T) {
 		test.Run(scenario, func(test *testing.T) {
 			directory := test.TempDir()
 			marker := filepath.Join(directory, "child.pid")
-			script := "#!/bin/sh\nsleep 60 &\nprintf '%s\\n' \"$!\" > \"$AK_TEST_PID_FILE\"\nwait\n"
+			script := "#!/bin/sh\nsleep 60 &\nprintf '%s\\n' \"$!\" > \"$ARTIFACTORY_TEST_PID_FILE\"\nwait\n"
 			if err := os.WriteFile(filepath.Join(directory, "git"), []byte(script), 0700); err != nil {
 				test.Fatal(err)
 			}
 			test.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
-			test.Setenv("AK_TEST_PID_FILE", marker)
+			test.Setenv("ARTIFACTORY_TEST_PID_FILE", marker)
 			reader, writer := io.Pipe()
 			defer reader.Close()
 			defer writer.Close()

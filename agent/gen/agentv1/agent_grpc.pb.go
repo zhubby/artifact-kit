@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v7.36.2
-// source: artifactkit/agent/v1/agent.proto
+// source: artifactory/agent/v1/agent.proto
 
 package agentv1
 
@@ -19,7 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Enrollment_Enroll_FullMethodName = "/artifactkit.agent.v1.Enrollment/Enroll"
+	Enrollment_Enroll_FullMethodName = "/artifactory.agent.v1.Enrollment/Enroll"
 )
 
 // EnrollmentClient is the client API for Enrollment service.
@@ -108,7 +108,7 @@ func _Enrollment_Enroll_Handler(srv interface{}, ctx context.Context, dec func(i
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var Enrollment_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "artifactkit.agent.v1.Enrollment",
+	ServiceName: "artifactory.agent.v1.Enrollment",
 	HandlerType: (*EnrollmentServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -117,14 +117,14 @@ var Enrollment_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "artifactkit/agent/v1/agent.proto",
+	Metadata: "artifactory/agent/v1/agent.proto",
 }
 
 const (
-	Control_Connect_FullMethodName          = "/artifactkit.agent.v1.Control/Connect"
-	Control_UploadLogs_FullMethodName       = "/artifactkit.agent.v1.Control/UploadLogs"
-	Control_PrepareArtifact_FullMethodName  = "/artifactkit.agent.v1.Control/PrepareArtifact"
-	Control_CompleteArtifact_FullMethodName = "/artifactkit.agent.v1.Control/CompleteArtifact"
+	Control_Connect_FullMethodName          = "/artifactory.agent.v1.Control/Connect"
+	Control_UploadLogs_FullMethodName       = "/artifactory.agent.v1.Control/UploadLogs"
+	Control_PrepareArtifact_FullMethodName  = "/artifactory.agent.v1.Control/PrepareArtifact"
+	Control_CompleteArtifact_FullMethodName = "/artifactory.agent.v1.Control/CompleteArtifact"
 )
 
 // ControlClient is the client API for Control service.
@@ -296,7 +296,7 @@ func _Control_CompleteArtifact_Handler(srv interface{}, ctx context.Context, dec
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var Control_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "artifactkit.agent.v1.Control",
+	ServiceName: "artifactory.agent.v1.Control",
 	HandlerType: (*ControlServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -321,5 +321,323 @@ var Control_ServiceDesc = grpc.ServiceDesc{
 			ClientStreams: true,
 		},
 	},
-	Metadata: "artifactkit/agent/v1/agent.proto",
+	Metadata: "artifactory/agent/v1/agent.proto",
+}
+
+const (
+	PlannerEnrollment_Enroll_FullMethodName = "/artifactory.agent.v1.PlannerEnrollment/Enroll"
+)
+
+// PlannerEnrollmentClient is the client API for PlannerEnrollment service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type PlannerEnrollmentClient interface {
+	Enroll(ctx context.Context, in *PlannerEnrollRequest, opts ...grpc.CallOption) (*EnrollReply, error)
+}
+
+type plannerEnrollmentClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewPlannerEnrollmentClient(cc grpc.ClientConnInterface) PlannerEnrollmentClient {
+	return &plannerEnrollmentClient{cc}
+}
+
+func (c *plannerEnrollmentClient) Enroll(ctx context.Context, in *PlannerEnrollRequest, opts ...grpc.CallOption) (*EnrollReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EnrollReply)
+	err := c.cc.Invoke(ctx, PlannerEnrollment_Enroll_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// PlannerEnrollmentServer is the server API for PlannerEnrollment service.
+// All implementations must embed UnimplementedPlannerEnrollmentServer
+// for forward compatibility.
+type PlannerEnrollmentServer interface {
+	Enroll(context.Context, *PlannerEnrollRequest) (*EnrollReply, error)
+	mustEmbedUnimplementedPlannerEnrollmentServer()
+}
+
+// UnimplementedPlannerEnrollmentServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedPlannerEnrollmentServer struct{}
+
+func (UnimplementedPlannerEnrollmentServer) Enroll(context.Context, *PlannerEnrollRequest) (*EnrollReply, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Enroll not implemented")
+}
+func (UnimplementedPlannerEnrollmentServer) mustEmbedUnimplementedPlannerEnrollmentServer() {}
+func (UnimplementedPlannerEnrollmentServer) testEmbeddedByValue()                           {}
+
+// UnsafePlannerEnrollmentServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to PlannerEnrollmentServer will
+// result in compilation errors.
+type UnsafePlannerEnrollmentServer interface {
+	mustEmbedUnimplementedPlannerEnrollmentServer()
+}
+
+func RegisterPlannerEnrollmentServer(s grpc.ServiceRegistrar, srv PlannerEnrollmentServer) {
+	// If the following call pancis, it indicates UnimplementedPlannerEnrollmentServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&PlannerEnrollment_ServiceDesc, srv)
+}
+
+func _PlannerEnrollment_Enroll_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PlannerEnrollRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PlannerEnrollmentServer).Enroll(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PlannerEnrollment_Enroll_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PlannerEnrollmentServer).Enroll(ctx, req.(*PlannerEnrollRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// PlannerEnrollment_ServiceDesc is the grpc.ServiceDesc for PlannerEnrollment service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var PlannerEnrollment_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "artifactory.agent.v1.PlannerEnrollment",
+	HandlerType: (*PlannerEnrollmentServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Enroll",
+			Handler:    _PlannerEnrollment_Enroll_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "artifactory/agent/v1/agent.proto",
+}
+
+const (
+	Planning_Poll_FullMethodName      = "/artifactory.agent.v1.Planning/Poll"
+	Planning_Heartbeat_FullMethodName = "/artifactory.agent.v1.Planning/Heartbeat"
+	Planning_Tool_FullMethodName      = "/artifactory.agent.v1.Planning/Tool"
+	Planning_Report_FullMethodName    = "/artifactory.agent.v1.Planning/Report"
+)
+
+// PlanningClient is the client API for Planning service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type PlanningClient interface {
+	Poll(ctx context.Context, in *PlannerPollRequest, opts ...grpc.CallOption) (*PlannerTask, error)
+	Heartbeat(ctx context.Context, in *PlannerLeaseRequest, opts ...grpc.CallOption) (*PlannerHeartbeat, error)
+	Tool(ctx context.Context, in *PlannerToolRequest, opts ...grpc.CallOption) (*PlannerToolReply, error)
+	Report(ctx context.Context, in *PlannerReportRequest, opts ...grpc.CallOption) (*PlannerToolReply, error)
+}
+
+type planningClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewPlanningClient(cc grpc.ClientConnInterface) PlanningClient {
+	return &planningClient{cc}
+}
+
+func (c *planningClient) Poll(ctx context.Context, in *PlannerPollRequest, opts ...grpc.CallOption) (*PlannerTask, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PlannerTask)
+	err := c.cc.Invoke(ctx, Planning_Poll_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *planningClient) Heartbeat(ctx context.Context, in *PlannerLeaseRequest, opts ...grpc.CallOption) (*PlannerHeartbeat, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PlannerHeartbeat)
+	err := c.cc.Invoke(ctx, Planning_Heartbeat_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *planningClient) Tool(ctx context.Context, in *PlannerToolRequest, opts ...grpc.CallOption) (*PlannerToolReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PlannerToolReply)
+	err := c.cc.Invoke(ctx, Planning_Tool_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *planningClient) Report(ctx context.Context, in *PlannerReportRequest, opts ...grpc.CallOption) (*PlannerToolReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PlannerToolReply)
+	err := c.cc.Invoke(ctx, Planning_Report_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// PlanningServer is the server API for Planning service.
+// All implementations must embed UnimplementedPlanningServer
+// for forward compatibility.
+type PlanningServer interface {
+	Poll(context.Context, *PlannerPollRequest) (*PlannerTask, error)
+	Heartbeat(context.Context, *PlannerLeaseRequest) (*PlannerHeartbeat, error)
+	Tool(context.Context, *PlannerToolRequest) (*PlannerToolReply, error)
+	Report(context.Context, *PlannerReportRequest) (*PlannerToolReply, error)
+	mustEmbedUnimplementedPlanningServer()
+}
+
+// UnimplementedPlanningServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedPlanningServer struct{}
+
+func (UnimplementedPlanningServer) Poll(context.Context, *PlannerPollRequest) (*PlannerTask, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Poll not implemented")
+}
+func (UnimplementedPlanningServer) Heartbeat(context.Context, *PlannerLeaseRequest) (*PlannerHeartbeat, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Heartbeat not implemented")
+}
+func (UnimplementedPlanningServer) Tool(context.Context, *PlannerToolRequest) (*PlannerToolReply, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Tool not implemented")
+}
+func (UnimplementedPlanningServer) Report(context.Context, *PlannerReportRequest) (*PlannerToolReply, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Report not implemented")
+}
+func (UnimplementedPlanningServer) mustEmbedUnimplementedPlanningServer() {}
+func (UnimplementedPlanningServer) testEmbeddedByValue()                  {}
+
+// UnsafePlanningServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to PlanningServer will
+// result in compilation errors.
+type UnsafePlanningServer interface {
+	mustEmbedUnimplementedPlanningServer()
+}
+
+func RegisterPlanningServer(s grpc.ServiceRegistrar, srv PlanningServer) {
+	// If the following call pancis, it indicates UnimplementedPlanningServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&Planning_ServiceDesc, srv)
+}
+
+func _Planning_Poll_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PlannerPollRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PlanningServer).Poll(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Planning_Poll_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PlanningServer).Poll(ctx, req.(*PlannerPollRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Planning_Heartbeat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PlannerLeaseRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PlanningServer).Heartbeat(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Planning_Heartbeat_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PlanningServer).Heartbeat(ctx, req.(*PlannerLeaseRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Planning_Tool_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PlannerToolRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PlanningServer).Tool(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Planning_Tool_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PlanningServer).Tool(ctx, req.(*PlannerToolRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Planning_Report_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PlannerReportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PlanningServer).Report(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Planning_Report_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PlanningServer).Report(ctx, req.(*PlannerReportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// Planning_ServiceDesc is the grpc.ServiceDesc for Planning service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var Planning_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "artifactory.agent.v1.Planning",
+	HandlerType: (*PlanningServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Poll",
+			Handler:    _Planning_Poll_Handler,
+		},
+		{
+			MethodName: "Heartbeat",
+			Handler:    _Planning_Heartbeat_Handler,
+		},
+		{
+			MethodName: "Tool",
+			Handler:    _Planning_Tool_Handler,
+		},
+		{
+			MethodName: "Report",
+			Handler:    _Planning_Report_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "artifactory/agent/v1/agent.proto",
 }

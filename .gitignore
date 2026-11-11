@@ -8,6 +8,8 @@
 /.context/
 /.env
 /agent/bin/
+/ai-worker/node_modules/
+/ai-worker/dist/
 /scripts/__pycache__/
 *.log
 *.pem

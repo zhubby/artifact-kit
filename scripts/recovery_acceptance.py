@@ -21,7 +21,7 @@ def execute(arguments, **kwargs):
 
 
 def query(container, sql):
-    result = execute(['docker', 'exec', container, 'psql', '-XAt', '-v', 'ON_ERROR_STOP=1', '-U', 'artifact', '-d', 'artifact', '-c', sql], capture_output=True, text=True)
+    result = execute(['docker', 'exec', container, 'psql', '-XAt', '-v', 'ON_ERROR_STOP=1', '-U', 'artifactory', '-d', 'artifactory', '-c', sql], capture_output=True, text=True)
     return json.loads(result.stdout)
 
 
@@ -44,7 +44,7 @@ def database_inventory(container):
 
 
 def object_environment(source, endpoint):
-    return dict(source, RCLONE_CONFIG_AK_RECOVERY_TYPE='s3', RCLONE_CONFIG_AK_RECOVERY_PROVIDER='Other', RCLONE_CONFIG_AK_RECOVERY_ACCESS_KEY_ID=source['AK_S3_ACCESS_KEY'], RCLONE_CONFIG_AK_RECOVERY_SECRET_ACCESS_KEY=source['AK_S3_SECRET_KEY'], RCLONE_CONFIG_AK_RECOVERY_ENDPOINT=endpoint, RCLONE_CONFIG_AK_RECOVERY_REGION=source['AK_S3_REGION'], RCLONE_CONFIG_AK_RECOVERY_FORCE_PATH_STYLE='true')
+    return dict(source, RCLONE_CONFIG_ARTIFACTORY_RECOVERY_TYPE='s3', RCLONE_CONFIG_ARTIFACTORY_RECOVERY_PROVIDER='Other', RCLONE_CONFIG_ARTIFACTORY_RECOVERY_ACCESS_KEY_ID=source['ARTIFACTORY_S3_ACCESS_KEY'], RCLONE_CONFIG_ARTIFACTORY_RECOVERY_SECRET_ACCESS_KEY=source['ARTIFACTORY_S3_SECRET_KEY'], RCLONE_CONFIG_ARTIFACTORY_RECOVERY_ENDPOINT=endpoint, RCLONE_CONFIG_ARTIFACTORY_RECOVERY_REGION=source['ARTIFACTORY_S3_REGION'], RCLONE_CONFIG_ARTIFACTORY_RECOVERY_FORCE_PATH_STYLE='true')
 
 
 def objects(arguments, environment, capture=False):
@@ -66,10 +66,10 @@ def free_ports(count):
 
 def load_environment(path):
     # No inherited platform setting may silently substitute for a missing backup.
-    clean = {key: value for key, value in os.environ.items() if not key.startswith(('AK_', 'RCLONE_CONFIG_AK_RECOVERY_')) and key != 'DATABASE_URL'}
+    clean = {key: value for key, value in os.environ.items() if not key.startswith(('ARTIFACTORY_', 'RCLONE_CONFIG_ARTIFACTORY_RECOVERY_')) and key != 'DATABASE_URL'}
     raw = subprocess.check_output(['bash', '-e', '-c', 'set -a; . "$1"; env -0', 'recovery-env', str(path)], env=clean, cwd=acceptance.ROOT)
     environment = dict(item.decode().split('=', 1) for item in raw.split(b'\0') if item and b'=' in item)
-    for key in ('DATABASE_URL', 'AK_MASTER_KEY', 'AK_S3_ACCESS_KEY', 'AK_S3_SECRET_KEY', 'AK_S3_REGION', 'AK_S3_BUCKET', 'AK_S3_ENDPOINT', 'AK_BOOTSTRAP_USERNAME', 'AK_BOOTSTRAP_PASSWORD'):
+    for key in ('DATABASE_URL', 'ARTIFACTORY_MASTER_KEY', 'ARTIFACTORY_S3_ACCESS_KEY', 'ARTIFACTORY_S3_SECRET_KEY', 'ARTIFACTORY_S3_REGION', 'ARTIFACTORY_S3_BUCKET', 'ARTIFACTORY_S3_ENDPOINT', 'ARTIFACTORY_BOOTSTRAP_USERNAME', 'ARTIFACTORY_BOOTSTRAP_PASSWORD'):
         if not environment.get(key):
             raise RuntimeError('private environment is missing ' + key)
     return environment
@@ -92,15 +92,30 @@ def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--ssh-evidence', type=Path, default=acceptance.ROOT / '.local/acceptance/latest-ssh.json')
+    parser.add_argument('--env-file', type=Path, default=acceptance.ROOT / '.local/env')
+    parser.add_argument('--postgres-container', default='artifactory-postgres-test')
+    parser.add_argument('--s3-container', default='artifactory-s3-test')
+    parser.add_argument('--s3-config', type=Path, default=acceptance.ROOT / '.local/s3.json')
     parser.add_argument('--sudo-sshd', action='store_true', help='run only the isolated SSH fixture with passwordless sudo on a Linux CI runner')
     options = parser.parse_args()
-    if os.environ.get('AK_INSECURE_DEV') != 'true':
+    if os.environ.get('ARTIFACTORY_INSECURE_DEV') != 'true':
         parser.error('use only the explicit local development acceptance environment')
-    if (acceptance.ROOT / '.local/env').is_symlink():
+    if options.env_file.is_symlink():
         parser.error('the local environment must be a regular private file')
-    source = load_environment(acceptance.ROOT / '.local/env')
+    source = load_environment(options.env_file)
     database = urllib.parse.urlsplit(source['DATABASE_URL'])
-    if (database.hostname, database.port, database.path, database.username) != ('127.0.0.1', 15432, '/artifact', 'artifact') or source['AK_S3_ENDPOINT'] != 'http://127.0.0.1:19000' or source.get('AK_HTTP_BIND') != '127.0.0.1:8080' or source.get('AK_GRPC_BIND') != '127.0.0.1:8443':
+    custom = (options.postgres_container,options.s3_container) != ('artifactory-postgres-test','artifactory-s3-test')
+    expected_pg,expected_s3 = 15432,19000
+    if custom:
+        containers=[json.loads(acceptance.command(['docker','inspect',name]))[0] for name in (options.postgres_container,options.s3_container)]
+        owners=[(c['Config'].get('Labels') or {}).get('artifactory.acceptance.run') for c in containers]
+        if not owners[0] or owners[0] != owners[1]:
+            parser.error('custom recovery sources must share an explicit acceptance ownership label')
+        ports=[containers[0]['NetworkSettings']['Ports']['5432/tcp'],containers[1]['NetworkSettings']['Ports']['8333/tcp']]
+        if any(len(p)!=1 or p[0]['HostIp']!='127.0.0.1' for p in ports):
+            parser.error('custom acceptance databases and object stores must bind only loopback')
+        expected_pg,expected_s3=[int(p[0]['HostPort']) for p in ports]
+    if (database.hostname, database.port, database.path, database.username) != ('127.0.0.1', expected_pg, '/artifactory', 'artifactory') or source['ARTIFACTORY_S3_ENDPOINT'] != f'http://127.0.0.1:{expected_s3}' or database.query or source.get('ARTIFACTORY_HTTP_BIND') != '127.0.0.1:8080' or source.get('ARTIFACTORY_GRPC_BIND') != '127.0.0.1:8443':
         parser.error('this drill is restricted to the repository local PostgreSQL / S3 test containers')
     for port in (8080, 8443, 19443):
         try:
@@ -137,16 +152,16 @@ def main():
     failure = None
 
     def service(kind, image, arguments, data_path, command=()):
-        name = 'artifact-kit-recovery-' + acceptance.RUN_ID + '-' + kind
+        name = 'artifactory-recovery-' + acceptance.RUN_ID + '-' + kind
         volume = name + '-data'
         for resource, identifier in (('container', name), ('volume', volume)):
             if subprocess.run(['docker', resource, 'inspect', identifier], capture_output=True).returncode == 0:
                 raise RuntimeError('refusing to reuse an existing recovery ' + resource)
         created_volumes.append(volume)
-        execute(['docker', 'volume', 'create', '--label', 'artifact-kit.acceptance.run=' + acceptance.RUN_ID, volume], stdout=subprocess.DEVNULL)
+        execute(['docker', 'volume', 'create', '--label', 'artifactory.acceptance.run=' + acceptance.RUN_ID, volume], stdout=subprocess.DEVNULL)
         # Track before run: Docker can create the container but fail to start it.
         created_containers.append(name)
-        execute(['docker', 'run', '-d', '--pull=never', '--name', name, '--label', 'artifact-kit.acceptance.run=' + acceptance.RUN_ID, '-v', volume + ':' + data_path] + arguments + [image] + list(command), capture_output=True, text=True)
+        execute(['docker', 'run', '-d', '--pull=never', '--name', name, '--label', 'artifactory.acceptance.run=' + acceptance.RUN_ID, '-v', volume + ':' + data_path] + arguments + [image] + list(command), capture_output=True, text=True)
         return name
 
     def remove_owned(resource, name):
@@ -157,40 +172,40 @@ def main():
             raise RuntimeError('cannot inspect recovery ' + resource + ': ' + name)
         inspected = json.loads(result.stdout)[0]
         labels = inspected['Config']['Labels'] if resource == 'container' else inspected['Labels']
-        if (labels or {}).get('artifact-kit.acceptance.run') != acceptance.RUN_ID:
+        if (labels or {}).get('artifactory.acceptance.run') != acceptance.RUN_ID:
             raise RuntimeError('refusing to remove recovery resource without its ownership label: ' + name)
         execute(['docker', resource, 'rm'] + (['-f'] if resource == 'container' else []) + [name], stdout=subprocess.DEVNULL)
 
     try:
-        acceptance.check('backup source has no active or queued builds', query('artifact-kit-postgres-test', "SELECT count(*) FROM builds WHERE status IN ('resolving','queued','running','canceling')") == 0)
-        before = database_inventory('artifact-kit-postgres-test')
+        acceptance.check('backup source has no active or queued builds', query(options.postgres_container, "SELECT count(*) FROM builds WHERE status IN ('resolving','planning','needs_input','replanning','queued','running','canceling')") == 0)
+        before = database_inventory(options.postgres_container)
         acceptance.check('backup includes existing credentials and releases', before['credentials']['rows'] > 0 and before['releases']['rows'] > 0)
         with (backup / 'database.dump').open('wb') as output:
-            execute(['docker', 'exec', 'artifact-kit-postgres-test', 'pg_dump', '-U', 'artifact', '-d', 'artifact', '-Fc'], stdout=output)
-        copy_private(acceptance.ROOT / '.local/env', backup / 'env')
-        copy_private(acceptance.ROOT / '.local/pki', backup / 'pki')
-        copy_private(acceptance.ROOT / '.local/s3.json', backup / 's3.json')
+            execute(['docker', 'exec', options.postgres_container, 'pg_dump', '-U', 'artifactory', '-d', 'artifactory', '-Fc'], stdout=output)
+        copy_private(options.env_file, backup / 'env')
+        copy_private(Path(source['ARTIFACTORY_PKI_DIR']), backup / 'pki')
+        copy_private(options.s3_config, backup / 's3.json')
         saved = load_environment(backup / 'env')
-        acceptance.check('backup contains the original credential encryption key', saved['AK_MASTER_KEY'] == source['AK_MASTER_KEY'])
-        source_objects = object_environment(source, source['AK_S3_ENDPOINT'])
-        bucket = 'ak_recovery:' + source['AK_S3_BUCKET']
+        acceptance.check('backup contains the original credential encryption key', saved['ARTIFACTORY_MASTER_KEY'] == source['ARTIFACTORY_MASTER_KEY'])
+        source_objects = object_environment(source, source['ARTIFACTORY_S3_ENDPOINT'])
+        bucket = 'artifactory_recovery:' + source['ARTIFACTORY_S3_BUCKET']
         manifest = json.loads(objects(['lsjson', bucket, '--recursive', '--files-only'], source_objects, True).stdout)
         objects(['copy', bucket, str(backup / 'objects')], source_objects)
         objects(['check', '--download', bucket, str(backup / 'objects')], source_objects)
         acceptance.check('all source object bytes match the backup', len(manifest) > 0)
-        acceptance.check('source database stayed quiescent throughout backup', database_inventory('artifact-kit-postgres-test') == before)
+        acceptance.check('source database stayed quiescent throughout backup', database_inventory(options.postgres_container) == before)
 
-        postgres_image = json.loads(acceptance.command(['docker', 'inspect', 'artifact-kit-postgres-test']))[0]['Image']
-        s3_inspect = json.loads(acceptance.command(['docker', 'inspect', 'artifact-kit-s3-test']))[0]
+        postgres_image = json.loads(acceptance.command(['docker', 'inspect', options.postgres_container]))[0]['Image']
+        s3_inspect = json.loads(acceptance.command(['docker', 'inspect', options.s3_container]))[0]
         pg_port, s3_port, http_port, grpc_port = free_ports(4)
         password = urllib.parse.unquote(urllib.parse.urlsplit(saved['DATABASE_URL']).password)
         (restored / 'database-password').write_text(password)
-        postgres = service('postgres', postgres_image, ['-p', f'127.0.0.1:{pg_port}:5432', '-e', 'POSTGRES_DB=artifact', '-e', 'POSTGRES_USER=artifact', '-e', 'POSTGRES_PASSWORD_FILE=/run/db-password', '-v', str(restored / 'database-password') + ':/run/db-password:ro'], '/var/lib/postgresql/data')
-        s3_name = service('s3', s3_inspect['Image'], ['-p', f'127.0.0.1:{s3_port}:8333', '-v', str(backup / 's3.json') + ':/etc/seaweed/s3.json:ro', '-v', str(acceptance.ROOT / 'deploy/seaweed-entrypoint.sh') + ':/run/artifact-s3-entrypoint.sh:ro', '--entrypoint', '/bin/sh'], '/data', ['/run/artifact-s3-entrypoint.sh', 'mini', '-dir=/data', '-s3.port=8333', '-s3.config=/run/artifact-s3/s3.json', '-s3.iam.readOnly=true', '-admin.ui=false', '-ip.bind=0.0.0.0'])
+        postgres = service('postgres', postgres_image, ['-p', f'127.0.0.1:{pg_port}:5432', '-e', 'POSTGRES_DB=artifactory', '-e', 'POSTGRES_USER=artifactory', '-e', 'POSTGRES_PASSWORD_FILE=/run/db-password', '-v', str(restored / 'database-password') + ':/run/db-password:ro'], '/var/lib/postgresql/data')
+        s3_name = service('s3', s3_inspect['Image'], ['-p', f'127.0.0.1:{s3_port}:8333', '-v', str(backup / 's3.json') + ':/etc/seaweed/s3.json:ro', '-v', str(acceptance.ROOT / 'deploy/seaweed-entrypoint.sh') + ':/run/artifactory-s3-entrypoint.sh:ro', '--entrypoint', '/bin/sh'], '/data', ['/run/artifactory-s3-entrypoint.sh', 'mini', '-dir=/data', '-s3.port=8333', '-s3.config=/run/artifactory-s3/s3.json', '-s3.iam.readOnly=true', '-admin.ui=false', '-ip.bind=0.0.0.0'])
         s3_endpoint = f'http://127.0.0.1:{s3_port}'
         execute(['python3', str(acceptance.ROOT / 'scripts/wait_local_services.py'), '--postgres', postgres, '--s3', s3_name, '--s3-url', s3_endpoint])
         with (backup / 'database.dump').open('rb') as archive:
-            execute(['docker', 'exec', '-i', postgres, 'pg_restore', '--exit-on-error', '--no-owner', '-U', 'artifact', '-d', 'artifact'], stdin=archive)
+            execute(['docker', 'exec', '-i', postgres, 'pg_restore', '--exit-on-error', '--no-owner', '-U', 'artifactory', '-d', 'artifactory'], stdin=archive)
         acceptance.check('every public table and sequence matches after restore', database_inventory(postgres) == before)
         restored_objects = object_environment(saved, s3_endpoint)
         objects(['copy', str(backup / 'objects'), bucket], restored_objects)
@@ -200,10 +215,10 @@ def main():
         acceptance.check('restored CA, signing key and server identity match the backup', all((restored / 'pki' / path.name).read_bytes() == path.read_bytes() for path in (backup / 'pki').iterdir() if path.is_file()))
 
         base = f'http://127.0.0.1:{http_port}'
-        environment = dict(saved, DATABASE_URL=f'postgres://artifact:{urllib.parse.quote(password, safe="")}@127.0.0.1:{pg_port}/artifact', AK_HTTP_BIND=f'127.0.0.1:{http_port}', AK_GRPC_BIND=f'127.0.0.1:{grpc_port}', AK_PUBLIC_URL=base, AK_PKI_DIR=str(restored / 'pki'), AK_DATA_DIR=str(restored / "control's data with spaces"), AK_S3_ENDPOINT=s3_endpoint, AK_S3_PUBLIC_ENDPOINT=s3_endpoint, GIT_SSL_CAINFO=str(restored / 'pki/ca.pem'))
+        environment = dict(saved, DATABASE_URL=f'postgres://artifactory:{urllib.parse.quote(password, safe="")}@127.0.0.1:{pg_port}/artifactory', ARTIFACTORY_HTTP_BIND=f'127.0.0.1:{http_port}', ARTIFACTORY_GRPC_BIND=f'127.0.0.1:{grpc_port}', ARTIFACTORY_PUBLIC_URL=base, ARTIFACTORY_PKI_DIR=str(restored / 'pki'), ARTIFACTORY_DATA_DIR=str(restored / "control's data with spaces"), ARTIFACTORY_S3_ENDPOINT=s3_endpoint, ARTIFACTORY_S3_PUBLIC_ENDPOINT=s3_endpoint, GIT_SSL_CAINFO=str(restored / 'pki/ca.pem'))
         log = (directory / 'control.log').open('ab')
         handles.append(log)
-        control = subprocess.Popen([str(acceptance.ROOT / 'target/debug/artifact-control')], cwd=acceptance.ROOT, env=environment, stdout=log, stderr=log)
+        control = subprocess.Popen([str(acceptance.ROOT / 'target/debug/artifactory-control')], cwd=acceptance.ROOT, env=environment, stdout=log, stderr=log)
 
         def control_ready():
             if control.poll() is not None:
@@ -213,8 +228,9 @@ def main():
 
         acceptance.wait_for(control_ready, 30)
         acceptance.BASE = base
-        os.environ['AK_PUBLIC_URL'] = base
-        acceptance.api('/auth/login', {'username': saved['AK_BOOTSTRAP_USERNAME'], 'password': saved['AK_BOOTSTRAP_PASSWORD']})
+        acceptance.FIXTURE_DATABASE_URL = environment['DATABASE_URL']
+        os.environ['ARTIFACTORY_PUBLIC_URL'] = base
+        acceptance.api('/auth/login', {'username': saved['ARTIFACTORY_BOOTSTRAP_USERNAME'], 'password': saved['ARTIFACTORY_BOOTSTRAP_PASSWORD']})
         for node in acceptance.api('/nodes'):
             settings = {key: node[key] for key in ('draining', 'revoked', 'slots', 'labels', 'signing_profiles', 'pool_id')}
             acceptance.api('/nodes/' + node['id'], dict(settings, draining=True), 'PATCH')
@@ -226,7 +242,7 @@ def main():
         binary = directory / 'restored-download'
         binary.write_bytes(content)
         binary.chmod(0o700)
-        acceptance.check('artifact downloaded after recovery executes', acceptance.command([str(binary)]) == 'artifact-kit-ssh-ok')
+        acceptance.check('artifact downloaded after recovery executes', acceptance.command([str(binary)]) == 'artifactory-ssh-ok')
 
         ssh_log = (directory / 'sshd.log').open('ab')
         handles.append(ssh_log)
@@ -249,9 +265,9 @@ def main():
         acceptance.wait_for(ssh_ready, 15)
         token = acceptance.api('/enrollment-tokens', {'pool_id': '00000000-0000-0000-0000-000000000001'})['token']
         config_file = restored / 'agent.json'
-        agent_environment = {key: value for key, value in saved.items() if not key.startswith('AK_') and key != 'DATABASE_URL'}
-        agent_binary = acceptance.ROOT / 'agent/bin/artifact-agent'
-        execute([str(agent_binary), 'register', '--endpoint', f'localhost:{grpc_port}', '--ca', str(restored / 'pki/ca.pem'), '--config', str(config_file), '--root', str(restored / "agent's data with spaces"), '--allow-http-uploads'], env=dict(agent_environment, AK_ENROLLMENT_TOKEN=token), stdout=subprocess.DEVNULL)
+        agent_environment = {key: value for key, value in saved.items() if not key.startswith('ARTIFACTORY_') and key != 'DATABASE_URL'}
+        agent_binary = acceptance.ROOT / 'agent/bin/artifactory-agent'
+        execute([str(agent_binary), 'register', '--endpoint', f'localhost:{grpc_port}', '--ca', str(restored / 'pki/ca.pem'), '--config', str(config_file), '--root', str(restored / "agent's data with spaces"), '--allow-http-uploads'], env=dict(agent_environment, ARTIFACTORY_ENROLLMENT_TOKEN=token), stdout=subprocess.DEVNULL)
         config = json.loads(config_file.read_text())
         agent_log = (directory / 'agent.log').open('ab')
         handles.append(agent_log)
@@ -277,7 +293,7 @@ def main():
         new_release = acceptance.api('/releases/' + new_release['id'])
         acceptance.check('fresh build publishes a new release after recovery', new_release['id'] != release['id'] and new_release['build_id'] == build_id)
         acceptance.check('fresh builds can publish after recovery without changing the old release', acceptance.api('/releases/' + ssh['release_id']) == release)
-        acceptance.check('recovery left the source database unchanged', database_inventory('artifact-kit-postgres-test') == before)
+        acceptance.check('recovery left the source database unchanged', database_inventory(options.postgres_container) == before)
         acceptance.EVIDENCE.update({'kind': 'isolated-recovery', 'source_ssh_run': ssh['run_id'], 'source_sha': acceptance.command(['git', '-C', str(acceptance.ROOT), 'rev-parse', 'HEAD']), 'script_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), 'database_tables': len(before) - 1, 'source_objects': len(manifest), 'source_object_bytes': sum(item['Size'] for item in manifest), 'database_dump_sha256': hashlib.sha256((backup / 'database.dump').read_bytes()).hexdigest(), 'postgres_image': postgres_image, 's3_image': s3_inspect['Image'], 'restored_build_id': build_id, 'backup': str(backup), 'boundary': 'local isolated restore with private plaintext backup; production encryption, offsite storage and disaster recovery remain separate gates'})
     except BaseException as error:
         failure = error

@@ -11,7 +11,7 @@ targets:
         run: ./ci/build-ios.sh
       - name: sign and export IPA
         phase: sign
-        run: ./ci/export-ios.sh "$AK_IOS_EXPORT_OPTIONS" dist
+        run: ./ci/export-ios.sh "$ARTIFACTORY_IOS_EXPORT_OPTIONS" dist
       - name: verify IPA
         phase: verify
         run: ./ci/verify-ios.sh dist/MyApp.ipa

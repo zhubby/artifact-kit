@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/artifact-kit/agent/gen/agentv1"
-	"github.com/artifact-kit/agent/internal/config"
+	pb "github.com/zhubby/artifact-kit/agent/gen/agentv1"
+	"github.com/zhubby/artifact-kit/agent/internal/config"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -28,7 +28,7 @@ import (
 // heartbeat waiting on it, then changes node authorization before releasing it.
 // A renewal must use the authorization that is current when it writes the lease.
 func TestLiveRustGoProtocolLeaseFencing(test *testing.T) {
-	if os.Getenv("AK_LIVE_TESTS") != "1" {
+	if os.Getenv("ARTIFACTORY_LIVE_TESTS") != "1" {
 		test.Skip("requires live Rust control, PostgreSQL, psql and acceptance fixtures")
 	}
 	for _, change := range []string{"unchanged", "revoked", "certificate-expired", "session-superseded"} {
@@ -127,7 +127,7 @@ func TestLiveRustGoProtocolLeaseFencing(test *testing.T) {
 }
 
 func TestLiveRustGoProtocolEventFencing(test *testing.T) {
-	if os.Getenv("AK_LIVE_TESTS") != "1" {
+	if os.Getenv("ARTIFACTORY_LIVE_TESTS") != "1" {
 		test.Skip("requires live Rust control, PostgreSQL, psql and acceptance fixtures")
 	}
 	for _, kind := range []string{"accept", "finished"} {
@@ -234,7 +234,7 @@ func TestLiveRustGoProtocolEventFencing(test *testing.T) {
 }
 
 func TestLiveRustGoProtocolReplayedCompletion(test *testing.T) {
-	if os.Getenv("AK_LIVE_TESTS") != "1" {
+	if os.Getenv("ARTIFACTORY_LIVE_TESTS") != "1" {
 		test.Skip("requires live Rust control, PostgreSQL, psql and acceptance fixtures")
 	}
 	probe := newLeaseFencingProbe(test)
@@ -325,7 +325,7 @@ func newLeaseFencingProbe(test *testing.T) *leaseFencingProbe {
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	test.Cleanup(cancel)
 	probe := &leaseFencingProbe{test: test, context: ctx}
-	base := os.Getenv("AK_LIVE_HTTP_URL")
+	base := os.Getenv("ARTIFACTORY_LIVE_HTTP_URL")
 	if base == "" {
 		base = "http://127.0.0.1:8080"
 	}
@@ -345,7 +345,7 @@ func newLeaseFencingProbe(test *testing.T) *leaseFencingProbe {
 			test.Fatal(err)
 		}
 		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set("x-artifact-csrf", "1")
+		request.Header.Set("x-artifactory-csrf", "1")
 		response, err := browser.Do(request)
 		if err != nil {
 			test.Fatal(err)
@@ -360,8 +360,8 @@ func newLeaseFencingProbe(test *testing.T) *leaseFencingProbe {
 		}
 		return result
 	}
-	probe.api("POST", "/auth/login", map[string]string{"username": os.Getenv("AK_BOOTSTRAP_USERNAME"), "password": os.Getenv("AK_BOOTSTRAP_PASSWORD")})
-	existing, err := config.Load(os.Getenv("AK_LIVE_AGENT_CONFIG"))
+	probe.api("POST", "/auth/login", map[string]string{"username": os.Getenv("ARTIFACTORY_BOOTSTRAP_USERNAME"), "password": os.Getenv("ARTIFACTORY_BOOTSTRAP_PASSWORD")})
+	existing, err := config.Load(os.Getenv("ARTIFACTORY_LIVE_AGENT_CONFIG"))
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -376,7 +376,7 @@ func newLeaseFencingProbe(test *testing.T) *leaseFencingProbe {
 	if err != nil {
 		test.Fatal(err)
 	}
-	source := probe.api("GET", "/projects/"+os.Getenv("AK_LIVE_PROJECT_ID"), nil)
+	source := probe.api("GET", "/projects/"+os.Getenv("ARTIFACTORY_LIVE_PROJECT_ID"), nil)
 	probe.settings = map[string]any{"draining": false, "revoked": false, "slots": 1, "labels": map[string]string{}, "signing_profiles": source["signing_profiles"], "pool_id": pool}
 	probe.api("PATCH", "/nodes/"+probe.config.AgentID, probe.settings)
 	project := probe.api("POST", "/projects", map[string]any{"name": "Lease fencing acceptance", "repository_url": source["repository_url"], "credential_id": source["credential_id"], "signing_profiles": source["signing_profiles"], "pool_ids": []string{pool}})["id"].(string)
@@ -394,7 +394,7 @@ func newLeaseFencingProbe(test *testing.T) *leaseFencingProbe {
 	if err := probe.stream.Send(probe.hello()); err != nil {
 		test.Fatal(err)
 	}
-	build := probe.api("POST", "/projects/"+project+"/builds", map[string]any{"ref": "main", "targets": []string{"native"}})["id"].(string)
+	build := historicalBuild(test, project)
 	test.Cleanup(func() {
 		jobStatus := probe.query("SELECT status FROM jobs WHERE build_id='" + build + "'")
 		if jobStatus == "queued" || jobStatus == "leased" || jobStatus == "running" {

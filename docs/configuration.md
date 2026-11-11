@@ -1,8 +1,10 @@
-# 仓库配置 v1
+# 执行配方 v1 与历史配置
 
-配置只能位于仓库根目录 `artifact-kit.yaml`，最大 256 KiB。中心先解析 Git 引用为准确提交，再从该提交读取配置，保存原始 YAML、解析快照、参数和所选目标。Agent 获取相同提交，不再自行解析分支。
+所有新构建使用 [零侵入 AI 构建](ai-builds.md)：平台保存目标和说明，Pi 生成 `ExecutionPlan v1`，其 `recipe` 复用下述校验规则。无需在原仓库创建配置文件。以下 YAML 仅用于理解内部配方和迁移前历史记录，不是新构建入口。
 
-编辑器 schema：`schemas/artifact-kit.v1.schema.json`。真正的跨字段限制以 `Recipe::parse` 为准：阶段必须按 build → sign → verify 排序；签名必须同时配置授权引用、sign 阶段和 verify 阶段；步骤超时不能大于目标超时。未知字段和 schema 版本被拒绝。
+历史构建保留仓库根目录 `artifactory.yaml`（最大 256 KiB）的原始 YAML、解析快照、参数和所选目标。已解析历史任务重试使用原计划和提交，不重新解析移动分支。
+
+编辑器 schema：`schemas/artifactory.v1.schema.json`。真正的跨字段限制以 `Recipe::parse` 为准：阶段必须按 build → sign → verify 排序；签名必须同时配置授权引用、sign 阶段和 verify 阶段；步骤超时不能大于目标超时。未知字段和 schema 版本被拒绝。
 
 ```yaml
 version: 1
@@ -34,9 +36,9 @@ targets:
 - `executor` 本版仅为 `native`。容器执行环境与未来 OCI 制品类型分别扩展。
 - `capabilities` 是工具版本 / 帮助命令可执行性探测的约束，失败的占位程序不进入能力集合；仍不证明 SDK 完整、授权有效或真实构建成功。默认额外要求 Git 和每一步所用 shell 可用。
 - Unix 默认 `bash`，Windows 默认 `powershell`；允许显式 `sh`、`bash`、`pwsh`、`powershell`。工具链需要预装，Agent 不自动安装。
-- `labels` 必须精确匹配管理员设置的节点标签。项目可用节点池由中心项目授权确定，YAML 不能扩大授权。
-- `parameters` 为非敏感字符串默认值，名称匹配 `[A-Z][A-Z0-9_]{0,63}`，值最大 4096 字节，传入 `AK_PARAM_<NAME>`。API 不能传入未声明参数。
-- 内置环境包括 `AK_COMMIT_SHA`、`AK_BUILD_ID`、`AK_TARGET`。不得把密码、Token、签名私钥放进参数或打印到日志。
+- `labels` 必须精确匹配管理员设置的节点标签。项目可用节点池由中心项目授权确定，执行计划不能扩大授权。
+- `parameters` 为非敏感字符串默认值，名称匹配 `[A-Z][A-Z0-9_]{0,63}`，值最大 4096 字节，传入 `ARTIFACTORY_PARAM_<NAME>`。API 不能传入未声明参数。
+- 内置环境包括 `ARTIFACTORY_COMMIT_SHA`、`ARTIFACTORY_BUILD_ID`、`ARTIFACTORY_TARGET`。不得把密码、Token、签名私钥放进参数或打印到日志。
 - 目标默认 7200 秒，最大 86400 秒；步骤默认 3600 秒。缩短目标超时时必须同步指定更短的步骤超时。
 - 步骤顺序执行；错误停止该目标。不同目标独立调度，不支持任意 DAG、步骤条件或 Actions `uses:`。
 
@@ -52,7 +54,7 @@ targets:
 
 `signing_profiles` 只包含引用名。项目授权、节点授权、本机 Agent 的 `signing_profiles` 三者都需要匹配；私钥不上传中心。本机配置中对应的环境变量仅在 sign / verify 步骤注入，但**同账号可信宿主执行不构成秘密沙箱**。
 
-本版每个所选目标都视为必需目标。所有目标、步骤、签名 / 校验和制品登记成功后，填写版本的构建才自动发布。`release.enabled` 是仓库许可，不替代调用者的 release 权限。
+本版每个所选目标都视为必需目标。所有目标、步骤、签名 / 校验和制品登记成功后，填写版本的构建才自动发布。`release.enabled` 在历史配方中是仓库许可。新 AI 构建由 API 的显式发布请求及调用者 release 权限控制，模型不能开启发布。
 
 Release 一经生成不更新、删除或覆盖；同项目版本唯一。构建结果与发布结果分离，版本冲突表现为构建成功、发布失败。发布重试复用制品；重试带自动发布版本的失败目标同样需要 release 权限。
 

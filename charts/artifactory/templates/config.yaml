@@ -1,0 +1,40 @@
+{{- $scheme := ternary "^https?://" "^https://" .Values.development.insecureHttp -}}
+{{- range $url := list .Values.console.publicUrl .Values.s3.publicEndpoint (include "artifactory.s3Endpoint" .) -}}
+{{- if not (regexMatch $scheme $url) -}}
+{{- fail "console and S3 URLs require HTTPS; HTTP is only allowed with development.insecureHttp=true" -}}
+{{- end -}}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "artifactory.fullname" . }}-config
+  labels:
+    {{- include "artifactory.labels" . | nindent 4 }}
+data:
+  ARTIFACTORY_HTTP_BIND: 0.0.0.0:8080
+  ARTIFACTORY_GRPC_BIND: 0.0.0.0:8443
+  ARTIFACTORY_PUBLIC_URL: {{ .Values.console.publicUrl | trimSuffix "/" | quote }}
+  ARTIFACTORY_INSECURE_DEV: {{ .Values.development.insecureHttp | toString | quote }}
+  ARTIFACTORY_DATA_DIR: /var/lib/artifactory
+  ARTIFACTORY_SOURCE_CACHE_BYTES: {{ .Values.sourceCache.maxBytes | quote }}
+  ARTIFACTORY_PKI_DIR: /run/artifactory-pki
+  ARTIFACTORY_S3_ENDPOINT: {{ include "artifactory.s3Endpoint" . | quote }}
+  ARTIFACTORY_S3_PUBLIC_ENDPOINT: {{ .Values.s3.publicEndpoint | trimSuffix "/" | quote }}
+  ARTIFACTORY_S3_BUCKET: {{ .Values.s3.bucket | quote }}
+  ARTIFACTORY_S3_REGION: {{ .Values.s3.region | quote }}
+  Caddyfile: |
+    {
+      admin off
+      auto_https off
+    }
+    :8080 {
+      @control path /api/* /healthz
+      handle @control {
+        reverse_proxy {{ include "artifactory.fullname" . }}-control:8080 {
+          flush_interval -1
+        }
+      }
+      handle {
+        reverse_proxy 127.0.0.1:3000
+      }
+    }

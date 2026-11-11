@@ -13,7 +13,7 @@ export default defineConfig({
   ],
   outputDir: "test-results/live",
   use: {
-    baseURL: process.env.AK_BROWSER_URL || "http://127.0.0.1:3000",
+    baseURL: process.env.ARTIFACTORY_BROWSER_URL || "http://127.0.0.1:3000",
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },

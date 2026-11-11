@@ -1,4 +1,4 @@
-use artifact_control::recipe::Recipe;
+use artifactory_control::recipe::Recipe;
 
 const VALID: &str = r#"
 version: 1

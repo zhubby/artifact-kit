@@ -32,6 +32,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/dialog";
 import { SubmitForm } from "@/components/forms";
+import { BuildPlanning } from "@/components/build-planning";
 import { Field } from "@/components/common";
 import { mutation, useRemote } from "@/lib/api";
 import { asError } from "@/lib/errors";
@@ -106,7 +107,7 @@ export function BuildDetail({ id, user }: { id: string; user: User }) {
       (!attempt || log.attempt_id === attempt.id) &&
       (!filter || log.step === filter),
   );
-  const active = ["resolving", "queued", "running", "canceling"].includes(
+  const active = ["resolving", "planning", "replanning", "needs_input", "queued", "running", "canceling"].includes(
     build.status,
   );
   return (
@@ -168,6 +169,7 @@ export function BuildDetail({ id, user }: { id: string; user: User }) {
           </span>
         )}
       </div>
+      {build.goal && <BuildPlanning build={build} user={user} refresh={remote.reload} />}
       <div className="build-layout">
         <section className="panel self-start">
           <SectionTitle
@@ -262,6 +264,7 @@ export function BuildDetail({ id, user }: { id: string; user: User }) {
             )}
             {job &&
               ["failed", "lost", "canceled"].includes(job.status) &&
+              !["planning", "replanning", "needs_input"].includes(build.status) &&
               user.role !== "viewer" && (
                 <div className="p-4">
                   <Button
@@ -360,7 +363,7 @@ export function BuildDetail({ id, user }: { id: string; user: User }) {
           {t("builds.snapshot")}
         </summary>
         <pre className="log-console min-h-0">
-          {build.config_yaml || t("builds.noConfig")}
+          {build.config_yaml || (build.config_snapshot ? JSON.stringify(build.config_snapshot,null,2) : t("builds.noConfig"))}
         </pre>
       </details>
       <Modal

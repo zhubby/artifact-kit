@@ -1,5 +1,5 @@
 [package]
-name = "artifact-control"
+name = "artifactory-control"
 version.workspace = true
 edition.workspace = true
 

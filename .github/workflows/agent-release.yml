@@ -44,11 +44,11 @@ jobs:
       - run: go test -race ./...
         working-directory: agent
       - name: Native service, OTA and rollback under a dedicated service account
-        run: go test -race ./cmd/artifact-agent -run '^TestNativeServiceLifecycle$' -count=1 -v -timeout=12m
+        run: go test -race ./cmd/artifactory-agent -run '^TestNativeServiceLifecycle$' -count=1 -v -timeout=12m
         working-directory: agent
         env:
-          AK_NATIVE_SERVICE_TESTS: '1'
-          AK_NATIVE_EXPECTED_PLATFORM: ${{ matrix.goos }}/${{ matrix.arch }}
+          ARTIFACTORY_NATIVE_SERVICE_TESTS: '1'
+          ARTIFACTORY_NATIVE_EXPECTED_PLATFORM: ${{ matrix.goos }}/${{ matrix.arch }}
       - name: Build versioned native executable
         shell: bash
         working-directory: agent
@@ -61,11 +61,11 @@ jobs:
           extension=''
           if [ "$AGENT_OS" = windows ]; then extension='.exe'; fi
           revision=$(git rev-parse HEAD)
-          CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/artifact-kit/agent/internal/agent.Version=$AGENT_TAG -X github.com/artifact-kit/agent/internal/agent.Commit=$revision" -o "bin/artifact-agent-$AGENT_OS-$AGENT_ARCH$extension" ./cmd/artifact-agent
+          CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/zhubby/artifact-kit/agent/internal/agent.Version=$AGENT_TAG -X github.com/zhubby/artifact-kit/agent/internal/agent.Commit=$revision" -o "bin/artifactory-agent-$AGENT_OS-$AGENT_ARCH$extension" ./cmd/artifactory-agent
       - uses: actions/upload-artifact@v4
         with:
           name: agent-${{ matrix.goos }}-${{ matrix.arch }}
-          path: agent/bin/artifact-agent-*
+          path: agent/bin/artifactory-agent-*
   publish:
     needs: native
     runs-on: ubuntu-latest
@@ -88,10 +88,10 @@ jobs:
         working-directory: agent
         env:
           AGENT_TAG: ${{ inputs.tag || github.ref_name }}
-          AK_AGENT_RELEASE_SIGNING_SEED: ${{ secrets.AGENT_RELEASE_SIGNING_SEED }}
+          ARTIFACTORY_AGENT_RELEASE_SIGNING_SEED: ${{ secrets.AGENT_RELEASE_SIGNING_SEED }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           revision=$(git rev-parse HEAD)
           go run ./cmd/agent-release --directory bin --version "$AGENT_TAG" --commit "$revision"
-          gh release create "$AGENT_TAG" --verify-tag --title "Agent $AGENT_TAG" --generate-notes bin/artifact-agent-* bin/agent-manifest.json bin/agent-manifest.sig
+          gh release create "$AGENT_TAG" --verify-tag --title "Agent $AGENT_TAG" --generate-notes bin/artifactory-agent-* bin/agent-manifest.json bin/agent-manifest.sig

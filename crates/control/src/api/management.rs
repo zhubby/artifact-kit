@@ -107,7 +107,7 @@ pub async fn create_token(
         }
     }
     let id = Uuid::new_v4();
-    let token = format!("ak_{}", crypto::token());
+    let token = format!("artifactory_{}", crypto::token());
     sqlx::query("INSERT INTO api_tokens(id,user_id,name,token_hash,project_ids,scopes,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7)")
         .bind(id).bind(auth.user_id).bind(input.name).bind(crypto::hash(&token)).bind(input.project_ids).bind(input.scopes).bind(Utc::now()+Duration::days(input.days)).execute(&state.pool).await?;
     state

@@ -1,7 +1,9 @@
 mod agent_updates;
+pub(crate) mod ai_management;
 mod builds;
 mod management;
 mod projects;
+mod source_http;
 
 use crate::{auth, state::AppState};
 use axum::{
@@ -12,6 +14,51 @@ use axum::{
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .route("/api/v1/model-options", get(ai_management::model_options))
+        .route(
+            "/api/v1/model-profiles",
+            get(ai_management::profiles).post(ai_management::create_profile),
+        )
+        .route(
+            "/api/v1/model-profiles/{id}",
+            patch(ai_management::update_profile).delete(ai_management::delete_profile),
+        )
+        .route("/api/v1/ai-workers", get(ai_management::workers))
+        .route(
+            "/api/v1/ai-workers/{id}",
+            patch(ai_management::update_worker),
+        )
+        .route(
+            "/api/v1/ai-enrollment-tokens",
+            post(ai_management::enrollment),
+        )
+        .route("/api/v1/source-metrics", get(ai_management::source_metrics))
+        .route(
+            "/api/v1/builds/{id}/clarifications",
+            post(ai_management::clarify),
+        )
+        .route("/api/v1/builds/{id}/plans", get(ai_management::plans))
+        .merge(
+            Router::new()
+                .route(
+                    "/api/v1/source/{snapshot}/{entry}/git/info/refs",
+                    get(source_http::git),
+                )
+                .route(
+                    "/api/v1/source/{snapshot}/{entry}/git/git-upload-pack",
+                    post(source_http::git),
+                )
+                .route(
+                    "/api/v1/source/{snapshot}/{entry}/lfs/objects/batch",
+                    post(source_http::lfs_batch),
+                )
+                .route(
+                    "/api/v1/source/{snapshot}/{entry}/lfs/objects/{oid}",
+                    get(source_http::lfs_object),
+                )
+                .layer(DefaultBodyLimit::disable())
+                .layer(axum::middleware::map_response(source_http::challenge)),
+        )
         .route(
             "/healthz",
             get(|| async {

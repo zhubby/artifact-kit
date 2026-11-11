@@ -95,7 +95,7 @@ test("offscreen and visibility changes pause actual WebGL draws and resume on re
   await page.evaluate(() => {
     window.dispatchEvent(
       new StorageEvent("storage", {
-        key: "ak-theme",
+        key: "artifactory-theme",
         newValue: "light",
       }),
     );

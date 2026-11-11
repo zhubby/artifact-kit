@@ -9,14 +9,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/artifact-kit/agent/internal/config"
+	"github.com/zhubby/artifact-kit/agent/internal/config"
 )
 
 var Version = "0.1.0"
 var Commit = "development"
 
 func Doctor(cfg config.Config) (map[string]any, []string) {
-	names := []string{"git", "bash", "sh", "powershell", "pwsh", "cc", "cargo", "go", "node", "npm", "xcodebuild", "java", "gradle", "cmake", "ninja", "dotnet", "msbuild", "signtool", "codesign", "security", "apksigner", "docker"}
+	names := []string{"git", "git-lfs", "bash", "sh", "powershell", "pwsh", "cc", "cargo", "go", "node", "npm", "xcodebuild", "java", "gradle", "cmake", "ninja", "dotnet", "msbuild", "signtool", "codesign", "security", "apksigner", "docker"}
 	for name := range cfg.Tools {
 		found := false
 		for _, existing := range names {
@@ -29,7 +29,7 @@ func Doctor(cfg config.Config) (map[string]any, []string) {
 		}
 	}
 	tools := map[string]any{}
-	var capabilities []string
+	capabilities := []string{"source-cache-v1", "external-build-plan-v1"}
 	for _, name := range names {
 		executable := name
 		if override := cfg.Tools[name]; override != "" {

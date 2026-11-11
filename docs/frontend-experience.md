@@ -5,9 +5,9 @@
 ## 偏好与翻译
 
 - `next-intl` 提供 `zh-CN`、`en` 词条、参数插值与复数；词条位于 `web/src/messages/`。新增界面文案需同时更新两个语言文件。
-- 默认简体中文。`ak-locale` Cookie 保存一年，服务端读取以输出 HTML `lang`、标题及初始文案；切换时更新同一 Provider 的状态，不刷新路由或重新挂载业务组件。
-- `next-themes` 使用 `ak-theme` 保存 `system`、`dark`、`light`，默认跟随系统；启动脚本在首屏应用配色。语义 CSS 变量同时覆盖页面、侧栏、表格、错误、状态和日志区域。
-- `ak-effects` 保存视觉动效开关，默认启用；系统 `prefers-reduced-motion` 优先。关闭后停止装饰画布及 CSS/GSAP 动画，保留状态文字。存储不可用时保留本次会话选择。
+- 默认简体中文。`artifactory-locale` Cookie 保存一年，服务端读取以输出 HTML `lang`、标题及初始文案；切换时更新同一 Provider 的状态，不刷新路由或重新挂载业务组件。
+- `next-themes` 使用 `artifactory-theme` 保存 `system`、`dark`、`light`，默认跟随系统；启动脚本在首屏应用配色。语义 CSS 变量同时覆盖页面、侧栏、表格、错误、状态和日志区域。
+- `artifactory-effects` 保存视觉动效开关，默认启用；系统 `prefers-reduced-motion` 优先。关闭后停止装饰画布及 CSS/GSAP 动画，保留状态文字。存储不可用时保留本次会话选择。
 - 桌面顶栏／登录右上显示偏好控件；1200px 及以下合并到复用 Radix Dialog 的偏好弹窗。
 - 日期按所选语言及浏览器本地时区显示；数据计数按语言格式化。仓库、项目名、日志、配置快照、审计 action 及服务端错误详情原样显示；请求错误有本地化标题。
 - 网络异常、无错误详情的 HTTP 失败与本地 JSON 格式错误保留翻译键，已显示的错误会随语言切换更新；服务端提供的错误详情逐字保留。
@@ -25,7 +25,7 @@ cd web
 rtk npm ci
 rtk npm run typecheck
 rtk npm run build
-AK_UI_PRODUCTION=1 rtk npm run test:ui
+ARTIFACTORY_UI_PRODUCTION=1 rtk npm run test:ui
 ```
 
 独立 UI 测试使用完整 API fixtures，不需要账号、数据库或 Agent；覆盖桌面 1440px、平板 820px、手机 390px，中英双语、深浅配色、系统主题变化、偏好持久化、原始内容、无横向页面溢出、对话框焦点、权限控件及切换偏好时的状态保留。动效测试计数实际 WebGL draw，验证减少动态效果、手动关闭、离屏与 visibility 事件处理；headless visibility 事件测试不等同于实体浏览器最小化验收。

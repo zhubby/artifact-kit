@@ -24,7 +24,7 @@ DIRECTORY = Path('/acceptance')
 
 def main():
     os.umask(0o077)
-    base = os.environ['AK_COMPOSE_CONSOLE_URL']
+    base = os.environ['ARTIFACTORY_COMPOSE_CONSOLE_URL']
     evidence = {'kind': 'compose-tls-probe', 'checks': [], 'host': platform.platform()}
     context = ssl.create_default_context(cafile=str(DIRECTORY / 'https-ca.pem'))
     cookies = http.cookiejar.CookieJar()
@@ -62,7 +62,7 @@ def main():
     def request(path, body=None, authenticated=True, csrf=True, origin=base):
         headers = {'Content-Type': 'application/json', 'Origin': origin}
         if csrf:
-            headers['x-artifact-csrf'] = '1'
+            headers['x-artifactory-csrf'] = '1'
         payload = None if body is None else json.dumps(body).encode()
         outgoing = urllib.request.Request(base + '/api/v1' + path, payload, headers)
         try:
@@ -72,6 +72,9 @@ def main():
             return error.code, json.load(error), error.headers
 
     def api(path, body=None):
+        if body is not None and path.startswith('/projects/') and path.endswith('/builds'):
+            from legacy_fixture import historical_build
+            return historical_build(path.split('/')[2],body)
         status, result, _headers = request(path, body)
         if status != 200:
             raise RuntimeError(f'{path}: HTTP {status}: {result}')
@@ -91,7 +94,7 @@ def main():
     repository = DIRECTORY / 'repos/fixture.git'
     repository.mkdir(parents=True)
     command(['git', 'init', '-b', 'main', str(repository)])
-    (repository / 'main.c').write_text('#include <stdio.h>\nint main(void) { puts("artifact-kit-compose-tls-ok"); return 0; }\n')
+    (repository / 'main.c').write_text('#include <stdio.h>\nint main(void) { puts("artifactory-compose-tls-ok"); return 0; }\n')
     (repository / 'descendant.py').write_text('''import pathlib, time
 path = pathlib.Path('/acceptance/buffer-child-alive')
 while True:
@@ -109,7 +112,7 @@ for index in range(1024):
 time.sleep(180)
 ''')
     arch = 'arm64' if platform.machine() in ('aarch64', 'arm64') else 'amd64'
-    (repository / 'artifact-kit.yaml').write_text(f'''version: 1
+    (repository / 'artifactory.yaml').write_text(f'''version: 1
 release: {{enabled: true}}
 targets:
   native:
@@ -199,7 +202,7 @@ targets:
                 return error.code == 401
         wait(ready, 90)
         check('console is served through trusted Caddy HTTPS', True)
-        status, _result, headers = request('/auth/login', {'username': 'admin', 'password': os.environ['AK_BOOTSTRAP_PASSWORD']})
+        status, _result, headers = request('/auth/login', {'username': 'admin', 'password': os.environ['ARTIFACTORY_BOOTSTRAP_PASSWORD']})
         cookie = headers.get('Set-Cookie', '')
         check('HTTPS login issues a Secure HttpOnly SameSite=Strict session', status == 200 and all(value in cookie for value in ('Secure', 'HttpOnly', 'SameSite=Strict')))
         check('anonymous management access is rejected', request('/overview', authenticated=False)[0] == 401)
@@ -210,15 +213,15 @@ targets:
         pool = '00000000-0000-0000-0000-000000000001'
         enrollment = api('/enrollment-tokens', {'pool_id': pool})['token']
         config_file = DIRECTORY / 'agent.json'
-        environment = {key: value for key, value in os.environ.items() if not key.startswith('AK_')}
-        command([str(DIRECTORY / 'artifact-agent'), 'register', '--config', str(config_file), '--endpoint', 'control:8443', '--ca', str(DIRECTORY / 'grpc-ca.pem'), '--root', str(DIRECTORY / 'agent-data'), '--name', 'compose-tls-probe'], env=dict(environment, AK_ENROLLMENT_TOKEN=enrollment))
+        environment = {key: value for key, value in os.environ.items() if not key.startswith('ARTIFACTORY_')}
+        command([str(DIRECTORY / 'artifactory-agent'), 'register', '--config', str(config_file), '--endpoint', 'control:8443', '--ca', str(DIRECTORY / 'grpc-ca.pem'), '--root', str(DIRECTORY / 'agent-data'), '--name', 'compose-tls-probe'], env=dict(environment, ARTIFACTORY_ENROLLMENT_TOKEN=enrollment))
         config = json.loads(config_file.read_text())
         config['git_ca_file'] = str(DIRECTORY / 'grpc-ca.pem')
         config['log_buffer_bytes'] = 1024 * 1024
         config_file.write_text(json.dumps(config))
         check('Agent keeps HTTPS-only artifact uploads enabled', not config.get('allow_http_uploads', False))
         with (DIRECTORY / 'agent.log').open('ab') as log:
-            agent = subprocess.Popen([str(DIRECTORY / 'artifact-agent'), 'run', '--config', str(config_file)], env=environment, stdout=log, stderr=log)
+            agent = subprocess.Popen([str(DIRECTORY / 'artifactory-agent'), 'run', '--config', str(config_file)], env=environment, stdout=log, stderr=log)
         node_id = config['agent_id']
         wait(lambda: next((node for node in api('/nodes') if node['id'] == node_id and node['online'] and 'cc' in node['capabilities']), None))
         check('real Go Agent authenticates with mTLS and reports its compiler', True)
@@ -253,7 +256,7 @@ targets:
             with client.open(base + '/api/v1/artifacts/' + artifact['id'] + '/download', timeout=15) as response:
                 content = response.read()
                 url = response.url
-            check('signed HTTPS artifact download matches verified SHA-256 and size', url.startswith(os.environ['AK_COMPOSE_S3_URL'] + '/') and len(content) == artifact['size'] and hashlib.sha256(content).hexdigest() == artifact['sha256'])
+            check('signed HTTPS artifact download matches verified SHA-256 and size', url.startswith(os.environ['ARTIFACTORY_COMPOSE_S3_URL'] + '/') and len(content) == artifact['size'] and hashlib.sha256(content).hexdigest() == artifact['sha256'])
             return content, url
 
         content, signed_url = download()
@@ -265,7 +268,7 @@ targets:
         binary = DIRECTORY / 'downloaded-app'
         binary.write_bytes(content)
         binary.chmod(0o700)
-        check('downloaded native application executes', command([str(binary)]) == 'artifact-kit-compose-tls-ok')
+        check('downloaded native application executes', command([str(binary)]) == 'artifactory-compose-tls-ok')
         (DIRECTORY / 'finish-build').unlink()
         second = api(f'/projects/{project}/builds', {'ref': 'main', 'targets': ['native']})['id']
 

@@ -11,7 +11,7 @@ targets:
         run: ./gradlew --no-daemon assembleRelease && mkdir -p dist && cp app/build/outputs/apk/release/app-release-unsigned.apk dist/app-unsigned.apk
       - name: sign
         phase: sign
-        run: apksigner sign --ks "$AK_ANDROID_KEYSTORE" --ks-pass env:AK_ANDROID_STORE_PASSWORD --out dist/app.apk dist/app-unsigned.apk
+        run: apksigner sign --ks "$ARTIFACTORY_ANDROID_KEYSTORE" --ks-pass env:ARTIFACTORY_ANDROID_STORE_PASSWORD --out dist/app.apk dist/app-unsigned.apk
       - name: verify
         phase: verify
         run: apksigner verify --verbose --print-certs dist/app.apk

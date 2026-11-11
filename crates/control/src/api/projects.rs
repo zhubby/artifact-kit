@@ -43,6 +43,12 @@ pub struct ProjectInput {
     pool_ids: Vec<Uuid>,
     #[serde(default)]
     signing_profiles: Vec<String>,
+    #[serde(default)]
+    model_profile_id: Option<Uuid>,
+    #[serde(default)]
+    build_context: String,
+    #[serde(default)]
+    source_credentials: Vec<crate::source_cache::CredentialBinding>,
 }
 
 fn default_pools() -> Vec<Uuid> {
@@ -55,11 +61,17 @@ async fn validate(state: &AppState, input: &ProjectInput) -> Result<()> {
         || input.pool_ids.is_empty()
         || input.pool_ids.len() > 32
         || input.signing_profiles.len() > 32
+        || input.build_context.len() > 16000
+        || input.source_credentials.len() > 128
     {
         return Err(ApiError::BadRequest("invalid project settings".into()));
     }
     source::validate_repository(&input.repository_url)
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+    for binding in &input.source_credentials {
+        source::validate_repository(&binding.repository_url)
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    }
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM node_pools WHERE id=ANY($1)")
         .bind(&input.pool_ids)
         .fetch_one(&state.pool)
@@ -80,7 +92,7 @@ pub async fn create(
     auth.session_role("admin")?;
     validate(&state, &input).await?;
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO projects(id,name,repository_url,credential_id,pool_ids,signing_profiles) VALUES($1,$2,$3,$4,$5,$6)").bind(id).bind(input.name).bind(input.repository_url).bind(input.credential_id).bind(input.pool_ids).bind(input.signing_profiles).execute(&state.pool).await?;
+    sqlx::query("INSERT INTO projects(id,name,repository_url,credential_id,pool_ids,signing_profiles,model_profile_id,build_context,source_credentials) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)").bind(id).bind(input.name).bind(input.repository_url).bind(input.credential_id).bind(input.pool_ids).bind(input.signing_profiles).bind(input.model_profile_id).bind(input.build_context).bind(serde_json::to_value(input.source_credentials).map_err(anyhow::Error::from)?).execute(&state.pool).await?;
     state
         .audit(auth.user_id, "project_created", id, json!({}))
         .await?;
@@ -95,7 +107,7 @@ pub async fn update(
 ) -> Result<Json<Value>> {
     auth.session_role("admin")?;
     validate(&state, &input).await?;
-    sqlx::query("UPDATE projects SET name=$2,repository_url=$3,credential_id=$4,pool_ids=$5,signing_profiles=$6 WHERE id=$1").bind(id).bind(input.name).bind(input.repository_url).bind(input.credential_id).bind(input.pool_ids).bind(input.signing_profiles).execute(&state.pool).await?;
+    sqlx::query("UPDATE projects SET name=$2,repository_url=$3,credential_id=$4,pool_ids=$5,signing_profiles=$6,model_profile_id=$7,build_context=$8,source_credentials=$9 WHERE id=$1").bind(id).bind(input.name).bind(input.repository_url).bind(input.credential_id).bind(input.pool_ids).bind(input.signing_profiles).bind(input.model_profile_id).bind(input.build_context).bind(serde_json::to_value(input.source_credentials).map_err(anyhow::Error::from)?).execute(&state.pool).await?;
     state
         .audit(auth.user_id, "project_updated", id, json!({}))
         .await?;

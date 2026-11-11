@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/artifact-kit/agent/internal/config"
+	"github.com/zhubby/artifact-kit/agent/internal/config"
 )
 
 func TestDoctorOnlyAdvertisesWorkingToolchains(test *testing.T) {

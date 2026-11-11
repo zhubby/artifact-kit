@@ -18,10 +18,10 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/artifact-kit/agent/gen/agentv1"
-	"github.com/artifact-kit/agent/internal/client"
-	"github.com/artifact-kit/agent/internal/config"
-	"github.com/artifact-kit/agent/internal/executor"
+	pb "github.com/zhubby/artifact-kit/agent/gen/agentv1"
+	"github.com/zhubby/artifact-kit/agent/internal/client"
+	"github.com/zhubby/artifact-kit/agent/internal/config"
+	"github.com/zhubby/artifact-kit/agent/internal/executor"
 )
 
 type Input struct {
@@ -119,7 +119,12 @@ func Run(processContext context.Context, input io.Reader, output io.Writer) erro
 	err := execute(ctx, initial, emit)
 	status := "succeeded"
 	message := ""
+	failureKind := "execution"
 	if err != nil {
+		var failure *executionFailure
+		if errors.As(err, &failure) {
+			failureKind = failure.kind
+		}
 		status = "failed"
 		message = err.Error()
 		if cause := context.Cause(ctx); cause != nil {
@@ -129,9 +134,17 @@ func Run(processContext context.Context, input io.Reader, output io.Writer) erro
 			}
 		}
 	}
-	emit.emit(Event{Kind: "finished", Payload: map[string]any{"status": status, "error": message}})
+	emit.emit(Event{Kind: "finished", Payload: map[string]any{"status": status, "error": message, "failure_kind": failureKind}})
 	return err
 }
+
+type executionFailure struct {
+	kind  string
+	cause error
+}
+
+func (failure *executionFailure) Error() string { return failure.cause.Error() }
+func (failure *executionFailure) Unwrap() error { return failure.cause }
 
 func execute(ctx context.Context, input Input, emit *emitter) error {
 	assignment := input.Assignment
@@ -145,21 +158,41 @@ func execute(ctx context.Context, input Input, emit *emitter) error {
 	defer os.RemoveAll(base)
 	workspace := filepath.Join(base, "source")
 	if err := checkout(ctx, input, base, workspace, emit); err != nil {
+		return &executionFailure{"source", err}
+	}
+	scripts := filepath.Join(base, "scripts")
+	if err := os.Mkdir(scripts, 0700); err != nil {
 		return err
+	}
+	for _, script := range assignment.Scripts {
+		if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$`).MatchString(script.Name) {
+			return errors.New("invalid external script name")
+		}
+		digest := sha256.Sum256([]byte(script.Content))
+		if hex.EncodeToString(digest[:]) != script.Sha256 {
+			return errors.New("external script digest mismatch")
+		}
+		if err := os.WriteFile(filepath.Join(scripts, script.Name), []byte(script.Content), 0700); err != nil {
+			return err
+		}
 	}
 	for index, step := range assignment.Steps {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		environment := append([]string(nil), os.Environ()...)
+		if assignment.Source != nil {
+			environment = buildEnvironment()
+		}
 		for key, value := range assignment.Environment {
 			environment = append(environment, key+"="+value)
 		}
+		environment = append(environment, "ARTIFACTORY_SCRIPT_DIR="+scripts, "ARTIFACTORY_WORK_DIR="+base, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
 		if step.Phase == "sign" || step.Phase == "verify" {
 			for _, name := range assignment.SigningProfiles {
 				profile, exists := input.Config.SigningProfiles[name]
 				if !exists {
-					return fmt.Errorf("local signing profile unavailable: %s", name)
+					return &executionFailure{"authorization", fmt.Errorf("local signing profile unavailable: %s", name)}
 				}
 				for key, value := range profile {
 					environment = append(environment, key+"="+value)
@@ -177,6 +210,9 @@ func execute(ctx context.Context, input Input, emit *emitter) error {
 		command.Stderr = command.Stdout
 		stepContext, cancel := context.WithTimeout(ctx, time.Duration(step.TimeoutSeconds)*time.Second)
 		err = runCommand(stepContext, command)
+		if sourceError := verifySource(stepContext, input, workspace); sourceError != nil {
+			err = sourceError
+		}
 		cancel()
 		exit := 0
 		if err != nil {
@@ -203,7 +239,7 @@ func execute(ctx context.Context, input Input, emit *emitter) error {
 	control := pb.NewControlClient(connection)
 	for _, path := range files {
 		if err = upload(ctx, input, control, workspace, path); err != nil {
-			return err
+			return &executionFailure{"artifact_transport", err}
 		}
 	}
 	return nil
@@ -247,6 +283,9 @@ func runCommand(ctx context.Context, command *exec.Cmd) error {
 }
 
 func checkout(ctx context.Context, input Input, base, workspace string, emit *emitter) error {
+	if input.Assignment.Source != nil {
+		return checkoutPlatform(ctx, input, base, workspace, emit)
+	}
 	authDir := filepath.Join(base, "auth")
 	if err := os.Mkdir(authDir, 0700); err != nil {
 		return err
@@ -263,7 +302,7 @@ func checkout(ctx context.Context, input Input, base, workspace string, emit *em
 			if err != nil {
 				return err
 			}
-			environment = append(environment, "GIT_ASKPASS="+executable, "AK_GIT_ASKPASS=1", "AK_GIT_USERNAME="+auth.Username, "AK_GIT_PASSWORD="+auth.Secret)
+			environment = append(environment, "GIT_ASKPASS="+executable, "ARTIFACTORY_GIT_ASKPASS=1", "ARTIFACTORY_GIT_USERNAME="+auth.Username, "ARTIFACTORY_GIT_PASSWORD="+auth.Secret)
 		case "ssh":
 			if auth.KnownHosts == "" {
 				return errors.New("SSH host trust is required")
@@ -354,8 +393,8 @@ func upload(ctx context.Context, input Input, control pb.ControlClient, root, pa
 func Askpass(arguments []string) {
 	query := strings.Join(arguments, " ")
 	if strings.Contains(strings.ToLower(query), "username") {
-		fmt.Println(os.Getenv("AK_GIT_USERNAME"))
+		fmt.Println(os.Getenv("ARTIFACTORY_GIT_USERNAME"))
 	} else {
-		fmt.Println(os.Getenv("AK_GIT_PASSWORD"))
+		fmt.Println(os.Getenv("ARTIFACTORY_GIT_PASSWORD"))
 	}
 }

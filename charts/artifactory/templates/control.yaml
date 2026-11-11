@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "artifactory.fullname" . }}-control
+  labels:
+    {{- include "artifactory.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "artifactory.selector" . | nindent 6 }}
+      app.kubernetes.io/component: control
+  template:
+    metadata:
+      labels:
+        {{- include "artifactory.selector" . | nindent 8 }}
+        app.kubernetes.io/component: control
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/config.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: control
+          image: "{{ .Values.images.control.repository }}:{{ .Values.images.control.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.images.control.pullPolicy }}
+          securityContext:
+            {{- include "artifactory.containerSecurity" . | nindent 12 }}
+          ports:
+            - {name: http, containerPort: 8080}
+            - {name: grpc, containerPort: 8443}
+          envFrom:
+            - configMapRef:
+                name: {{ include "artifactory.fullname" . }}-config
+          env:
+            {{- $secret := include "artifactory.credentials" . }}
+            {{- range $env, $key := dict "DATABASE_URL" "database-url" "ARTIFACTORY_MASTER_KEY" "master-key" "ARTIFACTORY_S3_ACCESS_KEY" "s3-access-key" "ARTIFACTORY_S3_SECRET_KEY" "s3-secret-key" "ARTIFACTORY_BOOTSTRAP_USERNAME" "bootstrap-username" "ARTIFACTORY_BOOTSTRAP_PASSWORD" "bootstrap-password" }}
+            - name: {{ $env }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $key }}
+            {{- end }}
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.resources.control | nindent 12 }}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/artifactory}
+            - {name: pki, mountPath: /run/artifactory-pki, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "artifactory.fullname" . }}-control
+        - name: pki
+          secret:
+            secretName: {{ include "artifactory.pki" . }}
+            defaultMode: 0440
+        - name: tmp
+          emptyDir: {sizeLimit: 1Gi}
