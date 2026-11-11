@@ -40,11 +40,11 @@ export function NodeOTA({ node, user, releases, updates, reload }: { node: Node;
   return <div className="mt-4 space-y-3 border-t border-border pt-4 text-xs" data-testid="node-ota">
     <dl className="grid grid-cols-2 gap-x-4 gap-y-2">
       <dt className="text-muted-foreground">{t("ota.current")}</dt><dd className="break-all font-mono">{node.agent_current_version || node.diagnostics.agent_version || "—"}</dd>
-      <dt className="text-muted-foreground">{t("ota.target")}</dt><dd className="break-all font-mono">{desired || t("ota.disabled")}</dd>
+      <dt className="text-muted-foreground">{t("ota.target")}</dt><dd className="break-all font-mono">{active?.version || desired || t("ota.disabled")}</dd>
       <dt className="text-muted-foreground">{t("ota.launcher")}</dt><dd className="font-mono">{node.agent_launcher_version || "—"}</dd>
       <dt className="text-muted-foreground">{t("ota.phase")}</dt><dd>{supported ? t(`ota.stages.${latest?.status || "idle"}`) : t("ota.bootstrap")}</dd>
     </dl>
-    {node.ota_draining && <p className="notice">{t("ota.drainHint")}</p>}
+    {node.ota_draining && <p className="notice">{t(active?.status === "activating" ? "ota.activatingHint" : "ota.drainHint")}</p>}
     {node.agent_pool_paused && <p className="text-amber-600 dark:text-amber-400">{t("ota.poolPaused")}</p>}
     {latest?.error && <p className="break-words text-destructive" role="status">{latest.error}</p>}
     {latest?.status === "rolled_back" && <p>{t("ota.restored", { version: node.agent_current_version || "—" })}</p>}

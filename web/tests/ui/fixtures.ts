@@ -104,7 +104,7 @@ export const build: Build = {
   config_yaml:
     "version: 1\n# 原始配置，不翻译\ntargets:\n  macos:\n    os: darwin\n",
 };
-const nodes: Node[] = [
+export const nodes: Node[] = [
   {
     id: "node-main",
     name: "Mac Studio",

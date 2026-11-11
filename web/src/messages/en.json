@@ -367,6 +367,7 @@
     "disabled": "No target",
     "bootstrap": "OTA bootstrap required",
     "drainHint": "Draining for update: waiting for builds, artifacts and log acknowledgments.",
+    "activatingHint": "Verifying the new version. Tasks resume after confirmation or rollback.",
     "poolPaused": "Further pool updates are paused. Inspect the failure, then retry.",
     "restored": "Restored {version}",
     "setTarget": "Set / roll back version",

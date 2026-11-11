@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { fixtureAPI } from "./fixtures";
+import { fixtureAPI, nodes } from "./fixtures";
 
 for (const role of ["admin", "viewer"] as const) {
   test(`${role}: OTA version import and node controls respect role`, async ({ page }) => {
@@ -26,3 +26,15 @@ for (const role of ["admin", "viewer"] as const) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
   });
 }
+
+test("a retried version stays visible while its configured target differs", async ({ page }) => {
+  await fixtureAPI(page);
+  await page.route("**/api/v1/nodes", route => route.fulfill({ json: [{ ...nodes[0], capabilities: ["agent-ota-v1"], agent_current_version: "v-good", agent_desired_release: "good", ota_draining: true }] }));
+  await page.route("**/api/v1/agent-releases", route => route.fulfill({ json: [{ id: "good", version: "v-good" }] }));
+  await page.route("**/api/v1/agent-updates", route => route.fulfill({ json: [{ id: "retry", node_id: nodes[0].id, version: "v-retried", status: "activating", finished_at: null }] }));
+  await page.goto("/nodes");
+  const panel = page.getByTestId("node-ota");
+  await expect(panel.getByText("v-retried", { exact: true })).toBeVisible();
+  await expect(panel).toContainText("正在验证新版本");
+  await expect(panel).not.toContainText("升级排空中");
+});

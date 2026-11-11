@@ -367,6 +367,7 @@
     "disabled": "未指定版本",
     "bootstrap": "需要安装 OTA 支持",
     "drainHint": "升级排空中：等待构建、产物和日志确认完成。",
+    "activatingHint": "正在验证新版本；成功或回滚后恢复接收任务。",
     "poolPaused": "节点池后续升级已暂停，请检查失败原因后重试。",
     "restored": "已恢复至 {version}",
     "setTarget": "指定版本 / 回退版本",
