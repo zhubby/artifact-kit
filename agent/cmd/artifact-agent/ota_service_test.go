@@ -46,23 +46,34 @@ func waitOTA(t *testing.T, directory, phase string) ota.State {
 	t.Helper()
 	deadline := time.Now().Add(100 * time.Second)
 	for time.Now().Before(deadline) {
-		state, err := ota.Snapshot(directory)
+		state, err := serviceOTASnapshot(directory)
 		if err == nil && state.Phase == phase {
 			return state
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	state, err := ota.Snapshot(directory)
+	state, err := serviceOTASnapshot(directory)
 	t.Fatalf("OTA did not reach %s: %+v (%v)", phase, state, err)
 	return state
 }
 
-func exerciseServiceOTA(t *testing.T, key ed25519.PrivateKey, configPath string, peer *servicePeer, connection serviceConnection) {
-	t.Helper()
-	cfg, err := ota.Load(configPath)
-	if err != nil {
-		t.Fatal(err)
+func serviceOTASnapshot(directory string) (ota.State, error) {
+	if os.Getenv("AK_NATIVE_SERVICE_TESTS") != "1" || runtime.GOOS == "windows" {
+		return ota.Snapshot(directory)
 	}
+	// The installed service's 0700 directory belongs to its own account.
+	// Read only the journal through the VM's test administrator, preserving
+	// the production ownership and permissions being exercised.
+	data, err := nativeCommand(nil, true, "cat", filepath.Join(directory, "state.json"))
+	var state ota.State
+	if err == nil {
+		err = json.Unmarshal([]byte(data), &state)
+	}
+	return state, err
+}
+
+func exerciseServiceOTA(t *testing.T, key ed25519.PrivateKey, directory string, peer *servicePeer, connection serviceConnection) {
+	t.Helper()
 	binary := filepath.Join(t.TempDir(), "candidate")
 	if runtime.GOOS == "windows" {
 		binary += ".exe"
@@ -97,14 +108,14 @@ func exerciseServiceOTA(t *testing.T, key ed25519.PrivateKey, configPath string,
 		}
 	}
 	send(connection, "native-good", "v-ota-native-b", 1, good)
-	state := waitOTA(t, cfg.Directory, "succeeded")
+	state := waitOTA(t, directory, "succeeded")
 	if state.Current.Version != "v-ota-native-b" || state.Previous.Version != "0.1.0" {
 		t.Fatalf("wrong committed versions: %+v", state)
 	}
 	awaitServiceDisconnect(t, connection)
 	candidate := awaitServiceConnection(t, peer)
 	send(candidate, "native-bad", "v-ota-native-bad", 2, bad)
-	state = waitOTA(t, cfg.Directory, "rolled_back")
+	state = waitOTA(t, directory, "rolled_back")
 	if state.Current.Version != "v-ota-native-b" || state.Error == "" {
 		t.Fatalf("failed to restore last good binary: %+v", state)
 	}
@@ -112,7 +123,7 @@ func exerciseServiceOTA(t *testing.T, key ed25519.PrivateKey, configPath string,
 	// A delayed replay of an older command cannot reapply an old release.
 	send(restored, "native-good", "v-ota-native-b", 1, good)
 	time.Sleep(time.Second)
-	state, err = ota.Snapshot(cfg.Directory)
+	state, err = serviceOTASnapshot(directory)
 	if err != nil || state.UpdateID != "native-bad" || state.Phase != "rolled_back" {
 		t.Fatalf("stale command restarted an update: %+v (%v)", state, err)
 	}
@@ -149,7 +160,7 @@ func TestOTASupervisorMTLSUpgradeAndRollback(t *testing.T) {
 		}
 	})
 	first := awaitServiceConnection(t, peer)
-	exerciseServiceOTA(t, key, path, peer, first)
+	exerciseServiceOTA(t, key, filepath.Join(root, "ota"), peer, first)
 }
 
 func TestOTASupervisorStopsActiveWorker(t *testing.T) {

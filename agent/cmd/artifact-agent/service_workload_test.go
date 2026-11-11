@@ -229,6 +229,9 @@ func sameServiceUser(actual, expected string) bool {
 		if actual == "" {
 			return false
 		}
+		if _, local, qualified := strings.Cut(expected, `\`); qualified {
+			expected = local
+		}
 	}
 	return strings.EqualFold(actual, expected)
 }

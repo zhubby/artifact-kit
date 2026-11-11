@@ -395,7 +395,7 @@ func TestNativeServiceLifecycle(test *testing.T) {
 	awaitNativeService(test, false)
 	action("start")
 	otaConnection := awaitServiceConnection(test, peer)
-	exerciseServiceOTA(test, otaKey, configPath, peer, otaConnection)
+	exerciseServiceOTA(test, otaKey, filepath.Join(configuration.Root, "ota"), peer, otaConnection)
 	action("stop")
 	awaitNativeService(test, false)
 	action("uninstall")
