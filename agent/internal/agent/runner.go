@@ -62,6 +62,7 @@ type Runner struct {
 	capabilities    []string
 	workers         int
 	workerExit      sync.WaitGroup
+	stopping        bool
 	otaSession      string
 	otaHealthAt     time.Time
 	otaDrainRequest string
@@ -93,7 +94,9 @@ func Run(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	defer logConnection.Close()
-	go runner.logLoop(ctx, pb.NewControlClient(logConnection))
+	logContext, stopLogs := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopLogs()
+	go runner.logLoop(logContext, pb.NewControlClient(logConnection))
 	go runner.leaseLoop(ctx)
 	defer runner.stop()
 	delay := time.Second
@@ -159,7 +162,8 @@ func (runner *Runner) heartbeat(kind string) *pb.AgentEvent {
 }
 
 func (runner *Runner) session(ctx context.Context, control pb.ControlClient) error {
-	ctx, cancel := context.WithCancel(ctx)
+	stopRequested := ctx.Done()
+	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
 	stream, err := control.Connect(ctx)
 	if err != nil {
@@ -191,10 +195,25 @@ func (runner *Runner) session(ctx context.Context, control pb.ControlClient) err
 	beat := time.NewTicker(10 * time.Second)
 	defer beat.Stop()
 	runner.wake()
+	var drainTimeout <-chan time.Time
+	draining := false
 	for {
+		if draining && runner.settled() {
+			return nil
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-stopRequested:
+			// Keep this authenticated stream and log transport alive while
+			// Workers cancel and their final events are acknowledged.
+			runner.stop()
+			stopRequested = nil
+			draining = true
+			drainTimeout = time.After(5 * time.Second)
+			runner.wake()
+		case <-drainTimeout:
+			return nil
 		case err := <-failures:
 			return err
 		case command := <-commands:
@@ -227,6 +246,10 @@ func (runner *Runner) sendPending(stream pb.Control_ConnectClient) error {
 	for _, current := range tasks {
 		runner.mutex.Lock()
 		if !current.started {
+			if runner.stopping {
+				runner.mutex.Unlock()
+				continue
+			}
 			request := identifier()
 			runner.anchors[request] = time.Now()
 			event := &pb.AgentEvent{AgentId: runner.config.AgentID, Kind: "accept", AttemptId: current.id, LeaseToken: current.token, CommandId: request}
@@ -260,7 +283,7 @@ func (runner *Runner) command(command *pb.Command) error {
 	runner.mutex.Lock()
 	current := runner.tasks[command.AttemptId]
 	if command.Kind == "assign" {
-		if current == nil && command.Assignment != nil && len(runner.tasks) < 32 {
+		if !runner.stopping && current == nil && command.Assignment != nil && len(runner.tasks) < 32 {
 			runner.tasks[command.AttemptId] = &task{id: command.AttemptId, token: command.LeaseToken, assignment: command.Assignment, deadline: time.Now().Add(time.Duration(command.LeaseSeconds) * time.Second)}
 		}
 		runner.mutex.Unlock()
@@ -300,6 +323,10 @@ func (runner *Runner) command(command *pb.Command) error {
 	}
 	switch command.Kind {
 	case "start", "renew":
+		if runner.stopping && !current.started {
+			runner.mutex.Unlock()
+			return nil
+		}
 		anchor, known := runner.anchors[command.RequestId]
 		if !known {
 			runner.mutex.Unlock()
@@ -475,6 +502,7 @@ func (runner *Runner) leaseLoop(ctx context.Context) {
 
 func (runner *Runner) stop() {
 	runner.mutex.Lock()
+	runner.stopping = true
 	tasks := make([]*task, 0, len(runner.tasks))
 	for _, current := range runner.tasks {
 		tasks = append(tasks, current)
@@ -491,6 +519,19 @@ func (runner *Runner) stop() {
 	// Workers finish cancellation, process-tree cleanup and workspace removal
 	// before the runtime exits. The service launcher bounds a stuck shutdown.
 	runner.workerExit.Wait()
+}
+
+func (runner *Runner) settled() bool {
+	runner.mutex.Lock()
+	defer runner.mutex.Unlock()
+	for _, current := range runner.tasks {
+		if current.started {
+			return false
+		}
+	}
+	runner.spoolMutex.Lock()
+	defer runner.spoolMutex.Unlock()
+	return runner.workers == 0 && runner.spoolBytes == 0
 }
 
 type logRecord struct {

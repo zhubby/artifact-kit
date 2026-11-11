@@ -23,7 +23,7 @@ func TestForegroundAgentStopsActiveProcessTree(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	for _, scenario := range []string{"interrupt", "agent-crash", "worker-sigterm", "replayed-before-tree", "replayed-before-success"} {
+	for _, scenario := range []string{"interrupt", "agent-sigpipe", "agent-crash", "worker-sigterm", "replayed-before-tree", "replayed-before-success"} {
 		test.Run(scenario, func(test *testing.T) {
 			private, err := filepath.EvalSymlinks(test.TempDir())
 			if err != nil {
@@ -78,6 +78,19 @@ func TestForegroundAgentStopsActiveProcessTree(test *testing.T) {
 					test.Logf("Worker SIGTERM terminal event: %s", event.PayloadJson)
 				case <-time.After(10 * time.Second):
 					test.Fatal("Agent did not observe Worker termination")
+				}
+			}
+			if scenario == "agent-sigpipe" {
+				// A closed network socket may deliver SIGPIPE. Only the
+				// Worker's stdout pipe uses it as a parent-exit signal.
+				if err := syscall.Kill(command.Process.Pid, syscall.SIGPIPE); err != nil {
+					test.Fatal(err)
+				}
+				select {
+				case err := <-done:
+					waited = true
+					test.Fatalf("network SIGPIPE stopped the Agent: %v", err)
+				case <-time.After(3 * time.Second):
 				}
 			}
 			if scenario == "agent-crash" {

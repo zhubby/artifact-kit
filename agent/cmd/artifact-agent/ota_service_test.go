@@ -214,4 +214,12 @@ func TestOTASupervisorStopsActiveWorker(t *testing.T) {
 	}
 	awaitServiceDisconnect(t, connection)
 	treeStopped()
+	select {
+	case event := <-connection.finished:
+		if event.AttemptId != id {
+			t.Fatalf("shutdown acknowledged a different task: %s", event.AttemptId)
+		}
+	default:
+		t.Fatal("service stopped before its Worker terminal event was acknowledged")
+	}
 }

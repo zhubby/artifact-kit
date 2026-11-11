@@ -8,6 +8,10 @@ import (
 	"os/signal"
 )
 
+func agentSignalContext() (context.Context, context.CancelFunc) {
+	return workerSignalContext()
+}
+
 func workerSignalContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt)
 }

@@ -79,7 +79,7 @@ func run() error {
 	if *configPath == "" {
 		return errors.New("--config is required when the account has no configuration directory")
 	}
-	ctx, cancel := workerSignalContext()
+	ctx, cancel := agentSignalContext()
 	defer cancel()
 	switch os.Args[1] {
 	case "ota-init":
