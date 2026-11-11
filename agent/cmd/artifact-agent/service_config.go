@@ -18,6 +18,9 @@ func configureService(settings *service.Config, configPath string) error {
 		// That account cannot create the dependency's default /var/log files;
 		// its existing private configuration directory is writable by design.
 		settings.Option["LogDirectory"] = filepath.Dir(configPath)
+		// launchd's default deadline can be shorter than the supervisor's
+		// eight-second fallback. Let it reap a nonresponsive candidate first.
+		settings.Option["LaunchdConfig"] = launchdServiceConfig
 	}
 	if service.Platform() != "linux-systemd" {
 		return nil
