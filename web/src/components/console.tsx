@@ -2,6 +2,7 @@
 
 import { PreferencesControls } from "@/components/preferences-controls";
 import { Atmosphere } from "@/components/atmosphere";
+import { BrandMark } from "@/components/brand-mark";
 import SpotlightCard from "@/components/react-bits/SpotlightCard";
 import { useUI } from "@/components/providers";
 
@@ -12,7 +13,6 @@ import {
   Activity,
   ArrowRight,
   ArrowUpRight,
-  Box,
   Boxes,
   CheckCircle2,
   ChevronRight,
@@ -176,7 +176,7 @@ export function Console() {
       >
         <Link href="/" className="brand">
           <span className="brand-mark">
-            <Box size={22} />
+            <BrandMark />
           </span>
           artifactory
         </Link>

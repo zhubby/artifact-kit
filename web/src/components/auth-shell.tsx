@@ -2,7 +2,6 @@
 
 import type { ReactNode } from "react";
 import {
-  Box,
   CheckCircle2,
   GitBranch,
   Layers3,
@@ -10,6 +9,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { Atmosphere } from "@/components/atmosphere";
+import { BrandMark } from "@/components/brand-mark";
 import { PreferencesControls } from "@/components/preferences-controls";
 import { useUI } from "@/components/providers";
 import AnimatedContent from "@/components/react-bits/AnimatedContent";
@@ -35,7 +35,7 @@ export function AuthShell({
       <aside className="login-story">
         <div className="flex items-center gap-3 text-xl font-medium">
           <div className="brand-mark">
-            <Box size={22} />
+            <BrandMark />
           </div>
           artifactory
           <span className="ml-2 rounded border border-border px-2 py-1 font-mono text-[9px] text-muted-foreground">
