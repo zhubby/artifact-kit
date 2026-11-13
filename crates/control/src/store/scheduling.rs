@@ -90,7 +90,31 @@ impl ControlStore {
     }
 
     pub async fn refresh_builds(&self) -> Result<()> {
-        sql::execute(&mut self.pool.clone(), "WITH summaries AS (SELECT b.id, CASE WHEN b.cancel_requested THEN CASE WHEN bool_or(j.status IN ('leased','running')) THEN 'canceling' ELSE 'canceled' END WHEN bool_or(j.status='running') THEN 'running' WHEN bool_or(j.status IN ('queued','leased')) THEN 'queued' WHEN bool_or(j.status='failed') THEN 'failed' WHEN bool_or(j.status='lost') THEN 'lost' WHEN bool_or(j.status='canceled') THEN 'canceled' ELSE 'succeeded' END AS status FROM builds b JOIN jobs j ON j.build_id=b.id WHERE b.status NOT IN ('resolving','planning','replanning','needs_input') GROUP BY b.id) UPDATE builds b SET status=s.status,finished_at=CASE WHEN s.status IN ('succeeded','failed','lost','canceled') THEN coalesce(b.finished_at,now()) ELSE NULL END FROM summaries s WHERE b.id=s.id", params![]).await?;
+        // Aggregation precedes the UPDATE's row lock. Fence its snapshot by the
+        // build's row version so waiting behind a retry or planning transition
+        // cannot restore an obsolete terminal state after that action commits.
+        sql::execute(
+            &mut self.pool.clone(),
+            "WITH summaries AS (
+                SELECT b.id,b.xmin AS version,
+                    CASE WHEN b.cancel_requested THEN
+                        CASE WHEN bool_or(j.status IN ('leased','running')) THEN 'canceling' ELSE 'canceled' END
+                    WHEN bool_or(j.status='running') THEN 'running'
+                    WHEN bool_or(j.status IN ('queued','leased')) THEN 'queued'
+                    WHEN bool_or(j.status='failed') THEN 'failed'
+                    WHEN bool_or(j.status='lost') THEN 'lost'
+                    WHEN bool_or(j.status='canceled') THEN 'canceled'
+                    ELSE 'succeeded' END AS status
+                FROM builds b JOIN jobs j ON j.build_id=b.id
+                WHERE b.status NOT IN ('resolving','planning','replanning','needs_input')
+                GROUP BY b.id,b.xmin
+            )
+            UPDATE builds b SET status=s.status,
+                finished_at=CASE WHEN s.status IN ('succeeded','failed','lost','canceled') THEN coalesce(b.finished_at,now()) ELSE NULL END
+            FROM summaries s WHERE b.id=s.id AND b.xmin=s.version",
+            params![],
+        )
+        .await?;
         Ok(())
     }
 

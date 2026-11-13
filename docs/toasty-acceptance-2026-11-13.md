@@ -30,6 +30,8 @@ baseline 对照计数（完整结果保存在私有 `.local/schema-parity.json`�
 
 Toasty 原版连接丢失后的 panic 已在隔离测试中复现；本地修订保留上游发布包来源、校验和及许可证。流式结果需在读取期间持有连接，提前结束时发送取消请求并关闭物理连接；仅关闭 socket 不足以中断 PostgreSQL 的锁等待。连接复用、提前结束、中途 SQL 错误及锁等待取消的 4 项新增回归通过。详见 [Toasty 修订](../vendor/toasty/PATCH.md) 与 [PostgreSQL 驱动修订](../vendor/toasty-driver-postgresql/PATCH.md)。
 
+流式版本复验还暴露了既有构建汇总竞争：汇总在获得构建行锁前读取任务状态，等锁后可用旧的 `failed` 覆盖刚提交的重试/规划状态。确定性测试在修复前失败；汇总 SQL 增加 `xmin` 行版本条件后通过，并保留单语句更新和原锁顺序。失败的原生运行 `09c822e68608` 不计入通过结果，最终原生复验仍在进行。
+
 原生与协议的完整日志保存在 `.local/toasty-native-final.log`、`.local/toasty-protocol-final.log`，不包含在发布包中。上述部署验收针对 `88c7ad5`；流式优化后的性能对照已通过，部署复验仍在进行，本记录尚不构成切换的 Go 决定。`native_service_lifecycle` 仅允许在可丢弃的 GitHub 托管 VM 创建服务账户，本机没有执行它。
 
 ## 性能对照
@@ -44,7 +46,7 @@ Toasty 原版连接丢失后的 panic 已在隔离测试中复现；本地修订
 | 遥测读取 | 35.142 ms | 36.403 ms | +3.59% | 通过 |
 | 遥测写入 | 115.901 ms | 66.542 ms | -42.59% | 通过 |
 
-[全部轮次与基线二进制校验和](acceptance/toasty/2026-11-13-performance.json)随代码保存。内存测试同时覆盖 393 MB 与 786 MB 的完整候选数据，客户端分配峰值均约 8.9 MB。
+[全部轮次与基线二进制校验和](acceptance/toasty/2026-11-13-performance.json)随代码保存，记录的流式实现为 `b359028`；后续汇总行版本修复不涉及这两个性能测试的计时调用路径。内存测试同时覆盖 393 MB 与 786 MB 的完整候选数据，客户端分配峰值均约 8.9 MB。
 
 ## 切换准备
 

@@ -883,6 +883,91 @@ impl Database {
 
 #[tokio::test]
 #[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
+async fn build_summary_cannot_overwrite_retry_or_planning_committed_while_waiting() {
+    let database = Database::new().await;
+    for next in ["queued", "planning"] {
+        let (_, build, job) = database.fixture().await;
+        sql::execute(
+            &mut database.pool.clone(),
+            "UPDATE jobs SET status='failed' WHERE id=$1",
+            params![job],
+        )
+        .await
+        .unwrap();
+        sql::execute(
+            &mut database.pool.clone(),
+            "UPDATE builds SET status='failed',finished_at=now() WHERE id=$1",
+            params![build],
+        )
+        .await
+        .unwrap();
+
+        let mut writer_db = database.pool.clone();
+        let mut writer = writer_db.transaction().await.unwrap();
+        let backend: i32 = sql::scalar(&mut writer, "SELECT pg_backend_pid()", params![])
+            .await
+            .unwrap();
+        sql::execute(
+            &mut writer,
+            "SELECT id FROM builds WHERE id=$1 FOR UPDATE",
+            params![build],
+        )
+        .await
+        .unwrap();
+        let store = database.state.store.clone();
+        let summary = tokio::spawn(async move { store.refresh_builds().await });
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                let blocked: bool = sql::scalar(&mut database.pool.clone(), "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)) AND query LIKE 'WITH summaries%')", params![backend]).await.unwrap();
+                if blocked { break; }
+                tokio::task::yield_now().await;
+            }
+        }).await.unwrap();
+        // The summary already read the old failed jobs. Commit the same atomic
+        // job/build transition used by a retry while it waits for the build.
+        sql::execute(
+            &mut writer,
+            "UPDATE jobs SET status='queued' WHERE id=$1",
+            params![job],
+        )
+        .await
+        .unwrap();
+        sql::execute(
+            &mut writer,
+            "UPDATE builds SET status=$2,finished_at=NULL WHERE id=$1",
+            params![build, next],
+        )
+        .await
+        .unwrap();
+        writer.commit().await.unwrap();
+        summary.await.unwrap().unwrap();
+        let current: (String, Option<chrono::DateTime<chrono::Utc>>) = sql::tuple(
+            &mut database.pool.clone(),
+            "SELECT status,finished_at FROM builds WHERE id=$1",
+            params![build],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            current,
+            (next.into(), None),
+            "a stale summary must not replace a newly committed state"
+        );
+        database.state.store.refresh_builds().await.unwrap();
+        let status: String = sql::scalar(
+            &mut database.pool.clone(),
+            "SELECT status FROM builds WHERE id=$1",
+            params![build],
+        )
+        .await
+        .unwrap();
+        assert_eq!(status, next);
+    }
+    database.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
 async fn concurrent_schedulers_do_not_double_assign_or_exceed_slots() {
     let database = Database::new().await;
     let (_, _, job) = database.fixture().await;
