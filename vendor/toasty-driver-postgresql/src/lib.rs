@@ -113,8 +113,9 @@ impl PostgreSQL {
     /// (server startup options such as `-c search_path=my_schema`,
     /// applied to every connection the pool creates), plus the TLS
     /// parameters `sslmode`, `sslrootcert`, `sslcert`, `sslkey`,
-    /// `channel_binding`, and `sslnegotiation`. Unrecognized parameters
-    /// are ignored.
+    /// `channel_binding`, and `sslnegotiation`. SQLx-compatible aliases
+    /// `ssl-mode`, `ssl-root-cert` / `ssl-ca`, `ssl-cert`, and `ssl-key`
+    /// are also accepted. Unrecognized parameters are ignored.
     pub fn new(url: impl Into<String>) -> Result<Self> {
         let url_str = url.into();
         let url = ConnectionUrl::parse(&url_str)?;
@@ -205,7 +206,7 @@ impl PostgreSQL {
 
         #[cfg(not(feature = "tls"))]
         for (key, value) in url.query_pairs() {
-            if key == "sslmode" && value != "disable" {
+            if matches!(key.as_ref(), "sslmode" | "ssl-mode") && value != "disable" {
                 return Err(toasty_core::Error::invalid_connection_url(
                     "TLS not available: compile with the `tls` feature",
                 ));

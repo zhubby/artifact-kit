@@ -17,7 +17,7 @@ pub(crate) fn configure_tls(
 
     for (key, value) in url.query_pairs() {
         match key.as_ref() {
-            "sslmode" => {
+            "sslmode" | "ssl-mode" => {
                 sslmode = match value.as_ref() {
                     "disable" => SslVerifyMode::Disable,
                     "prefer" => SslVerifyMode::Prefer,
@@ -31,13 +31,13 @@ pub(crate) fn configure_tls(
                     }
                 };
             }
-            "sslrootcert" => {
+            "sslrootcert" | "ssl-root-cert" | "ssl-ca" => {
                 sslrootcert = Some(value.into_owned());
             }
-            "sslcert" => {
+            "sslcert" | "ssl-cert" => {
                 sslcert = Some(value.into_owned());
             }
-            "sslkey" => {
+            "sslkey" | "ssl-key" => {
                 sslkey = Some(value.into_owned());
             }
             "channel_binding" => {

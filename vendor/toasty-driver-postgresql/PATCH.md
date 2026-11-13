@@ -1,9 +1,16 @@
-# Toasty PostgreSQL 0.11.0 bounded native results
+# Toasty PostgreSQL 0.11.0 local patches
 
 Source: the published `toasty-driver-postgresql` 0.11.0 crate from
 https://github.com/tokio-rs/toasty, MIT license. `upstream.json` records the
 published package checksum, VCS metadata and original file hashes. The license,
 original manifest and VCS record are retained alongside the modified sources.
+
+TLS URL parsing also accepts SQLx 0.8.6's `ssl-mode`, `ssl-root-cert` / `ssl-ca`,
+`ssl-cert`, and `ssl-key` aliases. They follow the same validation and query-order
+precedence as their canonical names, so existing verification and client identity
+settings cannot silently fall back to `prefer`. Without the TLS feature, a secure
+`ssl-mode` is rejected just like `sslmode`. Workspace regressions in
+`crates/database/tests/tls.rs` validate these options without opening a connection.
 
 The driver uses `Client::query_raw` instead of `Client::query` for returning
 statements. Rows are decoded fallibly as Toasty consumes the stream, retaining

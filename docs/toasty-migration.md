@@ -20,7 +20,7 @@ HTTP、gRPC、调度和后台任务通过业务服务调用 store。连接、模
 
 数据库时间使用 jiff，在 store 边界转换为 chrono UTC，精度固定到 PostgreSQL 微秒。JSON null 与 SQL NULL、空 UUID 数组与 NULL 数组分别编码。约束错误通过驱动的 SQLSTATE 分类，保留 400/404/409 和现有 gRPC 状态码，不匹配错误文本。
 
-Toasty 固定为 0.11.0。连接丢失、异步回滚和原生结果流的本地修订见 `vendor/toasty/PATCH.md` 与 `vendor/toasty-driver-postgresql/PATCH.md`，原始发布包的校验和与逐文件来源见各目录中的 `upstream.json`。
+Toasty 固定为 0.11.0。连接丢失、异步回滚、原生结果流和 SQLx TLS 参数别名兼容的本地修订见 `vendor/toasty/PATCH.md` 与 `vendor/toasty-driver-postgresql/PATCH.md`，原始发布包的校验和与逐文件来源见各目录中的 `upstream.json`。已有 URL 中的 `ssl-mode`、`ssl-root-cert` / `ssl-ca`、`ssl-cert` 和 `ssl-key` 继续按对应的标准参数校验。
 
 ## 数据库初始化
 
@@ -31,6 +31,8 @@ Toasty 固定为 0.11.0。连接丢失、异步回滚和原生结果流的本地
 - Telemetry 写连接迁移 Telemetry；查询连接和业务授权连接保持只读并校验已知版本。
 
 每套 baseline 使用 Toasty `embed_migrations!`，迁移历史保存在 `__toasty_migrations`。迁移期间持有数据库级 advisory 事务锁。空库初始化、重复启动和并发启动均可执行；未识别的表、函数、类型或迁移版本会使启动失败。不会清空数据库或接受旧 `_sqlx_migrations`。
+
+Control 初始化后、Telemetry 启动前，按 [遥测授权说明](telemetry.md#传输故障与权限) 为独立业务授权角色执行 `deploy/telemetry-business-readonly.sql`。该角色只读取 `nodes`、`attempts` 和 `__toasty_migrations`，不执行迁移；数据库版本不符时仍拒绝启动。
 
 迁移前检查各服务实际注入的 DATABASE_URL。新旧数据库名必须不同，新系统的对象存储使用新 bucket。不要复用旧 PVC 或 Compose volume。使用独立目录保存新旧配置，权限为目录 0700、文件 0600，不把含密码的 URL 放入终端历史或日志。
 

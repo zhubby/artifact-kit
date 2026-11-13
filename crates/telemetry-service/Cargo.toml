@@ -26,3 +26,4 @@ uuid = { version = "1", features = ["v4", "serde"] }
 rcgen = "0.14"
 tokio-stream = { version = "0.1", features = ["net"] }
 tower = { version = "0.5", features = ["util"] }
+url = "2"

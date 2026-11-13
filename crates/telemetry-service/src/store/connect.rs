@@ -1,6 +1,6 @@
 use super::{BusinessAuthorizationRepository, TelemetryStore};
 use crate::Service;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use artifactory_database::{PoolSettings, connect as database, with_options};
 use artifactory_runtime_protocol::service;
 use std::{env, time::Duration};
@@ -28,8 +28,17 @@ pub async fn connect() -> Result<Service> {
     )
     .await?;
     artifactory_database::validate(&read, &super::MIGRATIONS).await?;
+    let authorization =
+        business_authorization(&service::required("ARTIFACTORY_BUSINESS_DATABASE_URL")?).await?;
+    Ok(Service {
+        store: TelemetryStore::new(write, read),
+        authorization,
+    })
+}
+
+async fn business_authorization(url: &str) -> Result<BusinessAuthorizationRepository> {
     let business_options = with_options(
-        &service::required("ARTIFACTORY_BUSINESS_DATABASE_URL")?,
+        url,
         &[
             ("default_transaction_read_only", "on"),
             ("statement_timeout", "3000"),
@@ -43,9 +52,10 @@ pub async fn connect() -> Result<Service> {
     .await?;
     artifactory_database::require_timescale(&business).await?;
     artifactory_database::validate_versions(&business, &[(2026111301, "0000_baseline.sql")])
-        .await?;
-    Ok(Service {
-        store: TelemetryStore::new(write, read),
-        authorization: BusinessAuthorizationRepository::new(business),
-    })
+        .await
+        .context("validate business database version: the authorization role needs SELECT on __toasty_migrations (see docs/telemetry.md)")?;
+    Ok(BusinessAuthorizationRepository::new(business))
 }
+
+#[cfg(test)]
+mod tests;
