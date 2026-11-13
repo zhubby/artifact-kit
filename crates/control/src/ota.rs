@@ -57,8 +57,8 @@ pub fn verify(raw: &[u8], signature: &str, keys: &[String]) -> Result<Manifest> 
         "incompatible manifest version or protocol"
     );
     ensure!(
-        m.assets.len() == 5,
-        "release must contain all five native platforms"
+        m.assets.len() == 6,
+        "release must contain all six native platforms"
     );
     let mut seen = std::collections::HashSet::new();
     for a in &m.assets {
@@ -69,7 +69,8 @@ pub fn verify(raw: &[u8], signature: &str, keys: &[String]) -> Result<Manifest> 
                 "linux/arm64",
                 "darwin/amd64",
                 "darwin/arm64",
-                "windows/amd64"
+                "windows/amd64",
+                "windows/arm64"
             ]
             .contains(&platform.as_str())
                 && seen.insert(platform),
@@ -317,6 +318,7 @@ mod tests {
             ("darwin", "amd64"),
             ("darwin", "arm64"),
             ("windows", "amd64"),
+            ("windows", "arm64"),
         ];
         let mut m = Manifest {
             version: "v1.2.3".into(),

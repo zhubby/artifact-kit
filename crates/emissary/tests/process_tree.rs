@@ -4,6 +4,66 @@ use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
+async fn tools_receive_eof_without_reading_parent_input() {
+    const CHILD: &str = "ARTIFACTORY_TEST_TOOL_STDIN";
+    if std::env::var(CHILD).as_deref() == Ok("1") {
+        let command = || {
+            #[cfg(unix)]
+            let mut command = Command::new("sh");
+            #[cfg(unix)]
+            command.args(["-c", "cat; printf tool-eof"]);
+            #[cfg(windows)]
+            let mut command = Command::new("pwsh");
+            #[cfg(windows)]
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[Console]::In.ReadToEnd(); Write-Output tool-eof",
+            ]);
+            command
+        };
+        let timeout = Duration::from_secs(3);
+        let (status, bytes) = process::output(command(), &CancellationToken::new(), timeout)
+            .await
+            .expect("tool must see EOF while the parent input pipe remains open");
+        assert!(status.success());
+        assert!(String::from_utf8_lossy(&bytes).contains("tool-eof"));
+        let (status, bytes) = process::probe(command(), timeout)
+            .await
+            .expect("probe must see EOF while the parent input pipe remains open");
+        assert!(status.success());
+        assert!(String::from_utf8_lossy(&bytes).contains("tool-eof"));
+        return;
+    }
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "tools_receive_eof_without_reading_parent_input",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    // Keep the parent pipe open so inheriting it makes the tool block.
+    let _input = child.stdin.take().unwrap();
+    let output = tokio::time::timeout(Duration::from_secs(15), child.wait_with_output())
+        .await
+        .expect("tool input isolation test hung")
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
 async fn process_tree_terminates_descendants() {
     let directory = tempfile::tempdir().unwrap();
     let marker = directory.path().join("descendant.pid");

@@ -272,6 +272,8 @@ pub async fn execute(input: &Input, cancel: &CancellationToken, emit: &Emitter) 
             .current_dir(&workspace)
             .env_clear()
             .envs(env)
+            // stdin carries worker leases and cancellation, never build input.
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = process::spawn(command)?;

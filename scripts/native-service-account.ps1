@@ -3,8 +3,9 @@ param(
     [Parameter(Mandatory = $true)][string]$Directory
 )
 $ErrorActionPreference = 'Stop'
-if ($env:ARTIFACTORY_NATIVE_SERVICE_TESTS -ne '1' -or $env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
-    throw 'Service account acceptance is restricted to explicitly enabled, disposable GitHub-hosted VMs.'
+$dedicated = $env:ARTIFACTORY_NATIVE_SERVICE_SCOPE -eq 'dedicated-host'
+if ($env:ARTIFACTORY_NATIVE_SERVICE_TESTS -ne '1' -or (!$dedicated -and ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted'))) {
+    throw 'Service account acceptance requires an explicitly enabled disposable runner or dedicated test host.'
 }
 $account = 'artifactory-ci'
 $marker = Join-Path $Directory 'owned-account.sid'

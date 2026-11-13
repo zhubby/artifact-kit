@@ -16,7 +16,7 @@ pub(super) struct Spool {
     next: u64,
     records: VecDeque<(PathBuf, u64)>,
     stats: Stats,
-    _lock: fs::File,
+    lock: fs::File,
 }
 impl Spool {
     pub fn open(root: PathBuf, quota: u64) -> Result<Self> {
@@ -56,7 +56,7 @@ impl Spool {
             next,
             records: records.into(),
             stats,
-            _lock: lock,
+            lock,
         };
         while spool.bytes > quota || spool.records.len() > MAX_RECORDS {
             spool.discard()?;
@@ -129,6 +129,13 @@ impl Spool {
         self.stats.dropped
     }
 }
+impl Drop for Spool {
+    fn drop(&mut self) {
+        // Closing our descriptor alone can retain flock during a concurrent
+        // fork/exec. Release ownership before any inherited descriptor closes.
+        let _ = fs2::FileExt::unlock(&self.lock);
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -147,6 +154,21 @@ mod tests {
             processes: vec![],
             inventory: None,
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn releases_lock_while_a_forked_descriptor_is_still_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let spool = Spool::open(dir.path().into(), 800).unwrap();
+        // A forked child holds the same open file description until exec closes
+        // its CLOEXEC descriptors. A duplicate reproduces that interval.
+        let inherited = spool.lock.try_clone().unwrap();
+        assert!(Spool::open(dir.path().into(), 800).is_err());
+        drop(spool);
+        let reopened = Spool::open(dir.path().into(), 800).unwrap();
+        assert!(Spool::open(dir.path().into(), 800).is_err());
+        drop(inherited);
+        drop(reopened);
     }
     #[test]
     fn quota_eviction_survives_restart_and_late_ack() {

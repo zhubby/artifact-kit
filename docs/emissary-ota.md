@@ -4,7 +4,7 @@
 
 ## 发布与信任配置
 
-`.github/workflows/emissary-release.yml` 在五种原生 runner 上测试、构建 Linux amd64/arm64、macOS amd64/arm64、Windows amd64，然后生成 `emissary-manifest.json` 和 `emissary-manifest.sig`。manifest 包含版本、Git commit、协议兼容范围和每个二进制的大小及 SHA-256。签名覆盖 manifest 的原始字节。协议主版本仍为 1。
+`.github/workflows/emissary-release.yml` 在六种原生 runner 上测试、构建 Linux、macOS、Windows 各自的 amd64/arm64，然后生成 `emissary-manifest.json` 和 `emissary-manifest.sig`。每个平台都必须通过普通测试和原生系统服务验收，发布 job 才能运行。控制面导入必须包含全部六个资产。manifest 包含版本、Git commit、协议兼容范围和每个二进制的大小及 SHA-256。签名覆盖 manifest 的原始字节。协议主版本仍为 1。
 
 在受保护的 GitHub `emissary-release` Environment 中设置 `EMISSARY_RELEASE_SIGNING_SEED`，值为独立 Ed25519 私钥的 32 字节 seed 的 base64。只允许发布 job 读取该 Secret。推送 `emissary-v*` Git 标签，或手动执行工作流并选择一个已存在的 Git 标签。工作流不覆盖已有 Release。
 
@@ -20,11 +20,19 @@
 
 私有仓库可为控制面提供 `ARTIFACTORY_EMISSARY_GITHUB_TOKEN`。`api_base` 也可指向预先配置的 GitHub Enterprise API；生产环境要求 HTTPS。浏览器提交的字段只有版本标签，不能指定任意下载 URL。下载地址由固定仓库和 GitHub asset ID 构造，重定向限制为配置的 API 主机和 GitHub HTTPS 下载主机。
 
-版本导入必须通过签名、五个平台、协议、大小、完整内容的 SHA-256 校验。全部校验成功后才建立版本目录记录。对象按 manifest 摘要存储；版本号内容不可覆盖，同内容重复导入返回原 ID。未配置验签公钥时拒绝导入。测试密钥必须独立于正式发布密钥。
+版本导入必须通过签名、六个平台、协议、大小、完整内容的 SHA-256 校验。全部校验成功后才建立版本目录记录。对象按 manifest 摘要存储；版本号内容不可覆盖，同内容重复导入返回原 ID。未配置验签公钥时拒绝导入。测试密钥必须独立于正式发布密钥。
 
 ## 一次性安装固定启动器
 
 新安装使用 Rust Emissary、全新的 `emissary.json` 和注册身份。管理员为专用普通服务账户准备 SDK、PATH、签名环境和二进制后，以该账户初始化 OTA，再安装和启动原生服务：
+
+Windows 的 MSVC 构建还需要与 Emissary 架构匹配的 Microsoft Visual C++ v14 运行库。
+从 Microsoft 获取 [amd64](https://aka.ms/vs/17/release/vc_redist.x64.exe) 或
+[arm64](https://aka.ms/vs/17/release/vc_redist.arm64.exe) 安装包，校验 Microsoft
+Authenticode 签名后由管理员安装。缺少 `VCRUNTIME140.dll` 时，程序可能以
+`0xc0000135` 退出且没有命令行输出。运行库属于一次性主机准备，未包含在 OTA 资产中。
+
+准备完成后执行：
 
 ```sh
 artifactory-emissary ota-init --config /path/to/emissary.json --public-keys BASE64_ED25519_PUBLIC_KEY
@@ -76,6 +84,6 @@ artifactory-emissary service --action start --config /path/to/emissary.json
 
 ## 验证边界
 
-`cargo test -p artifactory-emissary --all-targets` 覆盖签名、下载中断、generation、排空和真实子进程经 mTLS 确认的升级 / 回滚。PostgreSQL 测试覆盖节点锁竞争、池限流 / 暂停、权限、过期会话、吊销和证书期限。五平台 CI 使用 Rust 原生构建；具体通过结果以 CI run 为准。
+`cargo test -p artifactory-emissary --all-targets` 覆盖签名、下载中断、generation、排空和真实子进程经 mTLS 确认的升级 / 回滚。PostgreSQL 测试覆盖节点锁竞争、池限流 / 暂停、权限、过期会话、吊销和证书期限。六平台 CI 覆盖 Darwin、Windows、Linux 各自的 arm64 / amd64，使用 Rust 原生构建；具体通过结果以 CI run 为准。
 
 测试 loopback peer 不替代真实控制平面、对象存储或原生服务安装验收；历史 Go Mac mini 记录不作为 Rust Emissary 的运行证据。各 OS 服务、Xcode / SDK 和正式发行签名需分别验收。

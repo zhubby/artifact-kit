@@ -1,8 +1,11 @@
 mod support;
-use artifactory_emissary::{client, config, ota, platform, protocol as pb};
+#[cfg(unix)]
+use artifactory_emissary::config;
+use artifactory_emissary::{client, ota, platform, protocol as pb};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use ed25519_dalek::{Signer, SigningKey};
 use std::{fs, path::Path, time::Duration};
+#[cfg(unix)]
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
@@ -200,6 +203,24 @@ async fn apply(
 #[tokio::test]
 async fn ota_supervisor_mtls_upgrade_and_rollback() {
     let directory = tempfile::tempdir().unwrap();
+    // Linux keeps DWARF in the executable: a debug build can exceed the release
+    // size limit. Exercise the signed runtime image with its debug data removed.
+    let image = directory.path().join(ota::binary_name());
+    fs::copy(env!("CARGO_BIN_EXE_artifactory-emissary"), &image).unwrap();
+    #[cfg(target_os = "linux")]
+    {
+        let output = std::process::Command::new("strip")
+            .arg("--strip-debug")
+            .arg(&image)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "could not prepare native OTA image: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(fs::metadata(&image).unwrap().len() <= ota::MAX_BINARY_SIZE);
     let mut fixture = support::Fixture::start(directory.path(), &[&rustls::version::TLS13]).await;
     let path = directory.path().join("emissary.json");
     fixture.cfg.save(&path).unwrap();
@@ -208,13 +229,13 @@ async fn ota_supervisor_mtls_upgrade_and_rollback() {
     ota::initialize(
         &path,
         &ota_dir,
-        Path::new(env!("CARGO_BIN_EXE_artifactory-emissary")),
+        &image,
         "bootstrap",
         vec![STANDARD.encode(key.verifying_key().to_bytes())],
         true,
     )
     .unwrap();
-    let body = fs::read(env!("CARGO_BIN_EXE_artifactory-emissary")).unwrap();
+    let body = fs::read(&image).unwrap();
     let good = body.clone();
     let bad = b"invalid native executable\n";
     let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -82,6 +82,46 @@ fn signed_package_verification() {
 }
 
 #[test]
+fn signed_six_platform_release_selects_windows_arm64() {
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let platforms = [
+        ("linux", "amd64"),
+        ("linux", "arm64"),
+        ("darwin", "amd64"),
+        ("darwin", "arm64"),
+        ("windows", "amd64"),
+        ("windows", "arm64"),
+    ];
+    let mut manifest = ota::Manifest {
+        version: "emissary-v1.0.0".into(),
+        commit: "a".repeat(40),
+        protocol_min: 1,
+        protocol_max: 1,
+        assets: platforms
+            .iter()
+            .map(|(os, arch)| ota::Asset::from_bytes(os, arch, b"executable"))
+            .collect(),
+    };
+    let keys = [STANDARD.encode(key.verifying_key().to_bytes())];
+    let verify = |manifest: &ota::Manifest, os, arch| {
+        let raw = serde_json::to_vec(manifest).unwrap();
+        let signature = STANDARD.encode(key.sign(&raw).to_bytes());
+        ota::verify(&raw, &signature, &keys, os, arch)
+    };
+    for (os, arch) in platforms {
+        assert_eq!(
+            verify(&manifest, os, arch).unwrap().name,
+            ota::asset_name(os, arch),
+            "signed release must select {os}/{arch}"
+        );
+    }
+    manifest.assets[5] = manifest.assets[4].clone();
+    assert!(verify(&manifest, "windows", "amd64").is_err());
+    manifest.assets[5] = ota::Asset::from_bytes("windows", "386", b"unsupported");
+    assert!(verify(&manifest, "windows", "amd64").is_err());
+}
+
+#[test]
 fn interrupted_activation_rolls_back_once() {
     let mut state = ota::State {
         phase: "activating".into(),
