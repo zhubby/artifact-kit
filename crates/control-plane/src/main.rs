@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use artifactory_control::{
+use artifactory_control_plane::{
     api, auth,
     grpc::EmissaryService,
     planning::PlanningService,
@@ -34,13 +34,14 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "artifactory_control=info,tower_http=info".into()),
+                .unwrap_or_else(|_| "artifactory_control_plane=info,tower_http=info".into()),
         )
         .init();
     let arguments = Arguments::parse();
     let settings = Settings::from_env()?;
     tokio::fs::create_dir_all(&settings.data_dir).await?;
-    let store = artifactory_control::store::ControlStore::connect(&settings.database_url).await?;
+    let store =
+        artifactory_control_plane::store::ControlStore::connect(&settings.database_url).await?;
     if matches!(arguments.command, Some(Command::Migrate)) {
         return Ok(());
     }

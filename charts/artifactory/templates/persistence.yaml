@@ -1,5 +1,5 @@
-{{- $components := list "control" "postgres" "s3" }}
-{{- if .Values.aiWorker.enabled }}{{- $components = append $components "ai-worker" }}{{- end }}
+{{- $components := list "control-plane" "postgres" "s3" }}
+{{- if .Values.agentWorker.enabled }}{{- $components = append $components "agent-worker" }}{{- end }}
 {{- range $component := $components }}
 ---
 apiVersion: v1

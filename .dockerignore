@@ -7,6 +7,6 @@ web/node_modules
 web/.next
 web/test-results
 web/playwright-report
-ai-worker/node_modules
-ai-worker/dist
+packages/*/node_modules
+packages/*/dist
 *.log

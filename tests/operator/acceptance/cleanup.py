@@ -54,7 +54,7 @@ def run(args):
         evidence['operator_images'] = [{'uid': p['metadata']['uid'], 'containers': [
             {key: c.get(key) for key in ['image', 'imageID']} for c in p['status'].get('containerStatuses', [])]}
             for p in pods if p['metadata'].get('labels', {}).get('app.kubernetes.io/name') == 'artifactory-operator']
-        control = next(p for p in pods if p['metadata'].get('labels', {}).get('app') == 'control')
+        control = next(p for p in pods if p['metadata'].get('labels', {}).get('app') == 'control-plane')
         runtime = next(p for p in pods if p['metadata'].get('labels', {}).get('app.kubernetes.io/name') == 'artifactory-runtime')
         upstream = next(p for p in pods if p['metadata'].get('labels', {}).get('app') == 'upstream')
         runtime_id = runtime['status']['containerStatuses'][0]['containerID'].split('://', 1)[1]
@@ -65,7 +65,7 @@ def run(args):
         def request(role, path, body=None):
             # Credentials enter curl through stdin, never argv or captured headers.
             config = ['silent', 'show-error', 'fail', 'max-time = 15', 'noproxy = "*"']
-            if role == 'control':
+            if role == 'control-plane':
                 url = 'http://' + control['status']['podIP'] + ':8080' + path
                 headers = {'Cookie': cookie, 'Origin': a.origin, 'x-artifactory-csrf': '1'}
             else:
@@ -85,7 +85,7 @@ def run(args):
                             data=('\n'.join(config) + '\n').encode())
             return json.loads(result.stdout)
 
-        assert request('control', '/healthz')['status'] == 'ok', 'Independent control path unavailable'
+        assert request('control-plane', '/healthz')['status'] == 'ok', 'Independent control path unavailable'
         request('upstream', '/test/mode', {'hold': True})
         project = a.api('/api/v1/projects', {'name': 'cleanup-fault-' + uuid.uuid4().hex[:8],
                          'repository_url': 'https://upstream:9443/repo.git', 'planner_backend': 'kubernetes'})['id']
@@ -125,7 +125,7 @@ def run(args):
         assert probe.returncode != 0, 'Kubelet is still reachable'
         evidence['kubelet_unreachable'] = True
         started = time.monotonic()
-        request('control', '/api/v1/builds/' + build + '/cancel', {})
+        request('control-plane', '/api/v1/builds/' + build + '/cancel', {})
         canceled = True
         a.wait(lambda: request('artifactory-runtime', '/v1/get', {'run_id': run_id})['status'] == 'canceled', 30)
         evidence['authority_revoked_seconds'] = round(time.monotonic() - started, 3)
@@ -145,7 +145,7 @@ def run(args):
         evidence['pending_identity_preserved'] = all(s['status'].get('podUid') == pod_uid and
             s['status'].get('message', '').startswith('CleanupPending:') and s['status'].get('phase') == 'canceled'
             and s['process_state'] == 'T' for s in samples)
-        assert not request('control', '/api/v1/builds/' + build)['jobs'], 'Cancel created device jobs'
+        assert not request('control-plane', '/api/v1/builds/' + build)['jobs'], 'Cancel created device jobs'
         evidence['logical_cancellation_no_device_jobs'] = True
     finally:
         if frozen_pid is not None:
@@ -158,7 +158,7 @@ def run(args):
         try:
             if request is not None:
                 if build and not canceled:
-                    request('control', '/api/v1/builds/' + build + '/cancel', {})
+                    request('control-plane', '/api/v1/builds/' + build + '/cancel', {})
                 request('upstream', '/test/mode', {})
         finally:
             for process in a.processes:

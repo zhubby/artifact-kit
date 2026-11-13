@@ -1,14 +1,14 @@
 # Emissary OTA 自动升级
 
-控制面管理目标版本，节点通过已有 mTLS 出站连接接收升级命令，使用私有 S3 的短期签名地址下载。普通升级不需要 SSH 或管理员密码。已有节点默认不升级；先安装固定启动器，再由管理员指定节点或节点池目标。
+控制平面管理目标版本，节点通过已有 mTLS 出站连接接收升级命令，使用私有 S3 的短期签名地址下载。普通升级不需要 SSH 或管理员密码。已有节点默认不升级；先安装固定启动器，再由管理员指定节点或节点池目标。
 
 ## 发布与信任配置
 
-`.github/workflows/emissary-release.yml` 在六种原生 runner 上测试、构建 Linux、macOS、Windows 各自的 amd64/arm64，然后生成 `emissary-manifest.json` 和 `emissary-manifest.sig`。每个平台都必须通过普通测试和原生系统服务验收，发布 job 才能运行。控制面导入必须包含全部六个资产。manifest 包含版本、Git commit、协议兼容范围和每个二进制的大小及 SHA-256。签名覆盖 manifest 的原始字节。协议主版本仍为 1。
+`.github/workflows/emissary-release.yml` 在六种原生 runner 上测试、构建 Linux、macOS、Windows 各自的 amd64/arm64，然后生成 `emissary-manifest.json` 和 `emissary-manifest.sig`。每个平台都必须通过普通测试和原生系统服务验收，发布 job 才能运行。控制平面导入必须包含全部六个资产。manifest 包含版本、Git commit、协议兼容范围和每个二进制的大小及 SHA-256。签名覆盖 manifest 的原始字节。协议主版本仍为 1。
 
 在受保护的 GitHub `emissary-release` Environment 中设置 `EMISSARY_RELEASE_SIGNING_SEED`，值为独立 Ed25519 私钥的 32 字节 seed 的 base64。只允许发布 job 读取该 Secret。推送 `emissary-v*` Git 标签，或手动执行工作流并选择一个已存在的 Git 标签。工作流不覆盖已有 Release。
 
-控制面 `${ARTIFACTORY_DATA_DIR}/emissary-releases.json` 由部署管理员配置，文件示例：
+控制平面 `${ARTIFACTORY_DATA_DIR}/emissary-releases.json` 由部署管理员配置，文件示例：
 
 ```json
 {
@@ -18,7 +18,7 @@
 }
 ```
 
-私有仓库可为控制面提供 `ARTIFACTORY_EMISSARY_GITHUB_TOKEN`。`api_base` 也可指向预先配置的 GitHub Enterprise API；生产环境要求 HTTPS。浏览器提交的字段只有版本标签，不能指定任意下载 URL。下载地址由固定仓库和 GitHub asset ID 构造，重定向限制为配置的 API 主机和 GitHub HTTPS 下载主机。
+私有仓库可为控制平面提供 `ARTIFACTORY_EMISSARY_GITHUB_TOKEN`。`api_base` 也可指向预先配置的 GitHub Enterprise API；生产环境要求 HTTPS。浏览器提交的字段只有版本标签，不能指定任意下载 URL。下载地址由固定仓库和 GitHub asset ID 构造，重定向限制为配置的 API 主机和 GitHub HTTPS 下载主机。
 
 版本导入必须通过签名、六个平台、协议、大小、完整内容的 SHA-256 校验。全部校验成功后才建立版本目录记录。对象按 manifest 摘要存储；版本号内容不可覆盖，同内容重复导入返回原 ID。未配置验签公钥时拒绝导入。测试密钥必须独立于正式发布密钥。
 
@@ -52,11 +52,11 @@ artifactory-emissary service --action start --config /path/to/emissary.json
 
 ## 运行与恢复
 
-控制面使用节点事务锁协调升级与任务分配，`ota_draining` 独立于管理员 `draining`。每个节点最多一个未完成升级；节点版本覆盖优先于池目标。每池默认同时一个升级，失败或回滚会暂停后续升级。节点离线时目标保留，重连后继续。
+控制平面使用节点事务锁协调升级与任务分配，`ota_draining` 独立于管理员 `draining`。每个节点最多一个未完成升级；节点版本覆盖优先于池目标。每池默认同时一个升级，失败或回滚会暂停后续升级。节点离线时目标保留，重连后继续。
 
-阶段为：等待接收 → 下载校验 → 排空 → 启动确认 → 成功。下载在启动器后台进行，不阻塞 Emissary 心跳。排空要求任务终态得到控制面确认、Worker 退出、所有日志得到确认；Worker 的产物登记先于任务终态。旧运行程序先通过已认证心跳报告即将激活，取得控制面确认后才允许启动器切换，因此候选程序无法连接时也保留可见的激活阶段。不会为了升级取消构建。
+阶段为：等待接收 → 下载校验 → 排空 → 启动确认 → 成功。下载在启动器后台进行，不阻塞 Emissary 心跳。排空要求任务终态得到控制平面确认、Worker 退出、所有日志得到确认；Worker 的产物登记先于任务终态。旧运行程序先通过已认证心跳报告即将激活，取得控制平面确认后才允许启动器切换，因此候选程序无法连接时也保留可见的激活阶段。不会为了升级取消构建。
 
-候选运行程序必须在 120 秒内以原证书重连，报告目标版本，并取得同一连接连续三次心跳确认，才能原子提交当前版本。重连会重置确认计数。启动失败、确认前退出或超时会恢复原版本；节点成功报告完成前，控制面持续阻止新任务。升级命令带持久化单调序号，重复和迟到命令不重启已完成操作。
+候选运行程序必须在 120 秒内以原证书重连，报告目标版本，并取得同一连接连续三次心跳确认，才能原子提交当前版本。重连会重置确认计数。启动失败、确认前退出或超时会恢复原版本；节点成功报告完成前，控制平面持续阻止新任务。升级命令带持久化单调序号，重复和迟到命令不重启已完成操作。
 
 `state.json` 原子持久化当前、候选、上一版本及升级结果。启动器重启发现未完成激活会恢复原版本；下载或排空期间被中断会报告失败并保留原版本，不自动循环重试。Windows 使用 Job Object 清理候选进程树；原生服务仍负责自动启动及启动器故障重启。
 

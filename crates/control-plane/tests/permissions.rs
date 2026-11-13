@@ -1,4 +1,4 @@
-use artifactory_control::auth::Auth;
+use artifactory_control_plane::auth::Auth;
 use uuid::Uuid;
 
 #[test]

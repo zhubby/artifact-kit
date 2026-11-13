@@ -8,7 +8,7 @@
 
 | 原名称 | 新名称 |
 |---|---|
-| `artifact-control` / Rust `artifact_control` | `artifactory-control` / `artifactory_control` |
+| `artifact-control` / Rust `artifact_control` | `artifactory-control-plane` / `artifactory_control_plane` |
 | `artifact-agent` / `artifact-kit-agent` 服务 | `artifactory-agent` |
 | `artifact-kit-console` | `artifactory-console` |
 | 仓库根目录 `artifact-kit.yaml` | `artifactory.yaml` |
@@ -18,7 +18,7 @@
 | `ak-locale` / `ak-theme` / `ak-effects` | `artifactory-locale` / `artifactory-theme` / `artifactory-effects` |
 | `artifactkit.agent.v1` | `artifactory.agent.v1` |
 | `charts/artifact-kit` | `charts/artifactory` |
-| `ghcr.io/zhubby/artifact-kit-{control,web}` | `ghcr.io/zhubby/artifactory-{control,web}` |
+| `ghcr.io/zhubby/artifact-kit-{control-plane,web}` | `ghcr.io/zhubby/artifactory-{control-plane,web}` |
 
 Go 模块改为实际仓库路径 `github.com/zhubby/artifact-kit/agent`。Go 导入、Protobuf `go_package`、代码生成参数和发布时的版本注入使用同一路径。Protobuf 消息及字段编号未改变，协议主版本仍为 1；gRPC 方法使用新命名空间。
 
@@ -26,7 +26,7 @@ Go 模块改为实际仓库路径 `github.com/zhubby/artifact-kit/agent`。Go �
 
 ## 已有部署
 
-本次不提供旧名称别名或自动迁移。旧 Agent 与新控制中心需同步切换；构建仓库需提交新文件名的配置，部署环境需设置新前缀变量，浏览器需重新登录和选择界面偏好。
+本次不提供旧名称别名或自动迁移。旧 Agent 与新控制平面需同步切换；构建仓库需提交新文件名的配置，部署环境需设置新前缀变量，浏览器需重新登录和选择界面偏好。
 
 现有 `.local` / `.deploy` 配置、密钥、证书、数据库、对象及已安装系统服务不会由更名操作重写或删除。默认初始化脚本也不会覆盖已有环境文件或持久凭据。已有部署应先保留备份，再在单独环境按现行运维指南配置新版本。
 
@@ -53,7 +53,7 @@ Go 模块改为实际仓库路径 `github.com/zhubby/artifact-kit/agent`。Go �
 
 Compose/TLS 使用包含本次修改的独立临时 Git 仓库，快照为 `d555133ac4e7ee7e2e4b4a89875b96db7cf1ec4c`，运行编号为 `d006be00aee9`。当前非文档源码与该快照一致。测试通过真实 Caddy HTTPS、Agent mTLS、私有 S3、SSE、运行中构建重启和日志缓冲耗尽恢复，并核对 PostgreSQL 中日志序号、大小与哈希；本次临时容器、卷、网络均已移除。
 
-镜像构建遇到外部依赖下载超时后，改用与锁文件核对过的本地 Cargo / npm 依赖缓存离线构建，并通过 `docker.m.daocloud.io` 获取基础镜像。产品源码未变；原生产 Dockerfile 和实际验证 Dockerfile 的哈希分别留存。这证明缓存辅助构建和实际容器运行通过，不代表本次无缓存公网构建成功。控制中心与前端为 Linux arm64，通用探针及 PostgreSQL / S3 使用本机 Docker 支持的 amd64 镜像；探针执行的是本次快照交叉编译的 Agent。
+镜像构建遇到外部依赖下载超时后，改用与锁文件核对过的本地 Cargo / npm 依赖缓存离线构建，并通过 `docker.m.daocloud.io` 获取基础镜像。产品源码未变；原生产 Dockerfile 和实际验证 Dockerfile 的哈希分别留存。这证明缓存辅助构建和实际容器运行通过，不代表本次无缓存公网构建成功。控制平面与前端为 Linux arm64，通用探针及 PostgreSQL / S3 使用本机 Docker 支持的 amd64 镜像；探针执行的是本次快照交叉编译的 Agent。
 
 本地验证摘要与证据保存在 `.local/artifactory-rename-20261111/`，包括 `summary.json`、`compose-evidence.json`、原生 / 协议 / 浏览器日志及缓存构建配方。原有 198 个私有配置、密钥和证书文件的哈希保持不变，原 PostgreSQL / S3 容器的标识、启动时间与重启次数保持不变；4 份历史记录逐字节保留。
 

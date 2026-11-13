@@ -103,7 +103,7 @@ impl Settings {
                 .unwrap_or_else(|_| ".local/pki".into())
                 .into(),
             data_dir: env::var("ARTIFACTORY_DATA_DIR")
-                .unwrap_or_else(|_| ".local/control".into())
+                .unwrap_or_else(|_| ".local/control-plane".into())
                 .into(),
             master_key,
             s3_endpoint,

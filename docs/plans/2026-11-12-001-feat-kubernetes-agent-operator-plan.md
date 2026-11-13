@@ -19,7 +19,7 @@ origin: docs/superpowers/specs/2026-11-12-kubernetes-agent-operator-design.md
 
 ## 问题与决策
 
-现有 Pi Worker 已有 Helm Deployment，但工具、Git/LFS 下载、快照校验、租约和模型预算都依赖业务控制服务。直接容器化不能消除这些热路径。Operator 首期分出职责并兼容现有 Go Agent；设备 Agent 的 Rust 重写作为后续独立阶段。Pi 沿用上游 Node.js/TypeScript 运行时，设备端仍执行实际构建和签名。
+现有 Pi Worker 已有 Helm Deployment，但工具、Git/LFS 下载、快照校验、租约和模型预算都依赖业务控制平面。直接容器化不能消除这些热路径。Operator 首期分出职责并兼容现有 Go Agent；设备 Agent 的 Rust 重写作为后续独立阶段。Pi 沿用上游 Node.js/TypeScript 运行时，设备端仍执行实际构建和签名。
 
 | 决策 | 原因与代价 |
 | --- | --- |
@@ -37,7 +37,7 @@ origin: docs/superpowers/specs/2026-11-12-kubernetes-agent-operator-design.md
 | --- | --- | --- |
 | R1/R2：Kubernetes native 与独立 Operator | 1、4、5 | 无 Substrate 集群上完成一次真实规划，得到被接纳的计划 |
 | R3：业务与 Go 节点调度兼容 | 1、6、7 | 同一计划可继续派发已有 Go Agent；平台/签名与修订约束回归 |
-| R4：源码数据面卸载 | 2、6、7 | 源码服务直接传输，业务控制服务无 Git 子进程/源码带宽 |
+| R4：源码数据面卸载 | 2、6、7 | 源码服务直接传输，业务控制平面无 Git 子进程/源码带宽 |
 | R5：执行热路径卸载 | 3、5、6 | 新 native 的心跳/模型预留/检查点不进入业务热表 |
 | R6/R7：幂等、fencing、预算与取消 | 1、3、4、5、6 | 重复 Pod、未知创建结果、取消并发和确认丢失均无重复业务接纳 |
 | R8：有界准入与 Kubernetes API 负载 | 3、4、7 | 大排队量不产生同量 Pod/CRD；status 更新与阶段变化相关 |
@@ -81,7 +81,7 @@ flowchart TB
 
   **目标/要求：** 把 R1—R9 的跨服务边界固定成可演进合同，并保留当前行为的基线。无前置依赖。
 
-  **文件：** Create `proto/artifactory/runtime/v1/runtime.proto`、`docs/runtime-protocol.md`、`crates/control/src/runtime_bridge.rs`、下一号 `crates/control/migrations/NNNN_runtime_intents.sql`、`crates/control/tests/runtime_intents.rs`。Modify `proto/artifactory/agent/v1/agent.proto`（仅必要的兼容引用）、`crates/control/src/api/builds.rs`、`crates/control/src/api/ai_management.rs`、`crates/control/src/settings.rs`。
+  **文件：** Create `proto/artifactory/runtime/v1/runtime.proto`、`docs/runtime-protocol.md`、`crates/control-plane/src/runtime_bridge.rs`、下一号 `crates/control-plane/migrations/NNNN_runtime_intents.sql`、`crates/control-plane/tests/runtime_intents.rs`。Modify `proto/artifactory/agent/v1/agent.proto`（仅必要的兼容引用）、`crates/control-plane/src/api/builds.rs`、`crates/control-plane/src/api/ai_management.rs`、`crates/control-plane/src/settings.rs`。
 
   **做法：** 明确 run/attempt/UID、幂等 ID、内容 hash、aggregate version、错误分类、cancel/accept ack 和源码保留合同；定义 business/runtime/source 三个 authority。将 intent/outbox 与 Build 操作放入同一短事务。固定 API group、协议版本策略、kube-rs/k8s-openapi/Rust/Kubernetes 与镜像兼容矩阵。保留设备 Agent protobuf 的跨语言兼容边界，记录现有 Poll、调用预算、600 秒 deadline、clarify、新修订与节点匹配的语义。
 
@@ -95,7 +95,7 @@ flowchart TB
 
   **目标/要求：** R2/R4/R6/R7，将源码 CPU/I/O 与长传输保护移出业务控制进程。依赖单元 1。
 
-  **文件：** Create `crates/source-core/`、`crates/source-service/`、`crates/source-service/migrations/`、`crates/source-service/tests/snapshots.rs`、`crates/source-service/tests/access_and_retention.rs`、`crates/source-service/tests/tools.rs`。Modify `Cargo.toml`、`crates/control/src/source_cache.rs`、`crates/control/src/source_cache/refs.rs`、`crates/control/src/api/source_http.rs`、`crates/control/src/source.rs`、`crates/control/src/storage.rs`；保留并扩展 `crates/control/tests/fixtures/source_http.py`、`crates/control/tests/database/source_refs.rs`。
+  **文件：** Create `crates/source-core/`、`crates/source-service/`、`crates/source-service/migrations/`、`crates/source-service/tests/snapshots.rs`、`crates/source-service/tests/access_and_retention.rs`、`crates/source-service/tests/tools.rs`。Modify `Cargo.toml`、`crates/control-plane/src/source_cache.rs`、`crates/control-plane/src/source_cache/refs.rs`、`crates/control-plane/src/api/source_http.rs`、`crates/control-plane/src/source.rs`、`crates/control-plane/src/storage.rs`；保留并扩展 `crates/control-plane/tests/fixtures/source_http.py`、`crates/control-plane/tests/database/source_refs.rs`。
 
   **做法：** 从 AppState 中拆出 Git/LFS/manifest/tool 库；Source Service 独立元数据/连接池和缓存目录。按授权域/仓库锁串行更新，仓库间并行。引入不可变对象包、分析版本、分片路由、读保护、保留/GC 协议与凭据 broker。先以服务客户端替代控制进程内部源码调用；网络路径切换在单元 6 执行。
 
@@ -109,13 +109,13 @@ flowchart TB
 
   **目标/要求：** R5/R6/R7/R8，持久化运行队列、fencing 和唯一预算预留。依赖单元 1。
 
-  **文件：** Create `crates/planner-runtime/`、`crates/planner-runtime/migrations/`、`crates/planner-runtime/tests/leases_and_fencing.rs`、`crates/planner-runtime/tests/model_budget.rs`、`crates/planner-runtime/tests/outbox.rs`。Modify `Cargo.toml`、`crates/control/src/planning.rs`、`crates/control/src/settings.rs`、`crates/control/src/runtime_bridge.rs`。
+  **文件：** Create `crates/planner-runtime/`、`crates/planner-runtime/migrations/`、`crates/planner-runtime/tests/leases_and_fencing.rs`、`crates/planner-runtime/tests/model_budget.rs`、`crates/planner-runtime/tests/outbox.rs`。Modify `Cargo.toml`、`crates/control-plane/src/planning.rs`、`crates/control-plane/src/settings.rs`、`crates/control-plane/src/runtime_bridge.rs`。
 
   **做法：** 分离租约/预算表与业务摘要，提供运行领取、模型代理、checkpoint、提案持久化和重投递。按 pool/project 原子准入，保留 FIFO 起步策略；全局 model profile 限流跨所有后端。迁移期更新 Poll Worker 的传输后通过 facade 接入统一代理；无法更新的旧二进制先按 profile 排空再交接 authority，禁止旧 Report 与代理双重预留。保留现有三种模型 API、流式/工具语义与 Qwen 兼容参数，替换 base URL/认证为代理和 run grant；固定上游来自 profile。排队与 provisioning 超时独立且限制重试次数；首次有效执行启动逻辑 deadline，重试沿用。
 
   **测试场景：** 两个 UID 同时领取仅一个有效；旧 generation 续租/调用/提交被拒绝；并发模型请求不越过 run 次数与 profile RPM；相同 request ID 不重复发送；供应商响应未知仍保留调用消耗；三种 API 的流式工具调用、部分响应、断流/取消与禁用隐藏 HTTP 重试；usage/checkpoint 乱序与重放幂等；等待镜像不消耗执行租约且不能无限重建；重启后 deadline/calls/checkpoint 保留；提案结果未知时不再次推理、可修正拒绝后才续跑；大量排队只产生限额内派发；模型代理不可达不允许直连绕过。
 
-  **验收：** 单一运行 authority 在重启后可恢复；控制服务不处理新协议的 Pi 周期心跳/调用预留。明确区分“运行结果已保存”和“业务计划已接纳”。
+  **验收：** 单一运行 authority 在重启后可恢复；控制平面不处理新协议的 Pi 周期心跳/调用预留。明确区分“运行结果已保存”和“业务计划已接纳”。
 
 - [x] **单元 4：独立 Rust Operator 项目与四个 CRD**
 
@@ -133,7 +133,7 @@ flowchart TB
 
   **目标/要求：** R1/R2/R5/R6/R7，在 Pod 内复用 Pi 并完成持久结果交接。依赖单元 3、4。
 
-  **文件：** Create `ai-worker/src/job-main.ts`、`ai-worker/src/transport/runtime.ts`、`ai-worker/src/transport/source.ts`、`ai-worker/src/job-main.test.ts`、`ai-worker/src/transport/runtime.test.ts`。Modify `ai-worker/src/runtime.ts`、`ai-worker/src/task.ts`、`ai-worker/src/main.ts`、`ai-worker/src/runtime.test.ts`、`ai-worker/Dockerfile`、`ai-worker/package.json`。
+  **文件：** Create `packages/agent-worker/src/job-main.ts`、`packages/agent-worker/src/transport/runtime.ts`、`packages/agent-worker/src/transport/source.ts`、`packages/agent-worker/src/job-main.test.ts`、`packages/agent-worker/src/transport/runtime.test.ts`。Modify `packages/agent-worker/src/runtime.ts`、`packages/agent-worker/src/task.ts`、`packages/agent-worker/src/main.ts`、`packages/agent-worker/src/runtime.test.ts`、`packages/agent-worker/Dockerfile`、`packages/agent-worker/package.json`。
 
   **做法：** 保留 `runTask(task, rpc, signal)`，添加一次 run 的启动/退出入口。兑换绑定 Pod UID 的 grant，工具直连 Source，模型统一走代理。提交工具正常等待业务校验并保留错误反馈；结果未知时保存 pending submission 和恢复边界，完整交接后才退出。保持 read/tree/search 等工具合同，节点能力/日志走有界元数据路径。Job 使用单实例、Never/无自动失败重试；真正的重复执行限制由 Runtime fencing 保证。
 
@@ -145,7 +145,7 @@ flowchart TB
 
   **目标/要求：** R3/R4/R5/R6/R7/R9，把新组件接入既有 Build/Job 流程。依赖单元 2、3、5。
 
-  **文件：** Modify `crates/control/src/planning.rs`、`crates/control/src/scheduler.rs`、`crates/control/src/api/builds.rs`、`crates/control/src/api/ai_management.rs`、`crates/control/src/api/source_http.rs`、`crates/control/src/execution_plan.rs`、`crates/control/src/runtime_bridge.rs`、`crates/control/src/grpc.rs`、`crates/control/src/state.rs`。Create `crates/control/tests/runtime_acceptance.rs`、`crates/control/tests/runtime_migration.rs`、下一号 `crates/control/migrations/NNNN_runtime_cutover.sql`。按必要性扩展 `agent/internal/client/protocol_integration_test.go`、`agent/internal/client/cancellation_fencing_integration_test.go`、`agent/internal/worker/source_test.go`。
+  **文件：** Modify `crates/control-plane/src/planning.rs`、`crates/control-plane/src/scheduler.rs`、`crates/control-plane/src/api/builds.rs`、`crates/control-plane/src/api/ai_management.rs`、`crates/control-plane/src/api/source_http.rs`、`crates/control-plane/src/execution_plan.rs`、`crates/control-plane/src/runtime_bridge.rs`、`crates/control-plane/src/grpc.rs`、`crates/control-plane/src/state.rs`。Create `crates/control-plane/tests/runtime_acceptance.rs`、`crates/control-plane/tests/runtime_migration.rs`、下一号 `crates/control-plane/migrations/NNNN_runtime_cutover.sql`。按必要性扩展 `agent/internal/client/protocol_integration_test.go`、`agent/internal/client/cancellation_fencing_integration_test.go`、`agent/internal/worker/source_test.go`。
 
   **做法：** 以服务客户端取代源码解析/证据核验，outbox 接收阶段结果，短事务幂等创建 revision/jobs。明确已登记提案的接纳凭证和 generation 冻结，避免有效提案在租约自然过期后丢失。source origin 直接路由到 Source Service；Go attempt 的权限仍由业务服务在短请求中核验。按 run authority 迁移旧 calls/usage/deadline/checkpoint；新的 native 不再被旧 Poll 领取。
 
@@ -159,7 +159,7 @@ flowchart TB
 
   **目标/要求：** R8/R9，让独立组件可安装、扩容、回退，并验证控制平面卸压。依赖单元 6。
 
-  **文件：** Create `charts/artifactory-operator/`、`docs/operator-operations.md`、`tests/operator/acceptance/`、`tests/operator/load/`、`docs/acceptance/operator/`。Modify `charts/artifactory/values.yaml`、`charts/artifactory/templates/config.yaml`、`charts/artifactory/templates/ingress.yaml`、`charts/artifactory/templates/services.yaml`、`charts/artifactory/templates/ai-worker.yaml`、`docs/ai-builds.md`、`docs/acceptance.md`、`README.md`（实施时重新核对并保留已有编辑）。纯 chart 接线和文档无需镜像实现的单元测试；测试集中于下面的安装、恢复和卸压行为。
+  **文件：** Create `charts/artifactory-operator/`、`docs/operator-operations.md`、`tests/operator/acceptance/`、`tests/operator/load/`、`docs/acceptance/operator/`。Modify `charts/artifactory/values.yaml`、`charts/artifactory/templates/config.yaml`、`charts/artifactory/templates/ingress.yaml`、`charts/artifactory/templates/services.yaml`、`charts/artifactory/templates/agent-worker.yaml`、`docs/ai-builds.md`、`docs/acceptance.md`、`README.md`（实施时重新核对并保留已有编辑）。纯 chart 接线和文档无需镜像实现的单元测试；测试集中于下面的安装、恢复和卸压行为。
 
   **做法：** 新 chart 安装 Rust Operator、Runtime Gateway 与 Pool 声明；SourcePool 的 StatefulSet/Service/PVC 只由 Operator 创建，Helm 不重复管理这些子资源。主 chart 增加 Runtime/Source 连接和新 native 开关。CRD 升级独立审查，安装失败不得回收业务数据。配置 dispatcher 的 CRD 写权限、Operator 的子资源及选主 Lease 权限、验证服务的 TokenReview 权限与 Runner 最小身份，以及 NetworkPolicy、PVC/S3、数据库备份与 pool 准入。按项目灰度，先停止新准入再排空；回退核对 authority 与预算，保留新 schema/对象。指标区分排队/启动/推理/接纳、来源服务、DB 和外部模型。
 
@@ -171,7 +171,7 @@ flowchart TB
 
   **目标/要求：** R1，在公共协议已验收后增加 Actor 承载选择。依赖单元 7；不阻塞 native 首期交付。
 
-  **文件：** Create `operator/src/backend/substrate/`、`operator/tests/substrate_client.rs`、`operator/tests/e2e/substrate.rs`、`ai-worker/src/actor-main.ts`、`docs/substrate-operations.md`。Modify `operator/Cargo.toml`、`operator/src/api/`、`charts/artifactory-operator/`、`ai-worker/Dockerfile`。
+  **文件：** Create `operator/src/backend/substrate/`、`operator/tests/substrate_client.rs`、`operator/tests/e2e/substrate.rs`、`packages/agent-worker/src/actor-main.ts`、`docs/substrate-operations.md`。Modify `operator/Cargo.toml`、`operator/src/api/`、`charts/artifactory-operator/`、`packages/agent-worker/Dockerfile`。
 
   **做法：** 固定 Substrate 发布镜像 digest/API/沙箱兼容版本；从固定版本公共 protobuf 生成 Rust Tonic/Prost 客户端，管理模板与 Actor，桥接 UID 身份，复用模型代理、源码授权、checkpoint 和结果协议，不要求 Go SDK。原生与 Actor lifecycle 采用同一 backend 内部边界，无需先构建通用插件系统。首期不做运行中休眠、AX 或自动跨后端转移。
 

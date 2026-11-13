@@ -10,7 +10,7 @@ import { setTimeout as delay } from "node:timers/promises";
 interface Configuration { endpoint: string; ca_file: string; certificate_file: string; key_file: string; server_name?: string; worker_id?: string; name?: string }
 interface LeasedTask { run_id: string; lease_token: string; context_json: string; model_config_json: string; timeout_seconds: number; max_calls: number }
 const here = dirname(fileURLToPath(import.meta.url));
-const schema = loader.loadSync(resolve(here, "../../proto/artifactory/emissary/v1/emissary.proto"), { keepCase: true, defaults: true, longs: Number });
+const schema = loader.loadSync(resolve(here, "../../../proto/artifactory/emissary/v1/emissary.proto"), { keepCase: true, defaults: true, longs: Number });
 const definitions = grpc.loadPackageDefinition(schema) as unknown as { artifactory: { emissary: { v1: Record<string, grpc.ServiceClientConstructor> } } };
 const services = definitions.artifactory.emissary.v1;
 
@@ -40,19 +40,19 @@ async function enroll(config: Configuration, path: string) {
   const temporaryKey = `${config.key_file}.enroll-${process.pid}`;
   const csr = `${temporaryKey}.csr`;
   await writeFile(temporaryKey, "", {mode: 0o600, flag: "wx"});
-  await command("openssl", ["req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-subj", "/CN=artifactory-ai-worker", "-keyout", temporaryKey, "-out", csr]);
+  await command("openssl", ["req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-subj", "/CN=artifactory-agent-worker", "-keyout", temporaryKey, "-out", csr]);
   await chmod(temporaryKey, 0o600);
   const Client = services.PlannerEnrollment!;
   const client = new Client(config.endpoint, await credentials(config, true), config.server_name ? {"grpc.ssl_target_name_override": config.server_name} : {});
   try {
-    const response = await call(client, "Enroll", { token, name: config.name || "artifactory-ai-worker", csr_pem: await readFile(csr, "utf8") });
+    const response = await call(client, "Enroll", { token, name: config.name || "artifactory-agent-worker", csr_pem: await readFile(csr, "utf8") });
     const temporaryCertificate = `${config.certificate_file}.enroll-${process.pid}`;
     await writeFile(temporaryCertificate, response.certificate_pem, { mode: 0o600, flag: "wx" });
     await rename(temporaryKey, config.key_file); await rename(temporaryCertificate, config.certificate_file);
     config.worker_id = response.worker_id;
     const temporary = `${path}.tmp-${process.pid}`;
     await writeFile(temporary, JSON.stringify(config, null, 2), { mode: 0o600 }); await rename(temporary, path);
-    console.log(`AI worker enrolled: ${config.worker_id}`);
+    console.log(`Agent worker enrolled: ${config.worker_id}`);
   } finally { client.close(); await rm(csr, {force: true}); await rm(temporaryKey, {force: true}); }
 }
 
@@ -89,9 +89,9 @@ async function execute(client: grpc.Client, task: LeasedTask, stopping: AbortSig
 }
 
 async function main() {
-  if (Number(process.versions.node.split(".")[0]) !== 24) throw new Error("artifactory-ai-worker requires Node.js 24");
+  if (Number(process.versions.node.split(".")[0]) !== 24) throw new Error("artifactory-agent-worker requires Node.js 24");
   const argument = process.argv.indexOf("--config");
-  const path = resolve(argument < 0 ? process.env.ARTIFACTORY_AI_CONFIG || "ai-worker.json" : process.argv[argument + 1] || "ai-worker.json");
+  const path = resolve(argument < 0 ? process.env.ARTIFACTORY_AI_CONFIG || "agent-worker.json" : process.argv[argument + 1] || "agent-worker.json");
   const controller = new AbortController();
   process.once("SIGINT", () => controller.abort()); process.once("SIGTERM", () => controller.abort());
   let config: Configuration;
@@ -99,7 +99,7 @@ async function main() {
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !process.env.ARTIFACTORY_AI_ENDPOINT || !process.env.ARTIFACTORY_AI_CA_FILE) throw error;
     config = { endpoint: process.env.ARTIFACTORY_AI_ENDPOINT, ca_file: process.env.ARTIFACTORY_AI_CA_FILE,
-      certificate_file: "worker.pem", key_file: "worker.key", name: process.env.ARTIFACTORY_AI_NAME || "artifactory-ai-worker", server_name: process.env.ARTIFACTORY_AI_SERVER_NAME };
+      certificate_file: "worker.pem", key_file: "worker.key", name: process.env.ARTIFACTORY_AI_NAME || "artifactory-agent-worker", server_name: process.env.ARTIFACTORY_AI_SERVER_NAME };
     await mkdir(dirname(path), {recursive: true, mode: 0o700});
     try { await writeFile(path, JSON.stringify(config, null, 2), {mode: 0o600, flag: "wx"}); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
@@ -110,7 +110,7 @@ async function main() {
     if (config.worker_id) throw new Error("worker already enrolled; revoke it before creating a new identity");
     return enroll(config, path);
   }
-  if (!config.worker_id) console.log("AI worker waiting for enrollment through the platform");
+  if (!config.worker_id) console.log("Agent worker waiting for enrollment through the platform");
   while (!config.worker_id && !controller.signal.aborted) {
     try { await delay(2000, undefined, { signal: controller.signal }); } catch { return; }
     config = JSON.parse(await readFile(path, "utf8")) as Configuration;
@@ -124,9 +124,9 @@ async function main() {
       try {
         const task = await call(client, "Poll", {}) as LeasedTask;
         if (task.run_id) await execute(client, task, controller.signal);
-      } catch { console.error("AI worker connection unavailable; retrying"); }
+      } catch { console.error("Agent worker connection unavailable; retrying"); }
       try { await delay(2000, undefined, { signal: controller.signal }); } catch { break; }
     }
   } finally { client.close(); }
 }
-void main().catch((error) => { console.error(error instanceof Error ? error.message : "AI worker failed"); process.exitCode = 1; });
+void main().catch((error) => { console.error(error instanceof Error ? error.message : "Agent worker failed"); process.exitCode = 1; });

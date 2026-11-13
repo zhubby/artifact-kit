@@ -22,7 +22,7 @@ async fn identity<T>(state: &AppState, request: &Request<T>) -> std::result::Res
         .get::<TlsConnectInfo<TcpConnectInfo>>()
         .and_then(|info| info.peer_certs())
         .and_then(|certs| certs.first().cloned())
-        .ok_or_else(|| Status::unauthenticated("AI worker certificate required"))?;
+        .ok_or_else(|| Status::unauthenticated("Agent worker certificate required"))?;
     state
         .store
         .planner_identity(crypto::hash(certificate.as_ref()))

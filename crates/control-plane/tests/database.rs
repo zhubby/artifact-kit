@@ -1,4 +1,4 @@
-use artifactory_control::{
+use artifactory_control_plane::{
     api, crypto,
     protocol::Command,
     recipe::Recipe,
@@ -28,7 +28,7 @@ mod source_refs;
 #[tokio::test]
 #[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL and git-lfs"]
 async fn evicted_source_restores_pinned_objects_after_upstream_refs_move() {
-    use artifactory_control::source_cache::{self, LfsObject, Repository, Snapshot};
+    use artifactory_control_plane::source_cache::{self, LfsObject, Repository, Snapshot};
     use tokio::io::{AsyncBufReadExt, BufReader};
     let database = Database::new().await;
     let (project, build, _) = database.fixture().await;
@@ -230,7 +230,7 @@ async fn evicted_source_restores_pinned_objects_after_upstream_refs_move() {
 #[tokio::test]
 #[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
 async fn source_download_rechecks_authorization_after_cache_lock() {
-    use artifactory_control::source_cache::{self, LfsObject, Repository, Snapshot};
+    use artifactory_control_plane::source_cache::{self, LfsObject, Repository, Snapshot};
     let database = Database::new().await;
     let (project, build, job) = database.fixture().await;
     let node = database.node().await;
@@ -405,7 +405,8 @@ async fn planner_reaper_rechecks_renewal_after_waiting_for_build_lock() {
     .await
     .unwrap();
     let state = database.state.clone();
-    let reaper = tokio::spawn(async move { artifactory_control::planning::reap(&state).await });
+    let reaper =
+        tokio::spawn(async move { artifactory_control_plane::planning::reap(&state).await });
     let mut blocked = false;
     for _ in 0..100 {
         blocked=sql::scalar(&mut database.pool.clone(), "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE 'SELECT id FROM builds WHERE id=$1 FOR UPDATE%')", params![]).await.unwrap();
@@ -439,7 +440,7 @@ async fn planner_reaper_rechecks_renewal_after_waiting_for_build_lock() {
     )
     .await
     .unwrap();
-    artifactory_control::planning::reap(&database.state)
+    artifactory_control_plane::planning::reap(&database.state)
         .await
         .unwrap();
     let state: (String, Option<String>) = sql::tuple(
@@ -465,7 +466,7 @@ async fn planner_deadline_finishes_build_and_failed_planning_does_not_loop() {
     )
     .await
     .unwrap();
-    artifactory_control::planning::reap(&database.state)
+    artifactory_control_plane::planning::reap(&database.state)
         .await
         .unwrap();
     let state:(String,String)=sql::tuple(&mut database.pool.clone(), "SELECT b.status,r.state FROM builds b JOIN planning_runs r ON r.build_id=b.id WHERE b.id=$1", params![build]).await.unwrap();
@@ -799,12 +800,12 @@ impl Database {
         let scoped = with_options(&url, &[("search_path", &schema)]).unwrap();
         let pool = connect(
             &scoped,
-            artifactory_control::store::models(),
+            artifactory_control_plane::store::models(),
             PoolSettings::new(10),
         )
         .await
         .unwrap();
-        artifactory_database::migrate(&pool, &artifactory_control::store::MIGRATIONS)
+        artifactory_database::migrate(&pool, &artifactory_control_plane::store::MIGRATIONS)
             .await
             .unwrap();
         let settings = Settings {
@@ -828,7 +829,7 @@ impl Database {
         let storage = Arc::new(Storage::new(&settings).unwrap());
         Self {
             state: AppState {
-                store: artifactory_control::store::ControlStore::new(pool.clone()),
+                store: artifactory_control_plane::store::ControlStore::new(pool.clone()),
                 settings: Arc::new(settings),
                 storage,
                 connections: Arc::new(RwLock::new(HashMap::new())),
@@ -1488,7 +1489,7 @@ async fn ota_failed_activation_pauses_pool_and_fences_stale_sessions() {
     let session = database.state.connections.read().await[&node].session;
     let payload = serde_json::json!({"diagnostics":{"emissary_version":"v-old"},"ota":{"update_id":id,"phase":"rolled_back","launcher_version":"v-old","error":"candidate crashed"}});
     assert!(
-        artifactory_control::ota::report(&database.state, node, Uuid::new_v4(), &payload)
+        artifactory_control_plane::ota::report(&database.state, node, Uuid::new_v4(), &payload)
             .await
             .is_err()
     );
@@ -1502,13 +1503,13 @@ async fn ota_failed_activation_pauses_pool_and_fences_stale_sessions() {
     assert_eq!(status, "offered");
     let preparing = serde_json::json!({"diagnostics":{"emissary_version":"v-old"},"ota":{"update_id":id,"phase":"activating","activation_pending":true,"launcher_version":"v-old"}});
     assert!(
-        artifactory_control::ota::report(&database.state, node, session, &preparing)
+        artifactory_control_plane::ota::report(&database.state, node, session, &preparing)
             .await
             .unwrap(),
         "old runtime must receive acknowledgment before yielding to a candidate"
     );
     assert!(
-        artifactory_control::ota::report(&database.state, node, session, &payload)
+        artifactory_control_plane::ota::report(&database.state, node, session, &payload)
             .await
             .unwrap()
     );
@@ -1532,13 +1533,13 @@ async fn ota_failed_activation_pauses_pool_and_fences_stale_sessions() {
     .await
     .unwrap();
     assert!(
-        artifactory_control::ota::report(&database.state, node, session, &payload)
+        artifactory_control_plane::ota::report(&database.state, node, session, &payload)
             .await
             .is_err()
     );
     sql::execute(&mut database.pool.clone(), "UPDATE nodes SET revoked=false,certificate_expires_at=now()-interval '1 minute' WHERE id=$1", params![node]).await.unwrap();
     assert!(
-        artifactory_control::ota::report(&database.state, node, session, &payload)
+        artifactory_control_plane::ota::report(&database.state, node, session, &payload)
             .await
             .is_err()
     );

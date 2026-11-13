@@ -43,8 +43,8 @@ spec:
       {{- end }}
       containers:
         - name: telemetry
-          image: "{{ .Values.images.control.repository }}:{{ .Values.images.control.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.images.control.pullPolicy }}
+          image: "{{ (index .Values.images "control-plane").repository }}:{{ (index .Values.images "control-plane").tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ (index .Values.images "control-plane").pullPolicy }}
           command: [artifactory-telemetry-service]
           securityContext:
             {{- include "artifactory.containerSecurity" . | nindent 12 }}

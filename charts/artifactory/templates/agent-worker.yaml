@@ -1,8 +1,8 @@
-{{- if .Values.aiWorker.enabled }}
+{{- if .Values.agentWorker.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "artifactory.fullname" . }}-ai-worker
+  name: {{ include "artifactory.fullname" . }}-agent-worker
   labels:
     {{- include "artifactory.labels" . | nindent 4 }}
 spec:
@@ -11,12 +11,12 @@ spec:
   selector:
     matchLabels:
       {{- include "artifactory.selector" . | nindent 6 }}
-      app.kubernetes.io/component: ai-worker
+      app.kubernetes.io/component: agent-worker
   template:
     metadata:
       labels:
         {{- include "artifactory.selector" . | nindent 8 }}
-        app.kubernetes.io/component: ai-worker
+        app.kubernetes.io/component: agent-worker
     spec:
       automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
@@ -30,8 +30,8 @@ spec:
         fsGroup: 10001
         seccompProfile: {type: RuntimeDefault}
       containers:
-        - name: ai-worker
-          {{- $image := index .Values.images "ai-worker" }}
+        - name: agent-worker
+          {{- $image := index .Values.images "agent-worker" }}
           image: "{{ $image.repository }}:{{ $image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ $image.pullPolicy }}
           securityContext:
@@ -40,19 +40,19 @@ spec:
             - name: ARTIFACTORY_AI_ENDPOINT
               value: {{ printf "%s-grpc:8443" (include "artifactory.fullname" .) | quote }}
             - name: ARTIFACTORY_AI_SERVER_NAME
-              value: {{ .Values.aiWorker.serverName | default (printf "%s-grpc" (include "artifactory.fullname" .)) | quote }}
+              value: {{ .Values.agentWorker.serverName | default (printf "%s-grpc" (include "artifactory.fullname" .)) | quote }}
             - name: ARTIFACTORY_AI_CA_FILE
               value: /run/artifactory-pki/ca.pem
           resources:
-            {{- toYaml (index .Values.resources "ai-worker") | nindent 12 }}
+            {{- toYaml (index .Values.resources "agent-worker") | nindent 12 }}
           volumeMounts:
-            - {name: identity, mountPath: /var/lib/artifactory-ai-worker}
+            - {name: identity, mountPath: /var/lib/artifactory-agent-worker}
             - {name: ca, mountPath: /run/artifactory-pki, readOnly: true}
             - {name: tmp, mountPath: /tmp}
       volumes:
         - name: identity
           persistentVolumeClaim:
-            claimName: {{ include "artifactory.fullname" . }}-ai-worker
+            claimName: {{ include "artifactory.fullname" . }}-agent-worker
         - name: ca
           secret:
             secretName: {{ include "artifactory.pki" . }}

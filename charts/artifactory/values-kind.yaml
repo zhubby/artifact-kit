@@ -20,6 +20,6 @@ s3:
     nodePort: 31333
 persistence:
   storageClass: standard
-  control: 1Gi
+  control-plane: 1Gi
   postgres: 1Gi
   s3: 2Gi

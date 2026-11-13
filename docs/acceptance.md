@@ -77,7 +77,7 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 
 ### 数据库与本机回归
 
-- 并发调度领取不重复、不超过节点槽位；中心数据库为真实 PostgreSQL。
+- 并发调度领取不重复、不超过节点槽位；控制平面数据库为真实 PostgreSQL。
 - 未开始租约过期重新入队；已开始租约过期进入 lost，不自动重跑。
 - 不完整制品不能生成 Release；发布在事务内原子可见，版本不可覆盖，幂等重试复用既有发布。
 - Cookie 写请求的 CSRF 检查、Token 项目 / scope / 角色约束、带自动发布版本的 retry 权限检查。
@@ -89,11 +89,11 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 
 ### 三类原生服务生命周期
 
-运行 `42756742531` 在 `23ab4ac3feb5381b5ba5a1936b83928f31cbe696` 上，三类原生作业及 `TestNativeServiceLifecycle` 都通过：Ubuntu 26.04 amd64 的 systemd、macOS 26 arm64 的 launchd、Windows amd64 的 SCM。测试先拒绝既有同名账户 / 服务，再创建专用非管理员账户，注册真实 Agent 二进制为自动启动服务，以 loopback mTLS Go 测试控制端观察认证连接；核对服务进程确实属于该账户，重启后 PID 和认证连接均更换，停止后旧连接关闭，卸载后服务记录消失，测试创建的服务、账户和目录清理完成。Windows 使用实际 NTFS DACL 与单独的服务登录权限；Unix 核对 0700 私有目录和 0600 配置 / 私钥。可执行文件及配置路径含空格、百分号、美元符及模板花括号。
+运行 `42756742531` 在 `23ab4ac3feb5381b5ba5a1936b83928f31cbe696` 上，三类原生作业及 `TestNativeServiceLifecycle` 都通过：Ubuntu 26.04 amd64 的 systemd、macOS 26 arm64 的 launchd、Windows amd64 的 SCM。测试先拒绝既有同名账户 / 服务，再创建专用非管理员账户，注册真实 Agent 二进制为自动启动服务，以 loopback mTLS Go 测试控制平面观察认证连接；核对服务进程确实属于该账户，重启后 PID 和认证连接均更换，停止后旧连接关闭，卸载后服务记录消失，测试创建的服务、账户和目录清理完成。Windows 使用实际 NTFS DACL 与单独的服务登录权限；Unix 核对 0700 私有目录和 0600 配置 / 私钥。可执行文件及配置路径含空格、百分号、美元符及模板花括号。
 
 真实红 / 绿记录包括：Agent 报错后外层服务仍存活、没有 HOME / APPDATA 时提前拒绝显式配置、服务库将 systemd 执行参数转义误用于路径条件、launchd 普通账户无法创建默认 `/var/log` 输出文件。对应修复后均有子进程或原生服务结果。systemd 还分别处理可执行文件和参数的美元符规则；launchd 日志移到专用账户的私有配置目录。早期失败运行保留为失败；部分旧流水线被后续提交替代后取消，未计作成功。
 
-此项没有在用户的 Mac 上安装系统服务，没有执行 VM / 实体机重启，没有给服务分配真实应用或发行签名任务。Go 测试控制端只验证服务管理链路，不代替 Rust 协议联测。自动启动配置存在不等于重启后恢复已验证，空闲服务启停不等于在途构建及子进程终止已验收。
+此项没有在用户的 Mac 上安装系统服务，没有执行 VM / 实体机重启，没有给服务分配真实应用或发行签名任务。Go 测试控制平面只验证服务管理链路，不代替 Rust 协议联测。自动启动配置存在不等于重启后恢复已验证，空闲服务启停不等于在途构建及子进程终止已验收。
 
 ### 在途 Worker 的退出与清理
 
@@ -113,21 +113,21 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 
 ### 完整 Compose / TLS 隔离联测
 
-`scripts/compose_acceptance.py` 从 Git HEAD 快照构建产品镜像，并运行生产清单的 PostgreSQL、SeaweedFS、Rust 控制面、Next.js、Caddy 五个实际服务。运行 `1e38068d0dea` 的产品源码为 `1dae112f6a5319fc0521f092ae30da5fe5240bc8`，外层 23 项及专用 probe 的 21 项检查通过：
+`scripts/compose_acceptance.py` 从 Git HEAD 快照构建产品镜像，并运行生产清单的 PostgreSQL、SeaweedFS、Rust 控制平面、Next.js、Caddy 五个实际服务。运行 `1e38068d0dea` 的产品源码为 `1dae112f6a5319fc0521f092ae30da5fe5240bc8`，外层 23 项及专用 probe 的 21 项检查通过：
 
 - Caddy HTTPS 使用独立内部 CA，Python / Rust / Go 客户端实际校验证书；登录返回 Secure / HttpOnly / SameSite=Strict Cookie，拒绝匿名访问、缺少 CSRF 头和外站 Origin。
 - Go Agent 以新登记证书完成真实 mTLS，并从带 Basic Auth 的 HTTPS Git 固定相同提交，使用 Linux cc 编译、执行校验。
 - 构建仍在运行时，真实 `log` SSE 事件经过 Next.js 与 Caddy 到达客户端；制品经 HTTPS 上传、服务端校验、私有签名下载，独立核对大小 / SHA-256 并运行下载的二进制；匿名下载拒绝。
-- 中心在构建进行中重启；Agent 使用原证书重连，同一个 attempt 继续成功，没有重复派发。原会话、Release 和下载保持可用，随后新建构建再次成功，确认持久化的 Git 凭据可解密。
-- 控制面非 root、read-only、capabilities 全移除；三个宿主端口全部绑定随机 loopback 地址。仅删除归属标签匹配本次 run 的资源，确认既有开发 PostgreSQL / S3 的容器身份、启动时间和重启次数保持。
+- 控制平面在构建进行中重启；Agent 使用原证书重连，同一个 attempt 继续成功，没有重复派发。原会话、Release 和下载保持可用，随后新建构建再次成功，确认持久化的 Git 凭据可解密。
+- 控制平面非 root、read-only、capabilities 全移除；三个宿主端口全部绑定随机 loopback 地址。仅删除归属标签匹配本次 run 的资源，确认既有开发 PostgreSQL / S3 的容器身份、启动时间和重启次数保持。
 
-证据及日志在 `.local/compose-tls/1e38068d0dea/`。本机使用镜像源和已有 Docker 网络设置，控制面 / Web / PostgreSQL / S3 / probe 为 Linux amd64，Caddy 为 Linux arm64/v8；各服务显式采用实际镜像平台，未覆盖原缓存镜像或全局默认平台。控制面和 Web 均验证源码 revision 与 Dockerfile 标签；probe 的测试工具镜像可复用，本次 Go Agent 从相同源码快照重新编译。诊断白名单扫描未发现生成的部署密码、主密钥、S3 secret 或私钥内容。
+证据及日志在 `.local/compose-tls/1e38068d0dea/`。本机使用镜像源和已有 Docker 网络设置，控制平面 / Web / PostgreSQL / S3 / probe 为 Linux amd64，Caddy 为 Linux arm64/v8；各服务显式采用实际镜像平台，未覆盖原缓存镜像或全局默认平台。控制平面和 Web 均验证源码 revision 与 Dockerfile 标签；probe 的测试工具镜像可复用，本次 Go Agent 从相同源码快照重新编译。诊断白名单扫描未发现生成的部署密码、主密钥、S3 secret 或私钥内容。
 
 早期失败保留原状：`7501a32f5242` 是缓存 Caddy 平台与进程默认平台冲突，`ab074741b6d8` 发现生产 tmpfs YAML 拆项，`d011d2795e6a` 是重启测试在 HTTP 就绪前查询节点。对应修正后使用新建资源重新运行。测试 CA 仅存在于独立栈和客户端；完整 Compose 成功不证明公网 DNS / ACME、正式部署主机、实体 Agent 服务重启、五类实际应用或发行签名已经验收。
 
 ### 日志缓冲耗尽与恢复
 
-原设计要求日志缓冲有界、耗尽后明确失败。原有 Go 单测核对了 spool 方法的容量与序号；新增整栈故障测试实际运行 Go Agent / Worker、Rust 中心、PostgreSQL 和私有 S3。运行 `4c9038b3043c` 的产品源码为 `325dea72ac0d6ab8964c6197059802b89be92759`，27 项外围检查与 30 项流量检查全部通过，包含原有 HTTPS / mTLS / SSE / 重启链路。
+原设计要求日志缓冲有界、耗尽后明确失败。原有 Go 单测核对了 spool 方法的容量与序号；新增整栈故障测试实际运行 Go Agent / Worker、Rust 控制平面、PostgreSQL 和私有 S3。运行 `4c9038b3043c` 的产品源码为 `325dea72ac0d6ab8964c6197059802b89be92759`，27 项外围检查与 30 项流量检查全部通过，包含原有 HTTPS / mTLS / SSE / 重启链路。
 
 - 先启动会持续写存活标记的真实后代进程，仅暂停归属本次运行的 S3，随后让 Worker 输出超过 1 MiB 的日志。验收 Agent 使用 1 MiB 缓冲，产品默认配置为 256 MiB。
 - S3 暂停期间，实际磁盘 spool 未越界，Worker 工作目录清理、后代 PID 消失；仍观察到新心跳，构建保持在等待日志确认的运行态。
@@ -144,7 +144,7 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 
 ### 跨语言协议联测
 
-`agent/internal/client/protocol_integration_test.go` 在 `AK_LIVE_TESTS=1` 时连接实际 Rust 中心，使用真实登记证书和对象存储，覆盖：
+`agent/internal/client/protocol_integration_test.go` 在 `AK_LIVE_TESTS=1` 时连接实际 Rust 控制平面，使用真实登记证书和对象存储，覆盖：
 
 - 无节点证书的 Control RPC 被拒绝；不兼容协议主版本被拒绝；首次注册成功。
 - 重复接受任务和事件得到可重放确认；日志有序续传，重复内容接受，冲突内容 / 序号空洞被拒绝。
@@ -158,7 +158,7 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 
 ### 控制消息等待任务锁时的节点授权
 
-独立 Go / mTLS 客户端新增 `TestLiveRustGoProtocolLeaseFencing` 与 `TestLiveRustGoProtocolEventFencing`。测试使用真实 Rust 中心和 PostgreSQL，持有本次 attempt 行锁，以 `pg_blocking_pids` 确认控制请求确实在等待，再提交节点吊销、数据库证书期限失效或新认证会话替换，最后释放行锁并核对持久状态和 RPC 结果。
+独立 Go / mTLS 客户端新增 `TestLiveRustGoProtocolLeaseFencing` 与 `TestLiveRustGoProtocolEventFencing`。测试使用真实 Rust 控制平面和 PostgreSQL，持有本次 attempt 行锁，以 `pg_blocking_pids` 确认控制请求确实在等待，再提交节点吊销、数据库证书期限失效或新认证会话替换，最后释放行锁并核对持久状态和 RPC 结果。
 
 修复前分别实跑复现三类失效授权仍可延长租约、把 leased 任务改为 running，以及写入完成状态 / 事件记录。修复后，在拿到任务锁后持有节点共享锁，并在同一事务用当前数据库时钟、节点授权和 active_session 重新检查；节点吊销 / 会话替换与该次写入串行化，续租 UPDATE 也直接检查当前授权和期限。三类控制消息各含一个正常授权对照和三个失效场景，本机全部 12 项通过；完成事件使用受控 failed 结果，并核对 attempt / job 状态、租约、事件序号及记录数。
 
@@ -191,25 +191,25 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 验收脚本实际创建带 Basic Auth 的 HTTPS Git 仓库，平台加密托管其凭据；使用路径中含空格的真实 Go Agent 执行以下链路：
 
 1. 一次性令牌登记，证书接入、心跳及能力上报。
-2. 中心固定提交、配置和参数；Agent checkout 同一提交。
+2. 控制平面固定提交、配置和参数；Agent checkout 同一提交。
 3. 在 macOS arm64 上用 clang 编译最小 C 程序；依次执行 ad-hoc `codesign`、`codesign --verify` 与原生运行。
 4. 实际上传私有 S3、服务端大小与摘要校验、鉴权下载；下载后再次运行与验证签名。
 5. 自动生成内部 Release、幂等发布重试；同项目同版本冲突保留原 Release。
 6. 缺少必需制品、符号链接逃逸、步骤非零退出、部分目标失败均不能形成整体成功或自动 Release。
 7. 显式 retry 创建不同 attempt；编辑项目后，已排队任务仍使用原始源码快照。
-8. 中心进程被杀后在 90 秒内恢复，继续同一 started attempt，不产生重复构建。
-9. 中心不可用超过执行租约，本机单调截止期限终止实际子进程树；中心恢复后记 lost，不自动重跑。
+8. 控制平面进程被杀后在 90 秒内恢复，继续同一 started attempt，不产生重复构建。
+9. 控制平面不可用超过执行租约，本机单调截止期限终止实际子进程树；控制平面恢复后记 lost，不自动重跑。
 10. 取消以及 Agent SIGKILL 后，Worker / 子进程实际终止；不依赖进程枚举或模拟 ACK 宣称清理成功。
 
 **35 项是脚本检查点数，其中包含预期失败 / lost / canceled 的结果检查；不是 35 个操作系统或签名目标。**
 
 ### SSH 与隔离冷恢复
 
-`scripts/ssh_acceptance.py` 最近一次运行 `1607261e4bc0`，10 项通过。临时 OpenSSH 服务仅监听 loopback，使用生成的主机公钥建立可信 `known_hosts`；密码、TTY 和转发均关闭，远端命令限制为 Git。真实 Rust 控制面加密保存私钥并解析提交，Go Worker 用同一固定提交编译 C，下载后执行并发布 Release；错误主机指纹与未授权密钥在分配 Worker 前失败。该测试不是对外部 Git 服务或生产网络的验收。
+`scripts/ssh_acceptance.py` 最近一次运行 `1607261e4bc0`，10 项通过。临时 OpenSSH 服务仅监听 loopback，使用生成的主机公钥建立可信 `known_hosts`；密码、TTY 和转发均关闭，远端命令限制为 Git。真实 Rust 控制平面加密保存私钥并解析提交，Go Worker 用同一固定提交编译 C，下载后执行并发布 Release；错误主机指纹与未授权密钥在分配 Worker 前失败。该测试不是对外部 Git 服务或生产网络的验收。
 
-冷恢复运行 `8efa99ec0523`，16 项通过。停止本机控制面后，备份 PostgreSQL、S3、环境主密钥和 PKI，在独立标签、全新 Docker 卷及随机 loopback 端口上恢复；21 张 public 表的行摘要和序列状态一致，784 个对象、3,037,785 字节通过实际下载逐字节校验。恢复后既有 Release 下载摘要正确且可执行，新登记的真实 Agent 能用恢复的加密 SSH 凭据构建并发布新 Release，原 Release 保持不变。演练前后源数据库摘要一致，临时容器和卷全部清理，私有备份与证据保留。
+冷恢复运行 `8efa99ec0523`，16 项通过。停止本机控制平面后，备份 PostgreSQL、S3、环境主密钥和 PKI，在独立标签、全新 Docker 卷及随机 loopback 端口上恢复；21 张 public 表的行摘要和序列状态一致，784 个对象、3,037,785 字节通过实际下载逐字节校验。恢复后既有 Release 下载摘要正确且可执行，新登记的真实 Agent 能用恢复的加密 SSH 凭据构建并发布新 Release，原 Release 保持不变。演练前后源数据库摘要一致，临时容器和卷全部清理，私有备份与证据保留。
 
-演练曾复现真实路径缺陷：控制面 / Worker 的数据目录含空格时，OpenSSH 会再次解析 `UserKnownHostsFile`，外层 shell 引号被移除后主机信任文件路径被拆开。修复同时保留 OpenSSH 与 shell 所需的引号；最终冷恢复使用含空格和单引号的数据目录通过。失败运行 `4241b532629f` 以及之后已完成构建但验收脚本误读发布响应的 `a40240c2d147` 均保留为失败记录。
+演练曾复现真实路径缺陷：控制平面 / Worker 的数据目录含空格时，OpenSSH 会再次解析 `UserKnownHostsFile`，外层 shell 引号被移除后主机信任文件路径被拆开。修复同时保留 OpenSSH 与 shell 所需的引号；最终冷恢复使用含空格和单引号的数据目录通过。失败运行 `4241b532629f` 以及之后已完成构建但验收脚本误读发布响应的 `a40240c2d147` 均保留为失败记录。
 
 Linux CI 的 S3 启动问题也有真实红 / 绿验证：0600 配置由宿主 UID 4242 持有时，原入口降为 UID 1000 后读取失败；新入口保留宿主原权限 / 归属，在容器内生成 UID 1000 的 0600 私有副本，S3 就绪、匿名请求被拒绝，主进程以 UID 1000 运行。隔离 Compose / TLS 实跑结果见上节；正式主机和公网部署仍待验收。
 
@@ -244,35 +244,35 @@ Linux CI 的 S3 启动问题也有真实红 / 绿验证：0600 配置由宿主 U
 | Android 应用 | Gradle / apksigner 配置模板已解析 | 未产出 APK / AAB | Android SDK、真实 Gradle 项目、keystore、原生验证与设备 |
 | iOS 应用 | Xcode archive / export 配置模板已解析 | 未产出 IPA | 完整 Xcode、项目、证书 / provisioning profile、分发方式与设备 |
 
-签名私钥没有上传中心。本次 `adhoc-test` 仅验证签名引用授权和原生阶段执行，不是 Developer ID、App Store、Ad Hoc provisioning 或企业分发的验收。内部下载可用不代表任意设备可安装。
+签名私钥没有上传控制平面。本次 `adhoc-test` 仅验证签名引用授权和原生阶段执行，不是 Developer ID、App Store、Ad Hoc provisioning 或企业分发的验收。内部下载可用不代表任意设备可安装。
 
 ## 部署验证与运行边界
 
 - PostgreSQL 与认证 S3 实际在本地 Linux 容器运行；开发端口仅绑定 `127.0.0.1`。
-- 前端 standalone Docker 镜像已构建；使用真实中心完成 10 项浏览器测试，非仅检查 HTTP 200。
-- Rust Linux 控制面镜像已成功构建；隔离 Linux amd64 容器中完成 7 项检查：非 root / 只读根文件系统启动、迁移及私有 S3、内置登录、真实 Linux Go Agent 注册、mTLS 心跳、排空、中心容器重启后的项目 / 节点状态及证书重连。过程使用独立数据库和对象 bucket，没有启动第二个中心操作主验收数据库。
+- 前端 standalone Docker 镜像已构建；使用真实控制平面完成 10 项浏览器测试，非仅检查 HTTP 200。
+- Rust Linux 控制平面镜像已成功构建；隔离 Linux amd64 容器中完成 7 项检查：非 root / 只读根文件系统启动、迁移及私有 S3、内置登录、真实 Linux Go Agent 注册、mTLS 心跳、排空、控制平面容器重启后的项目 / 节点状态及证书重连。过程使用独立数据库和对象 bucket，没有启动第二个控制平面操作主验收数据库。
 - 尚未在正式 Linux 主机运行完整生产 Compose / Caddy / 公网 TLS、远程 Agent 上传和生产备份恢复演练；配置解析成功不能代替部署验收。
 - 三类服务安装 / 卸载 / 手动排空升级命令已经实现并记录，但本次没有在宿主安装系统服务或修改开机启动。
 - Linux 容器运行和 Agent 交叉编译都不能代替用户要求的三类实体机验收。
 
-最后一轮容器证据：`.local/container-smoke/314d392904/evidence.json`，7 项通过，Linux 7.2.12-orbstack x86_64，非 root UID 501。该轮控制面镜像为 `sha256:9857943b2dc629d0a2aabee1862747508a9ab1bc37d34b8a1cc1f96117e82c83`；最终前端镜像为 `sha256:f52c3f640b4a39628f4fa3b33f4dbeab32f9d2340d300af8bcc8caf40233c4ce`。本机镜像标签分别是 `artifact-kit-control:local-acceptance` 和 `artifact-kit-web:local-acceptance`，未发布到镜像仓库。
+最后一轮容器证据：`.local/container-smoke/314d392904/evidence.json`，7 项通过，Linux 7.2.12-orbstack x86_64，非 root UID 501。该轮控制平面镜像为 `sha256:9857943b2dc629d0a2aabee1862747508a9ab1bc37d34b8a1cc1f96117e82c83`；最终前端镜像为 `sha256:f52c3f640b4a39628f4fa3b33f4dbeab32f9d2340d300af8bcc8caf40233c4ce`。本机镜像标签分别是 `artifact-kit-control:local-acceptance` 和 `artifact-kit-web:local-acceptance`，未发布到镜像仓库。
 
 镜像下载存在本地网络限制，本次仅通过构建输入替换使用镜像源并传入本地网络代理，没有改写提交的默认基础镜像或全局 Docker 配置。生产应自行确认镜像来源、固定 digest、受信证书和服务账户权限。
 
 ### 2026-11-10：本机 kind / Helm
 
-已在已有 `kind-substrate-orbstack` 集群的独立 `artifact-kit` 命名空间安装同名 Helm release。节点为 Kubernetes v1.37.0 / Linux arm64；control、PostgreSQL、SeaweedFS 和包含 Next.js / Caddy 的 web Deployment 全部就绪，三个 `standard` PVC 已绑定。控制台为 `http://192.168.97.2:31080`，私有对象存储签名地址为 `http://192.168.97.2:31333`，gRPC TLS 为 `192.168.97.2:31443`；这些是此次本机快照的节点地址。
+已在已有 `kind-substrate-orbstack` 集群的独立 `artifact-kit` 命名空间安装同名 Helm release。节点为 Kubernetes v1.37.0 / Linux arm64；control-plane、PostgreSQL、SeaweedFS 和包含 Next.js / Caddy 的 web Deployment 全部就绪，三个 `standard` PVC 已绑定。控制台为 `http://192.168.97.2:31080`，私有对象存储签名地址为 `http://192.168.97.2:31333`，gRPC TLS 为 `192.168.97.2:31443`；这些是此次本机快照的节点地址。
 
-本轮 control / web 镜像的应用源码基线为 `48b9e72`，均实际构建为 `linux/arm64` 并推入已有本地 registry。control 镜像 ID 为 `sha256:260c821fcc7ba32f86a83e15fbb647b8f509823b2ce1910a03a2b163421f894c`，web 为 `sha256:d63905990f4f0b1e1a2b4a42d44f64180ab17acc65786207a7776ad329103746`。本机默认 Docker 镜像代理认证失败，构建输入使用显式镜像源、HTTPS 软件源及按 Cargo.lock 校验的公开依赖缓存；实际输入、摘要、平台与构建日志保留在 `.local/helm/`，默认 Dockerfile 和全局配置保持原样。
+本轮 control-plane / web 镜像的应用源码基线为 `48b9e72`，均实际构建为 `linux/arm64` 并推入已有本地 registry。control-plane 镜像 ID 为 `sha256:260c821fcc7ba32f86a83e15fbb647b8f509823b2ce1910a03a2b163421f894c`，web 为 `sha256:d63905990f4f0b1e1a2b4a42d44f64180ab17acc65786207a7776ad329103746`。本机默认 Docker 镜像代理认证失败，构建输入使用显式镜像源、HTTPS 软件源及按 Cargo.lock 校验的公开依赖缓存；实际输入、摘要、平台与构建日志保留在 `.local/helm/`，默认 Dockerfile 和全局配置保持原样。
 
 原生联测运行 `acceptance-20261110-210556`，21 项检查通过：
 
 - 网关真实页面与 API、开发 Cookie 登录、匿名请求拒绝、CSRF 与外部 Origin 拒绝。
 - 本机 macOS arm64 Go Agent 经钉住的私有 CA 注册，使用 mTLS 报告真实 `cc` 能力。
-- Rust 中心与原生 Worker 使用 SSH 主机指纹和独立密钥访问同一固定 Git 提交，编译、执行最小 C 程序并登记制品。
+- Rust 控制平面与原生 Worker 使用 SSH 主机指纹和独立密钥访问同一固定 Git 提交，编译、执行最小 C 程序并登记制品。
 - SSE 在构建结束前经 Caddy 返回真实日志；Release 发布重试幂等。
 - 登录后取得 S3 签名下载，文件大小与 SHA-256 正确，下载程序可在本机执行；匿名对象访问被拒绝。
-- 使用同一 values 执行 Helm upgrade，随后重启 control；原会话、Release 与下载保持可用，凭据、CA 和三个 PVC 的身份保留。
+- 使用同一 values 执行 Helm upgrade，随后重启 control-plane；原会话、Release 与下载保持可用，凭据、CA 和三个 PVC 的身份保留。
 
 浏览器另行验证真实登录、六个列表 / 设置页面、重启后的构建日志回放及 Release 页面，8 项页面检查通过，并保存截图和不含凭据的检查记录。管理员初始密码已轮换，旧密码及旧会话失效；新的初始登录信息保存在私有 `.deploy/helm/kind/access.json`。主密钥、数据库 / S3 凭据和 PKI 保持一致。
 
@@ -284,7 +284,7 @@ Linux CI 的 S3 启动问题也有真实红 / 绿验证：0600 配置由宿主 U
 
 ## 复现与剩余验收
 
-快速启动及测试命令见根 README；测试需先启动 PostgreSQL / S3 并加载私有 `.local/env`。端到端脚本自行管理中心、Agent 和 Git 服务，不要在同一端口再启动另一个中心。协议和浏览器测试应在输出 `ACCEPTANCE READY` 后执行。
+快速启动及测试命令见根 README；测试需先启动 PostgreSQL / S3 并加载私有 `.local/env`。端到端脚本自行管理控制平面、Agent 和 Git 服务，不要在同一端口再启动另一个控制平面。协议和浏览器测试应在输出 `ACCEPTANCE READY` 后执行。
 
 交付前仍需提供环境并完成：
 

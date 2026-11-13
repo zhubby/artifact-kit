@@ -114,7 +114,7 @@ class ProductionComposeTests(unittest.TestCase):
                 )
                 manifest = json.loads(result.stdout)
                 self.assertEqual(
-                    manifest['services']['control']['environment'].get('ARTIFACTORY_REGISTRATION_ENABLED'),
+                    manifest['services']['control-plane']['environment'].get('ARTIFACTORY_REGISTRATION_ENABLED'),
                     enabled,
                 )
 
@@ -144,7 +144,7 @@ class ProductionComposeTests(unittest.TestCase):
         )
         manifest = json.loads(result.stdout)
         self.assertEqual(
-            manifest['services']['control']['tmpfs'],
+            manifest['services']['control-plane']['tmpfs'],
             ['/tmp:size=1g,mode=1777'],
             'the size and mode must belong to the same absolute tmpfs mount',
         )

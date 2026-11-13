@@ -1,6 +1,6 @@
 # Substrate / AX 可选调度后端评估
 
-> **后续设计更新（2026-11-12）：** 用户已选择将 native 也调整为 Kubernetes Job/Pod，由独立 Operator 管理，并将源码数据面与运行热路径移出业务控制平面。下文保留首轮评估作为研究依据，其中“native = 现有常驻 Poll AI Worker”和“公共规划逻辑集中在原控制服务”的架构/迁移建议已由 [Operator 架构设计](superpowers/specs/2026-11-12-kubernetes-agent-operator-design.md) 与 [落地计划](plans/2026-11-12-001-feat-kubernetes-agent-operator-plan.md) 取代。Substrate 仍是可选后端，AX 暂缓；本文件固定版本的上游能力和限制仍适用。
+> **后续设计更新（2026-11-12）：** 用户已选择将 native 也调整为 Kubernetes Job/Pod，由独立 Operator 管理，并将源码数据面与运行热路径移出业务控制平面。下文保留首轮评估作为研究依据，其中“native = 现有常驻 Poll Agent worker”和“公共规划逻辑集中在原控制平面”的架构/迁移建议已由 [Operator 架构设计](superpowers/specs/2026-11-12-kubernetes-agent-operator-design.md) 与 [落地计划](plans/2026-11-12-001-feat-kubernetes-agent-operator-plan.md) 取代。Substrate 仍是可选后端，AX 暂缓；本文件固定版本的上游能力和限制仍适用。
 
 > **技术栈确认：** Operator 明确采用 Rust/kube-rs，Runtime/Source 服务也使用 Rust；设备 Artifactory Agent 的现有 Go 实现后续以兼容协议的 Rust 实现逐步替换。下文提及 Go Agent 是当前代码事实，不表示长期语言选型。
 
@@ -8,7 +8,7 @@
 
 **建议保留现有 `native` 后端为默认值，增加可选的 `substrate` 规划运行后端。第一阶段直接对接 Substrate，让它负责 Pi 实例的资源分配、沙箱和生命周期；Artifact Kit 继续负责业务排队、权限、调用预算、检查点、计划校验和构建结果。AX 可作为后续独立适配器，不作为启用 Substrate 的必选依赖。**
 
-这个方向可实施，但需要调整运行协议。当前 AI Worker 不能通过换一个部署镜像就获得 Actor 调度、透明休眠和安全故障切换。现有 macOS / Windows 构建节点及签名执行继续使用 Go Agent；它们对原生操作系统和本机凭据的要求应单独处理。
+这个方向可实施，但需要调整运行协议。当前 Agent worker 不能通过换一个部署镜像就获得 Actor 调度、透明休眠和安全故障切换。现有 macOS / Windows 构建节点及签名执行继续使用 Go Agent；它们对原生操作系统和本机凭据的要求应单独处理。
 
 ## 1. 核验依据与版本
 
@@ -62,17 +62,17 @@ AX 提供 Task、Workspace、Model、Gateway 资源、任务生命周期 API、C
 
 ```text
 提交构建 → 固定源码快照 → planning_runs
-        → AI Worker Poll 领取 → 独立子进程运行 Pi
+        → Agent worker Poll 领取 → 独立子进程运行 Pi
         → submit_plan 校验 → plan_revisions / jobs
         → 调度 Go Agent → 构建 / 签名 / 校验 / 制品
 ```
 
 可复用的核心包括：
 
-- [planning.rs](../crates/control/src/planning.rs)：领取、租约校验、工具、预算、计划提交和过期恢复。
-- [runtime.ts](../ai-worker/src/runtime.ts)：`runTask(task, rpc, signal)` 已将 Pi 推理循环与 RPC 传输分开，是复用 Pi 实现的合适边界。
-- [main.ts](../ai-worker/src/main.ts)：现有进程监督、轮询和心跳，可保留为 native 运行入口。
-- [scheduler.rs](../crates/control/src/scheduler.rs)：源码解析和原生节点匹配；其中原生构建分配应继续服务两个规划后端产生的 jobs。
+- [planning.rs](../crates/control-plane/src/planning.rs)：领取、租约校验、工具、预算、计划提交和过期恢复。
+- [runtime.ts](../packages/agent-worker/src/runtime.ts)：`runTask(task, rpc, signal)` 已将 Pi 推理循环与 RPC 传输分开，是复用 Pi 实现的合适边界。
+- [main.ts](../packages/agent-worker/src/main.ts)：现有进程监督、轮询和心跳，可保留为 native 运行入口。
+- [scheduler.rs](../crates/control-plane/src/scheduler.rs)：源码解析和原生节点匹配；其中原生构建分配应继续服务两个规划后端产生的 jobs。
 
 | 现有或新增概念 | 对应 Substrate / AX | 建议映射 |
 | --- | --- | --- |
@@ -82,13 +82,13 @@ AX 提供 Task、Workspace、Model、Gateway 资源、任务生命周期 API、C
 | Linux 运行容量 | WorkerPool | 专用于 Pi 运行资源；与当前持有签名配置的原生 node pool 分开建模 |
 | AX Task | 可选运行资源 | 若以后使用 AX，作为运行实例的外部记录，不替代 Build / Job / Attempt |
 
-Artifact Kit 的 AI Worker 和 Substrate 的 Worker Pod 是不同概念。现有“一 Worker 同时一个规划”限制的是 Artifact Kit 注册身份和主循环；Substrate Worker 可以容纳多个相互隔离的 Actor。
+Artifact Kit 的 Agent worker 和 Substrate 的 Worker Pod 是不同概念。现有“一 Worker 同时一个规划”限制的是 Artifact Kit 注册身份和主循环；Substrate Worker 可以容纳多个相互隔离的 Actor。
 
 ## 4. 方案比较
 
 | 方案 | 收益 | 主要代价 | 本项目判断 |
 | --- | --- | --- | --- |
-| 保留 native 并扩容 AI Worker | 最大限度复用现有领取、预算和恢复逻辑；运维简单 | 运行实例的隔离、容量和弹性需要自己配置 | 继续支持，作为默认和基线 |
+| 保留 native 并扩容 Agent worker | 最大限度复用现有领取、预算和恢复逻辑；运维简单 | 运行实例的隔离、容量和弹性需要自己配置 | 继续支持，作为默认和基线 |
 | native + 直接接入 Substrate | 获得 Actor 调度、沙箱、资源池和生命周期；较少重复业务概念 | 需要 Pi Actor Runner、身份桥接、可靠派发和状态协调 | **优先做小范围验证** |
 | native + AX + Substrate | 获得声明式 Task / Workspace / Gateway、CLI 和 Runner 框架 | 额外控制平面、API 变更、缺失鉴权、状态重叠及模板开销 | 需要统一 Workspace / MCP 编排时再考虑 |
 
@@ -100,7 +100,7 @@ Artifact Kit 的 AI Worker 和 Substrate 的 Worker Pod 是不同概念。现有
 flowchart TD
     B[Artifact Kit 构建与规划状态]
     Q[规划后端选择与运行实例记录]
-    N[native：现有 AI Worker]
+    N[native：现有 Agent worker]
     S[substrate：可靠派发适配器]
     A[Substrate Actor / Pi Runner]
     P[公共规划服务：工具、预算、检查点、计划校验]
@@ -166,7 +166,7 @@ delete(handle)
 
 ### 身份和模型密钥
 
-当前控制平面按 AI Worker 的 mTLS 证书识别身份，并将模型密钥经任务响应和 IPC 传给 Pi 子进程。Substrate 采用沙箱外身份和出口凭据注入。二者需要明确的桥接，不能把现有 worker 配置、私钥或模型密钥烘焙进 ActorTemplate / golden snapshot，也不能让大量 Actor 共用同一个 AI Worker 注册身份。
+当前控制平面按 Agent worker 的 mTLS 证书识别身份，并将模型密钥经任务响应和 IPC 传给 Pi 子进程。Substrate 采用沙箱外身份和出口凭据注入。二者需要明确的桥接，不能把现有 worker 配置、私钥或模型密钥烘焙进 ActorTemplate / golden snapshot，也不能让大量 Actor 共用同一个 Agent worker 注册身份。
 
 建议在可信边界提供受限网关，验证 Substrate 发行方、audience、Actor UID 与运行实例绑定，再调用公共规划逻辑。Actor JWT 标识 Actor，不自动授予访问任意构建的权限；网关必须验证它只能访问自己的 run。Actor 不需要获得 Substrate 管理权限。
 
@@ -216,7 +216,7 @@ Substrate 对大量长期存在、经常等待外部事件的 Actor 很有价值
 | 创建 Actor 已提交但响应超时 | 使用确定的外部标识查询协调；只有一个有效 execution 取得写权限 |
 | 取消与提交计划并发 | 复用现有事务排序；取消生效后旧实例不能再创建 jobs |
 | 旧 Actor 复活 / 同名重建 | UID、generation 和租约校验拒绝旧回调 |
-| Worker / 控制服务重启 | 从持久化记录协调，预算、检查点和后端归属不丢失 |
+| Worker / 控制平面重启 | 从持久化记录协调，预算、检查点和后端归属不丢失 |
 | 模型失败 / 预算耗尽 | 使用现有错误分类和终态；重建 Actor 不重置同一轮预算 |
 | 清理失败 | 有限重试并观测遗留 Actor；成功业务结果保持成功 |
 | 切回 native 默认值 | 后续构建使用 native；已经启动的 substrate 执行保持原归属或先撤销再重分配 |
@@ -235,7 +235,7 @@ Substrate 对大量长期存在、经常等待外部事件的 Actor 很有价值
 4. **按结果扩容。** 增加排队驱动扩容、项目并发配额、批量协调和可观测性；通过对照压测再扩展项目覆盖。中途休眠另行实现并验收。
 5. **按需求决定 AX。** 若确实需要统一的 Task / Workspace / MCP 声明和 CLI，再增加 AX 适配器。先满足其受信访问边界、Runner 合同、完成判定和协议兼容要求。
 
-初期改动预计集中在 `crates/control/src/planning.rs`、后端配置与数据库迁移、新增运行适配模块、`ai-worker` 的 Actor 入口以及可选部署配置。Go 原生构建协议不需要因第一阶段接入而整体重写。
+初期改动预计集中在 `crates/control-plane/src/planning.rs`、后端配置与数据库迁移、新增运行适配模块、`agent-worker` 的 Actor 入口以及可选部署配置。Go 原生构建协议不需要因第一阶段接入而整体重写。
 
 ## 11. 主要上游来源
 

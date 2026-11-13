@@ -246,8 +246,8 @@ class ProviderAcceptance:
             self.evidence['images']=a.images()
             self.evidence['emissary_binary_sha256']=a.kubectl('exec','deploy/device','--','sha256sum','/usr/local/bin/artifactory-emissary').split()[0]
             source_hash=hashlib.sha256()
-            sources=[ROOT/'Cargo.toml',ROOT/'Cargo.lock',ROOT/'ai-worker/package-lock.json']
-            for directory in ('crates','operator/src','ai-worker/src','proto'):
+            sources=[ROOT/'Cargo.toml',ROOT/'Cargo.lock',ROOT/'packages/agent-worker/package-lock.json']
+            for directory in ('crates','operator/src','packages/agent-worker/src','proto'):
                 sources.extend(path for path in (ROOT/directory).rglob('*') if path.is_file())
             for path in sorted(sources):
                 source_hash.update(str(path.relative_to(ROOT)).encode()+b'\0'+path.read_bytes()+b'\0')

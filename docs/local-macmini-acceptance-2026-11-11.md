@@ -2,7 +2,7 @@
 
 日期：2026-11-11，Asia/Shanghai。最终检查时间：16:23。
 
-复审确认的 S3 凭据文件截断问题已修复，新版已部署到本机控制中心、前端和 `codehubmac-mini` 的专用 Agent。服务保持运行，最终没有活动构建，Agent 在线且未排空。
+复审确认的 S3 凭据文件截断问题已修复，新版已部署到本机控制平面、前端和 `codehubmac-mini` 的专用 Agent。服务保持运行，最终没有活动构建，Agent 在线且未排空。
 
 ## 修复与候选代码
 
@@ -14,19 +14,19 @@
 
 | 部件 | 部署内容 |
 |---|---|
-| Rust | `artifactory-control 0.1.0`，macOS arm64 release |
+| Rust | `artifactory-control-plane 0.1.0`，macOS arm64 release |
 | 前端 | `artifactory-console 0.1.0`，Next.js 生产 standalone |
 | Agent | `artifactory-agent 0.1.0`，macOS arm64，protocol 1，注入上述候选 SHA |
-| 控制中心 SHA-256 | `53e3f3319d2dfdf6a7cb0207874665637b460a0de829928e06694a95d9853ada` |
+| 控制平面 SHA-256 | `53e3f3319d2dfdf6a7cb0207874665637b460a0de829928e06694a95d9853ada` |
 | 最终 Agent SHA-256 | `c2b29f3ef95ac65289ccb7c893dbbadc7e4057eb5340d16dd6568b140dcfebcf` |
 
 本机 Rust release 构建遇到工具链生成的 SQLx 编译插件无法被 macOS 加载的问题。使用以下构建覆盖后成功；产品 release 的其余设置保留：
 
 ```sh
-cargo --config 'profile.release.build-override.strip="none"' build --release --locked --bin artifactory-control
+cargo --config 'profile.release.build-override.strip="none"' build --release --locked --bin artifactory-control-plane
 ```
 
-前端使用实际控制中心地址重新构建，API rewrite 指向 `127.0.0.1:28080`，避免复用测试构建中的默认端口。
+前端使用实际控制平面地址重新构建，API rewrite 指向 `127.0.0.1:28080`，避免复用测试构建中的默认端口。
 
 ## 部署和数据保留
 
@@ -46,7 +46,7 @@ Mac mini 的固定启动器为 `/usr/local/libexec/artifactory/artifactory-agent
 | 新配置与构建 | 认证 HTTPS Git 仓库仅使用 `artifactory.yaml` 和新步骤环境变量；Mac mini 完成真实 Xcode Release 构建、ad-hoc 签名和严格签名验证 |
 | 日志与制品 | 观察到任务仍运行时的真实 HTTPS SSE 快照和远端日志；三个制品上传、签名下载、字节数和 SHA-256 匹配，无签名 S3 读取被拒绝 |
 | 失败与取消 | 故意退出码 23 按预期失败；运行中取消成功；两者均无制品和发布；最终远端工作目录、日志缓冲和 Worker 进程均已清理 |
-| 服务重启 | 本机控制中心和 Mac mini launchd 均更换 PID；Agent 自动重连，后续真实构建、发布及三份下载成功 |
+| 服务重启 | 本机控制平面和 Mac mini launchd 均更换 PID；Agent 自动重连，后续真实构建、发布及三份下载成功 |
 | 原生应用 | 下载后的应用在本机独立执行自测；同一下载包在 Mac mini 登录会话中通过严格签名检查、进入 AppKit GUI 事件循环并正常自动退出 |
 | 实际浏览器 | 10 个已部署页面场景通过，覆盖中英文、1440px 桌面与 390px 移动端；展开的移动导航显示 `artifactory`；主题存储和语言 Cookie 使用新前缀，0 个运行时错误 |
 | 五平台资源 | Linux amd64 / arm64、macOS amd64 / arm64、Windows amd64 均从候选代码构建，资源名均为 `artifactory-agent-…`，版本注入参数使用实际 Go 模块路径 |

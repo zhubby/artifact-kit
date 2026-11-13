@@ -6,7 +6,7 @@
 
 | 数据 | 唯一写入方 | 存储 |
 | --- | --- | --- |
-| 项目权限、Build、计划接纳、设备 Job/Attempt、制品、Release | control | 业务 PostgreSQL |
+| 项目权限、Build、计划接纳、设备 Job/Attempt、制品、Release | control-plane | 业务 PostgreSQL |
 | 运行队列、有效 Pod、租约、累计模型预算、deadline、checkpoint、提案投递状态 | planner-runtime | 独立 PostgreSQL |
 | 固定 manifest、Git/submodule/tag/LFS 对象、凭据版本、保留引用 | source-service | 独立 PostgreSQL、分片 PVC、S3 |
 | AgentPool/SourcePool 配置 | 管理员 / Helm | Kubernetes API |
@@ -21,7 +21,7 @@
 
 | Runtime 路径 | 调用方 / 身份 | 作用 |
 | --- | --- | --- |
-| `/v1/intent` | control / 服务令牌 | 不可变运行意图，或高版本 cancel tombstone |
+| `/v1/intent` | control-plane / 服务令牌 | 不可变运行意图，或高版本 cancel tombstone |
 | `/v1/queue` | Operator / 服务令牌 | pool/project 原子准入，重返所有有效 descriptor 以恢复未知创建结果 |
 | `/v1/get`、`/v1/register` | Operator / 服务令牌 | 读取生命周期、登记真实 Pod UID |
 | `/v1/acquire` | Pi / Kubernetes 投射令牌 | TokenReview audience `artifactory-runtime`，核验命名空间、SA、Pod 名及 UID |
@@ -33,9 +33,9 @@
 
 Source 的 `/v1/capture` 以 operation UUID 和输入摘要幂等冻结源码，`/v1/metadata` 只返回固定 manifest/digest；`/v1/inspect`、`/v1/evidence` 校验同一快照，`/v1/refs` 提供只读引用查询，`/v1/retain` 添加保留引用。以上端点使用服务令牌。Pi 的 `/v1/tool` 使用 run grant，直接读取 Source。设备通过 `/api/v1/source/{snapshot}/{entry}/git/...` 与 `/lfs/...` 下载，兼容现有 Basic/askpass 及 Bearer 临时凭证。
 
-Source capture 返回的 `origin` 是设备下载基址；control 在 `source_snapshots.public_origin` 固定它，另存 `service_origin` 用于 Pi、证据核验和元数据 RPC。设备 Git/LFS descriptor 使用公开地址，LFS batch 中的下载 href 使用同一公开地址。地址不允许用户密码、query 或 fragment，生产要求 HTTPS。`0011_source_public_origin.sql` 是追加迁移；旧快照没有公开地址时沿用原 service origin，本地快照继续使用 control public URL。修改下载网关后必须保留历史地址或显式迁移对应元数据，不能改变源码 digest/manifest。
+Source capture 返回的 `origin` 是设备下载基址；control-plane 在 `source_snapshots.public_origin` 固定它，另存 `service_origin` 用于 Pi、证据核验和元数据 RPC。设备 Git/LFS descriptor 使用公开地址，LFS batch 中的下载 href 使用同一公开地址。地址不允许用户密码、query 或 fragment，生产要求 HTTPS。`0011_source_public_origin.sql` 是追加迁移；旧快照没有公开地址时沿用原 service origin，本地快照继续使用 control-plane public URL。修改下载网关后必须保留历史地址或显式迁移对应元数据，不能改变源码 digest/manifest。
 
-control 的 `/internal/runtime/event` 幂等接纳阶段结果，`/internal/runtime/tool` 提供设备能力/失败日志，`/internal/runtime/source-authorize` 仅短事务核验设备 attempt 权限。内部端点同样要求服务令牌，禁止从公网直接暴露。
+control-plane 的 `/internal/runtime/event` 幂等接纳阶段结果，`/internal/runtime/tool` 提供设备能力/失败日志，`/internal/runtime/source-authorize` 仅短事务核验设备 attempt 权限。内部端点同样要求服务令牌，禁止从公网直接暴露。
 
 服务默认 HTTPS，证书由 `ARTIFACTORY_SERVICE_TLS_CERT/KEY` 指定，客户端可用 `ARTIFACTORY_SERVICE_CA` 添加私有 CA。只有显式 `ARTIFACTORY_INSECURE_DEV=true` 可使用 HTTP。服务客户端禁重定向，JSON 请求/响应默认上限 2 MiB；源码 Git/LFS 数据流不受 JSON 限制。错误响应不返回内部凭据或上游认证信息。
 
@@ -52,7 +52,7 @@ control 的 `/internal/runtime/event` 幂等接纳阶段结果，`/internal/runt
 
 Pi 在提交工具前保存含 pending_tool 的检查点。Runtime 原子登记 proposal、原 generation/deadline、固定 snapshot digest 和 outbox；pending 阻止新推理及物理重试。接纳确认丢失只查询或投递原 proposal，不重新调用模型。
 
-control 在持业务行锁之前完成远程证据校验，再以 Build → run 的锁顺序检查取消、期限、修订、平台和签名约束，并使用原计划验证/创建 Job 逻辑。接纳结果与 receipt 同一事务提交；重投返回原 revision，即使之后取消或 deadline 到期。非法计划返回工具错误，Pi 可在原预算内修正。真正超期且未接纳的提案不能新建任务。
+control-plane 在持业务行锁之前完成远程证据校验，再以 Build → run 的锁顺序检查取消、期限、修订、平台和签名约束，并使用原计划验证/创建 Job 逻辑。接纳结果与 receipt 同一事务提交；重投返回原 revision，即使之后取消或 deadline 到期。非法计划返回工具错误，Pi 可在原预算内修正。真正超期且未接纳的提案不能新建任务。
 
 源码持久包 Ready 前写入 Git bundle、LFS 对象及 manifest；源码操作保存首次解析的 commit/tag。PVC 丢失从 S3 恢复，再核验 Git 对象和 LFS SHA-256。SourceSnapshot CRD 删除不删除持久对象；首期没有破坏性 GC，保留引用不可用时保守保留。
 

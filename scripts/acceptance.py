@@ -240,9 +240,9 @@ def start_control(timeout=30):
             raise RuntimeError(f'Port {endpoint.port} is already occupied; stop the manually started control plane first.')
     except ConnectionRefusedError:
         pass
-    log_path = DIRECTORY / 'control.log'
+    log_path = DIRECTORY / 'control-plane.log'
     with log_path.open('ab') as log:
-        process = subprocess.Popen([str(ROOT / 'target/debug/artifactory-control')], cwd=ROOT, env=dict(os.environ, GIT_SSL_CAINFO=str(PKI / 'ca.pem')), stdout=log, stderr=log)
+        process = subprocess.Popen([str(ROOT / 'target/debug/artifactory-control-plane')], cwd=ROOT, env=dict(os.environ, GIT_SSL_CAINFO=str(PKI / 'ca.pem')), stdout=log, stderr=log)
 
     def ready():
         status = process.poll()

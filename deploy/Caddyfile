@@ -1,7 +1,7 @@
 {$ARTIFACTORY_DOMAIN} {
     encode zstd gzip
     handle /api/* {
-        reverse_proxy control:8080 {
+        reverse_proxy control-plane:8080 {
             flush_interval -1
         }
     }

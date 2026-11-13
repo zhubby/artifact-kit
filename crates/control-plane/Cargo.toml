@@ -1,5 +1,5 @@
 [package]
-name = "artifactory-control"
+name = "artifactory-control-plane"
 version.workspace = true
 edition.workspace = true
 

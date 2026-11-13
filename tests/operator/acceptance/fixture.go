@@ -180,7 +180,7 @@ func main() {
 		}
 		backend.ServeHTTP(w, r)
 	})
-	control, _ := url.Parse("http://control:8080")
+	control, _ := url.Parse("http://control-plane:8080")
 	proxy := httputil.NewSingleHostReverseProxy(control)
 	proxy.ModifyResponse = func(response *http.Response) error {
 		if response.Request.URL.Path != "/internal/runtime/event" {

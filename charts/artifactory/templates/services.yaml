@@ -1,4 +1,4 @@
-{{- range $component := list "postgres" "s3" "control" "web" "grpc" }}
+{{- range $component := list "postgres" "s3" "control-plane" "web" "grpc" }}
 {{- $settings := dict "type" "ClusterIP" }}
 {{- $port := 5432 }}
 {{- $target := "postgres" }}
@@ -7,7 +7,7 @@
 {{- $settings = $.Values.s3.service }}
 {{- $port = 8333 }}
 {{- $target = "s3" }}
-{{- else if eq $component "control" }}
+{{- else if eq $component "control-plane" }}
 {{- $port = 8080 }}
 {{- $target = "http" }}
 {{- else if eq $component "web" }}
@@ -18,7 +18,7 @@
 {{- $settings = $.Values.grpc.service }}
 {{- $port = 8443 }}
 {{- $target = "grpc" }}
-{{- $selector = "control" }}
+{{- $selector = "control-plane" }}
 {{- end }}
 ---
 apiVersion: v1

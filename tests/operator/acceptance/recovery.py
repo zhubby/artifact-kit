@@ -37,7 +37,7 @@ class Recovery:
         self.pg_port = str(args.postgres_port)
         if not self.pg_restore or not self.psql:
             raise ValueError('Install a PostgreSQL client compatible with the PostgreSQL 17 archive before running this drill')
-        self.replicas = {'deploy/control': 1, 'deploy/native-runtime': 1, 'deploy/native-operator': 2, 'deploy/native-telemetry':1, 'statefulset/sources': 1}
+        self.replicas = {'deploy/control-plane': 1, 'deploy/native-runtime': 1, 'deploy/native-operator': 2, 'deploy/native-telemetry':1, 'statefulset/sources': 1}
 
     def scale(self, stopped):
         if stopped:
@@ -46,7 +46,7 @@ class Recovery:
         for resource, replicas in self.replicas.items():
             self.a.kubectl('scale', resource, '--replicas=' + str(0 if stopped else replicas))
         if stopped:
-            self.a.wait(lambda: not any(p['metadata']['name'].startswith(('control-', 'native-runtime-', 'native-operator-', 'native-telemetry-','sources-')) for p in json.loads(self.a.kubectl('get', 'pods', '-o', 'json'))['items']), 120)
+            self.a.wait(lambda: not any(p['metadata']['name'].startswith(('control-plane-', 'native-runtime-', 'native-operator-', 'native-telemetry-','sources-')) for p in json.loads(self.a.kubectl('get', 'pods', '-o', 'json'))['items']), 120)
 
     def telemetry_state(self):
         tables=['telemetry_batches','host_samples','process_samples','build_samples','inventory_versions','inventory_observations','latest_hosts','latest_inventories','host_minutes','host_hours','build_minutes','build_hours']
@@ -126,7 +126,7 @@ class Recovery:
             telemetry_before=self.telemetry_state()
             dumps = {db: self.dump(db) for db in ['business', 'planner', 'sources','telemetry']}
             # Full private backup; only hashes are included in exported evidence.
-            resources = [json.loads(a.kubectl('get', 'secret', name, '-o', 'json')) for name in ['control', 'runtime', 'source','telemetry', 'service-tls', 'acceptance-pki']]
+            resources = [json.loads(a.kubectl('get', 'secret', name, '-o', 'json')) for name in ['control-plane', 'runtime', 'source','telemetry', 'service-tls', 'acceptance-pki']]
             routes = [json.loads(a.kubectl('get', kind, '-o', 'json')) for kind in ['agentpools', 'sourcepools']]
             (self.directory / 'private-keys-and-routes.json').write_text(json.dumps({'secrets': resources, 'routes': routes}))
             key_hash = hashlib.sha256(json.dumps([r['data'] for r in resources], sort_keys=True).encode()).hexdigest()
@@ -180,7 +180,7 @@ class Recovery:
             a.check('all four TimescaleDB databases restore with telemetry data intact',True)
             self.close_forwards()
             self.scale(False)
-            a.kubectl('rollout', 'status', 'deploy/control', '--timeout=180s')
+            a.kubectl('rollout', 'status', 'deploy/control-plane', '--timeout=180s')
             a.kubectl('rollout', 'status', 'deploy/native-runtime', '--timeout=180s')
             a.kubectl('rollout', 'status', 'statefulset/sources', '--timeout=180s')
             a.resume()

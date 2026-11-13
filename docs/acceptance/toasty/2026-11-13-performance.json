@@ -141,7 +141,7 @@
     "machine": "arm64"
   },
   "baseline_executables_sha256": {
-    "control": "b5dd99eb559f7e2290e9d0d88c198f902528119b798fdfb5586e9ceaadd4cf75",
+    "control-plane": "b5dd99eb559f7e2290e9d0d88c198f902528119b798fdfb5586e9ceaadd4cf75",
     "telemetry": "d0716c73caac6df0047fdbe5d3f8817da69b88e4bfe0abb92261790cb7148302"
   },
   "toasty_code_commit": "b359028decaa3e0d3a237c2e0cbf434360fcd65f",

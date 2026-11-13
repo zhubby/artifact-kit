@@ -26,7 +26,7 @@ services:
       - objects:/data
       - ./.deploy/s3.json:/etc/seaweed/s3.json:ro
       - ./deploy/seaweed-entrypoint.sh:/run/artifactory-s3-entrypoint.sh:ro
-  control:
+  control-plane:
     build: .
     restart: unless-stopped
     user: ${ARTIFACTORY_UID:-10001}:${ARTIFACTORY_GID:-10001}
@@ -57,7 +57,7 @@ services:
       ARTIFACTORY_TELEMETRY_TOKEN: ${ARTIFACTORY_TELEMETRY_TOKEN}
     volumes:
       - ./.deploy/pki:/run/artifactory-pki:ro
-      - ./.deploy/control:/var/lib/artifactory
+      - ./.deploy/control-plane:/var/lib/artifactory
     ports:
       - ${ARTIFACTORY_GRPC_LISTEN:-0.0.0.0}:8443:8443
     security_opt: [no-new-privileges:true]
@@ -72,7 +72,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      control:
+      control-plane:
         condition: service_started
     environment:
       DATABASE_URL: postgres://artifactory_telemetry:${ARTIFACTORY_TELEMETRY_DATABASE_PASSWORD}@postgres:5432/artifactory_telemetry
@@ -95,23 +95,23 @@ services:
   web:
     build: ./web
     restart: unless-stopped
-    depends_on: [control]
+    depends_on: [control-plane]
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
-  ai-worker:
+  agent-worker:
     build:
       context: .
-      dockerfile: ai-worker/Dockerfile
+      dockerfile: packages/agent-worker/Dockerfile
     restart: unless-stopped
     user: ${ARTIFACTORY_UID:-10001}:${ARTIFACTORY_GID:-10001}
-    depends_on: [control]
+    depends_on: [control-plane]
     environment:
-      ARTIFACTORY_AI_ENDPOINT: control:8443
+      ARTIFACTORY_AI_ENDPOINT: control-plane:8443
       ARTIFACTORY_AI_SERVER_NAME: ${ARTIFACTORY_GRPC_HOST}
       ARTIFACTORY_AI_CA_FILE: /run/artifactory-pki/ca.pem
     volumes:
       - ./.deploy/pki/ca.pem:/run/artifactory-pki/ca.pem:ro
-      - ./.deploy/ai-worker:/var/lib/artifactory-ai-worker
+      - ./.deploy/agent-worker:/var/lib/artifactory-agent-worker
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     read_only: true

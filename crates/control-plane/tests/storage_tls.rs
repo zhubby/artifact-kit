@@ -1,4 +1,4 @@
-use artifactory_control::{settings::Settings, storage::Storage};
+use artifactory_control_plane::{settings::Settings, storage::Storage};
 use std::process::Command;
 
 #[test]

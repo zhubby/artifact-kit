@@ -8,7 +8,7 @@ HTTP、gRPC、调度和后台任务通过业务服务调用 store。连接、模
 
 | 数据库 | 实现 | 初始化版本 |
 |---|---|---|
-| Business / Control | `crates/control/src/store/` | 2026111301 |
+| Business / Control | `crates/control-plane/src/store/` | 2026111301 |
 | Runtime | `crates/planner-runtime/src/store.rs`、`store/` | 2026111302 |
 | Source | `crates/source-core/src/store/`；服务初始化位于 source-service/store | 2026111303 |
 | Telemetry | `crates/telemetry-service/src/store/` | 2026111304 |
@@ -39,7 +39,7 @@ Control 初始化后、Telemetry 启动前，按 [遥测授权说明](telemetry.
 Control 支持只执行迁移：
 
 ```sh
-artifactory-control migrate
+artifactory-control-plane migrate
 ```
 
 使用新环境的私有配置运行该命令。Runtime、Source 和 Telemetry 通过各自服务启动完成初始化，只启动该部署模式启用的服务。随后在隔离入口下启动 Control，利用新 bootstrap 配置初始化管理员。首次验收前重新配置项目、凭据、模型配置、节点池和规划授权。

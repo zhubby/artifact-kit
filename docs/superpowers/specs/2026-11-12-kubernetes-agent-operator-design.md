@@ -41,12 +41,12 @@ scope: native-first-phase
 
 | 当前路径 | 已核对行为 | 设计影响 |
 | --- | --- | --- |
-| [planning.rs](../../../crates/control/src/planning.rs) | FIFO + `SKIP LOCKED` 领取，每个 AI Worker 同时一个规划；90 秒租约；首次领取启动默认 600 秒逻辑截止时间，重试保留它 | 可复用业务规则，但每个 Pi 的租约与调用不能继续落在业务控制服务 |
-| [main.ts](../../../ai-worker/src/main.ts) / [runtime.ts](../../../ai-worker/src/runtime.ts) | 空闲约每 2 秒 Poll，运行约每 10 秒心跳；父进程监督 Pi 子进程；`runTask` 分离了推理与传输 | 复用 `runTask`，增加按运行启动的入口，逐步退出常驻 Poll 模式 |
-| [source_cache.rs](../../../crates/control/src/source_cache.rs) | 在控制进程内执行 Git、递归 submodule、LFS、快照恢复、搜索、证据路径核验和缓存回收 | 需要抽取源码服务，单独搬 Pi 不会卸掉这些负载 |
-| [source_http.rs](../../../crates/control/src/api/source_http.rs) | Git/LFS 数据经过控制进程；传输持有防回收锁/事务，限制为 6 个并发传输 | 数据面应直接路由到源码服务，传输保护不再占用业务数据库长事务 |
-| [scheduler.rs](../../../crates/control/src/scheduler.rs) | 源码解析用全局 advisory lock；另有 Go 节点 OS/arch、工具、签名、pool/slots 匹配 | 源码操作改为仓库级并行；保留 Go 节点业务调度 |
-| [main.rs](../../../crates/control/src/main.rs) | 业务 PostgreSQL 连接池上限 20 | 运行和源码使用独立连接池、数据所有权，避免长操作挤占业务事务 |
+| [planning.rs](../../../crates/control-plane/src/planning.rs) | FIFO + `SKIP LOCKED` 领取，每个 Agent worker 同时一个规划；90 秒租约；首次领取启动默认 600 秒逻辑截止时间，重试保留它 | 可复用业务规则，但每个 Pi 的租约与调用不能继续落在业务控制平面 |
+| [main.ts](../../../packages/agent-worker/src/main.ts) / [runtime.ts](../../../packages/agent-worker/src/runtime.ts) | 空闲约每 2 秒 Poll，运行约每 10 秒心跳；父进程监督 Pi 子进程；`runTask` 分离了推理与传输 | 复用 `runTask`，增加按运行启动的入口，逐步退出常驻 Poll 模式 |
+| [source_cache.rs](../../../crates/control-plane/src/source_cache.rs) | 在控制进程内执行 Git、递归 submodule、LFS、快照恢复、搜索、证据路径核验和缓存回收 | 需要抽取源码服务，单独搬 Pi 不会卸掉这些负载 |
+| [source_http.rs](../../../crates/control-plane/src/api/source_http.rs) | Git/LFS 数据经过控制进程；传输持有防回收锁/事务，限制为 6 个并发传输 | 数据面应直接路由到源码服务，传输保护不再占用业务数据库长事务 |
+| [scheduler.rs](../../../crates/control-plane/src/scheduler.rs) | 源码解析用全局 advisory lock；另有 Go 节点 OS/arch、工具、签名、pool/slots 匹配 | 源码操作改为仓库级并行；保留 Go 节点业务调度 |
+| [main.rs](../../../crates/control-plane/src/main.rs) | 业务 PostgreSQL 连接池上限 20 | 运行和源码使用独立连接池、数据所有权，避免长操作挤占业务事务 |
 
 例如 1,000 个活动 Pi、10 秒一次心跳，对应约 100 次心跳/秒；1,000 个空闲 Poll Worker 对应约 500 次领取请求/秒。这只是由当前周期推导的请求量，不能作为实际容量测试结果。
 
@@ -83,7 +83,7 @@ flowchart TB
 
 图中的 Runtime Gateway 是独立服务，**不是**原控制进程的一个新路由名。它包含运行协调和模型代理，首期合并部署以减少组件数量。
 
-Source 为内部 RPC 与设备下载维护独立地址。Pi、元数据和证据核验使用 shard 的 Kubernetes HTTPS 地址；集群外设备使用 SourcePool `publicUrlTemplate` 指定的公开下载网关。control 固定保存两个 origin，Git/LFS 字节由 Source 直接发送给设备，公开网关只暴露下载路径。
+Source 为内部 RPC 与设备下载维护独立地址。Pi、元数据和证据核验使用 shard 的 Kubernetes HTTPS 地址；集群外设备使用 SourcePool `publicUrlTemplate` 指定的公开下载网关。control-plane 固定保存两个 origin，Git/LFS 字节由 Source 直接发送给设备，公开网关只暴露下载路径。
 
 | 组件 | 负责 | 不承担的职责边界 |
 | --- | --- | --- |
@@ -168,7 +168,7 @@ RWO 允许同一节点上的多个 Pod 挂载，不能作为 Git 并发写保护
 
 - Pi 的 `list_tree/read_file/search_source/git_metadata` 直接调用 Source Service；保持现有分页、256 KiB 文件读取与有界搜索语义。初期复用 Git 检索保证正确性，索引优化必须返回同一固定快照的结果。
 - Go Agent 从 Source Service 读取 Git upload-pack / LFS，Ingress/独立 source origin 直接把数据流送到该服务。现有 descriptor 可继续使用绝对 URL，不依赖跨 origin 重定向转发凭据。
-- Pi 使用 Runtime 的 run/generation/UID grant。Go Agent 的 attempt 权威仍在业务控制服务，源码服务在新传输授权及等待缓存锁后通过短请求重新核对；只传递权限元数据，不传源码字节、不保持业务长事务。业务服务不可用时新的 Go 下载授权失败关闭。
+- Pi 使用 Runtime 的 run/generation/UID grant。Go Agent 的 attempt 权威仍在业务控制平面，源码服务在新传输授权及等待缓存锁后通过短请求重新核对；只传递权限元数据，不传源码字节、不保持业务长事务。业务服务不可用时新的 Go 下载授权失败关闭。
 - 计划证据路径由 Source Service 对固定快照核验。业务服务在事务外取得绑定 snapshot/proposal digest 和验证版本的结果，再进入短事务重查取消/版本/权限并接纳计划；不再本地调用 Git。
 
 当前 Go attempt 的取消/租约和签名限制继续有效。源码锁等待后必须再次核验授权，不能因为下载 URL 尚未过期就允许失效 attempt 开始读取。正在进行的数据流按服务读取租约处理，取消不承诺收回已经传出的字节。
@@ -213,7 +213,7 @@ RWO 允许同一节点上的多个 Pod 挂载，不能作为 Git 并发写保护
 | 事件 | 必须实现的行为 |
 | --- | --- |
 | 用户取消 | 业务事务立即拒绝后续计划接纳并写取消 outbox；Runtime 收到后撤销 grant，Operator 删除/终止资源。区分“业务已取消”与“物理停止已观察到” |
-| 控制服务与 Runtime 断联 | 已授权运行可在既定预算/deadline 内执行并保存提案；业务取消向执行侧收敛可能延迟，最终接纳仍由业务事务拒绝。恢复后按版本重放，不假装已经停止 |
+| 控制平面与 Runtime 断联 | 已授权运行可在既定预算/deadline 内执行并保存提案；业务取消向执行侧收敛可能延迟，最终接纳仍由业务事务拒绝。恢复后按版本重放，不假装已经停止 |
 | Runner 与 Runtime 断联 | 无法续租/代理调用后停止；旧 grant 到期失效。租约过期后可在原预算/deadline 内创建新 generation |
 | Job/Actor 创建结果未知 | 使用固定 ID 查询并对照 UID；确认状态前不转投另一后端 |
 | Job 退出但没有结果交接 | 记录协议失败，不转换成规划成功；由 Runtime 决定有界重试 |
@@ -254,7 +254,7 @@ Runtime 按 pool/project 做准入，限制活动、provisioning 和排队总量
 | Pi Poll/周期心跳、checkpoint 和逐次模型计数 | 业务 outbox、阶段结果、少量节点能力/构建日志查询 |
 | 源码缓存写锁与长下载读取保护 | Go 构建 Agent 的现有调度、租约、日志/制品协议 |
 
-这降低的是业务控制服务的热路径压力，总计算和数据库工作不会凭空消失。Go 构建协议若成为下一个瓶颈，可另行拆分，本次不扩展为整个构建系统重写。
+这降低的是业务控制平面的热路径压力，总计算和数据库工作不会凭空消失。Go 构建协议若成为下一个瓶颈，可另行拆分，本次不扩展为整个构建系统重写。
 
 建议候选验证档位为 100/500/1,000 活动运行及 10,000 排队意图，按实际集群资源逐级提高；这些是未来试验档位。先用受控模型测基础设施，再以真实模型核验端到端与供应商限流。
 
@@ -285,7 +285,7 @@ Runtime 按 pool/project 做准入，限制活动、provisioning 和排队总量
 
 | 方案 | 适用判断 |
 | --- | --- |
-| 只把现有 AI Worker 部署成 Deployment | 最快获得进程隔离；现有 Helm 已有该路径，但源码和规划 RPC 仍压在控制平面，不能完成本次卸压目标 |
+| 只把现有 Agent worker 部署成 Deployment | 最快获得进程隔离；现有 Helm 已有该路径，但源码和规划 RPC 仍压在控制平面，不能完成本次卸压目标 |
 | Operator + 独立 Runtime/Source 服务 | **推荐**；复用现有业务与算法，将执行资源和热数据路径移出，增加服务与数据迁移成本 |
 | 首期统一采用 AX/Substrate | 增加基础设施依赖，不能满足 native 独立可用，也不会省掉业务接纳与数据面拆分 |
 
@@ -294,7 +294,7 @@ Runtime 按 pool/project 做准入，限制活动、provisioning 和排队总量
 ## 13. 依据
 
 - [原生平台总体设计](2026-11-09-artifact-kit-design.md)、[现有 AI Builds 计划](../plans/2026-11-11-ai-builds.md)、[AI Builds 文档](../../ai-builds.md)。
-- 本文第二节所列本地源码，以及 [builds.rs](../../../crates/control/src/api/builds.rs)、[ai_management.rs](../../../crates/control/src/api/ai_management.rs) 的取消、澄清和权限规则。
+- 本文第二节所列本地源码，以及 [builds.rs](../../../crates/control-plane/src/api/builds.rs)、[ai_management.rs](../../../crates/control-plane/src/api/ai_management.rs) 的取消、澄清和权限规则。
 - [Substrate / AX 评估与固定上游源码](../../substrate-scheduling-assessment-2026-11-12.md)。
 - [Kubernetes Operator pattern](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)：基于资源与控制循环管理应用。
 - [Kubernetes Jobs](https://kubernetes.io/docs/concepts/workloads/controllers/job/)：重试、deadline，以及单实例配置仍可能重复启动的约束。

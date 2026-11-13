@@ -23,9 +23,9 @@ docker compose --env-file .deploy/env up -d --build
 
 `.deploy/env` 包含随机数据库密码、Git 凭据加密主密钥、S3 密钥和初始密码；`.deploy/pki` 包含节点证书签发私钥。均不入 Git，目录权限为 0700，文件为 0600；容器以该部署账户 UID/GID 读取。不要在已有部署上重新初始化或更换主密钥。
 
-Compose 内 S3 的默认匿名访问已禁用。Emissary 必须能访问外部 S3 HTTPS 名称；控制面也使用该 HTTPS 地址完成初始化和内容校验，因此部署宿主必须能回环访问这个域名。首次 ACME 颁证期间控制面可能自动重启，TLS 就绪后恢复；不要用 `ARTIFACTORY_INSECURE_DEV` 绕过生产证书检查。使用组织内部 CA 时，将信任链安装到中心 / Emissary 的系统信任库。
+Compose 内 S3 的默认匿名访问已禁用。Emissary 必须能访问外部 S3 HTTPS 名称；控制平面也使用该 HTTPS 地址完成初始化和内容校验，因此部署宿主必须能回环访问这个域名。首次 ACME 颁证期间控制平面可能自动重启，TLS 就绪后恢复；不要用 `ARTIFACTORY_INSECURE_DEV` 绕过生产证书检查。使用组织内部 CA 时，将信任链安装到控制平面 / Emissary 的系统信任库。
 
-控制面 S3 客户端通过 Rustls 加载系统根证书。容器部署需把组织 CA 加入控制面镜像或容器内的信任库，并确保运行账户可读；宿主安装的证书不会自动传播到容器。证书的签发链和 S3 endpoint 主机名都会校验。
+控制平面 S3 客户端通过 Rustls 加载系统根证书。容器部署需把组织 CA 加入控制平面镜像或容器内的信任库，并确保运行账户可读；宿主安装的证书不会自动传播到容器。证书的签发链和 S3 endpoint 主机名都会校验。
 
 S3 启动脚本把只读挂载、0600 权限的宿主认证配置复制为容器内 `seaweed` 用户专有的 0600 文件，再由镜像入口降权运行；宿主配置的权限和归属保持不变。首次初始化需要镜像原有的 root 启动阶段，长期运行的 SeaweedFS 进程为非 root。修改配置后需重建或重启 S3 容器，不能通过放宽秘密文件权限解决 UID 不同导致的读取失败。
 
@@ -33,13 +33,13 @@ S3 启动脚本把只读挂载、0600 权限的宿主认证配置复制为容器
 
 **自助注册默认开启，包括未设置新开关的升级部署。任何能够访问控制台的人均可注册为 `viewer`，查看并下载本实例全部项目的构建与产物。** 当前账号权限是实例级，不是项目成员隔离。新用户不能发起构建、创建项目或管理账号、凭据和节点；不会自动获得管理员权限。
 
-不希望开放注册时，在本地控制面环境中设置 `ARTIFACTORY_REGISTRATION_ENABLED=false` 并重启控制面；Compose 在 `.deploy/env` 中设置相同值并重新创建 control 服务；Helm 使用 `--set auth.registrationEnabled=false` 后升级。开关仅接受 `true` / `false`，默认 `true`。初始化脚本尊重已导出的开关值，但不会覆盖已有环境文件。关闭后注册 API 返回 `403`，登录页不展示注册入口，已有用户和会话保持可用；重新开启不改变已创建账号的角色。
+不希望开放注册时，在本地控制平面环境中设置 `ARTIFACTORY_REGISTRATION_ENABLED=false` 并重启控制平面；Compose 在 `.deploy/env` 中设置相同值并重新创建 control-plane 服务；Helm 使用 `--set auth.registrationEnabled=false` 后升级。开关仅接受 `true` / `false`，默认 `true`。初始化脚本尊重已导出的开关值，但不会覆盖已有环境文件。关闭后注册 API 返回 `403`，登录页不展示注册入口，已有用户和会话保持可用；重新开启不改变已创建账号的角色。
 
 注册成功自动登录，使用与现有登录一致的 24 小时 HttpOnly / SameSite=Strict 会话，生产包含 Secure。用户名区分大小写，密码长度按 UTF-8 字节校验；不提供邮箱验证、密码找回、邀请码或审批。每实例每 5 分钟最多受理 10 次有效格式的注册尝试，额度存储在数据库审计中，不随进程重启清零；超限返回 `429` 与 `Retry-After`。公开部署仍需配置反向代理连接 / IP 级防护；应用不会信任客户端自行提供的转发 IP 来放宽限流。
 
 ### 数据与外部存储
 
-控制面数据目录同时承载 Git 临时目录与制品校验临时文件；至少留出最大并发校验文件的磁盘空间。单文件上限 20 GiB 不意味着小内存机器应使用相同大小的 tmpfs。S3 与 PostgreSQL 使用独立持久卷，默认不自动删除历史日志或制品。
+控制平面数据目录同时承载 Git 临时目录与制品校验临时文件；至少留出最大并发校验文件的磁盘空间。单文件上限 20 GiB 不意味着小内存机器应使用相同大小的 tmpfs。S3 与 PostgreSQL 使用独立持久卷，默认不自动删除历史日志或制品。
 
 使用外部 TimescaleDB / S3 时可直接部署镜像并设置与 `Settings::from_env` 对应的环境变量。每个数据库由管理员预先安装 TimescaleDB 2.32+ 扩展；遥测使用独立数据库与应用角色。S3 公共签名地址必须与客户端实际访问的 endpoint 一致。外部对象桶必须私有，不启用公开读取策略。新安装的 Compose / Helm 自动初始化遥测数据库；遥测 token、证书 SAN、数据保留和独立连接池见 [时序观测](telemetry.md)。
 
@@ -53,11 +53,11 @@ S3 启动脚本把只读挂载、0600 权限的宿主认证配置复制为容器
 python3 -u scripts/compose_acceptance.py
 ```
 
-脚本从当前 Git HEAD 创建私有源码快照（未提交候选需先复制到隔离临时 Git 仓库并提交），构建实际控制面与控制台镜像；以独立项目名、卷、网络和随机 loopback 端口运行生产清单的全部七个服务。测试覆盖使用 Caddy 内部 CA 的真实 HTTPS、Secure Cookie / CSRF、运行中 SSE、mTLS Emissary、HTTPS Git 原生 C 构建、私有 S3 上传下载与中心重启。CA 只注入测试客户端与独立控制面进程，不修改宿主信任库。默认不加载已有 `.local/env` 或 `.deploy/env`，运行后仅清理归属标签匹配本次 run 的容器、网络与卷。
+脚本从当前 Git HEAD 创建私有源码快照（未提交候选需先复制到隔离临时 Git 仓库并提交），构建实际控制平面与控制台镜像；以独立项目名、卷、网络和随机 loopback 端口运行生产清单的全部七个服务。测试覆盖使用 Caddy 内部 CA 的真实 HTTPS、Secure Cookie / CSRF、运行中 SSE、mTLS Emissary、HTTPS Git 原生 C 构建、私有 S3 上传下载与控制平面重启。CA 只注入测试客户端与独立控制平面进程，不修改宿主信任库。默认不加载已有 `.local/env` 或 `.deploy/env`，运行后仅清理归属标签匹配本次 run 的容器、网络与卷。
 
 日志故障测试把验收 Emissary 缓冲设为 1 MiB，仅暂停本次归属标签匹配的 S3，再让真实 Worker 输出超过缓冲上限。脚本核对子进程终止、磁盘缓冲边界及独立心跳，恢复 S3 后检查明确失败原因、无制品 / Release、日志按序确认和清理，并使用同一 Emissary 再构建原生 C 程序。缓存块的大小 / SHA-256 同时与真实 PostgreSQL 索引及 HTTPS SSE 内容比较。测试容器使用 Docker init 回收孤儿子进程；失败清理也会先恢复本次暂停的 S3。执行的 controller 副本及 controller / probe 摘要随本地证据保留。
 
-`--image-prefix` 可指定拉取镜像所用的 registry 镜像源；输入变更、各镜像的实际平台与 ID 随证据记录，不修改默认部署镜像或全局 Docker 配置。可选 `--control-image` / `--web-image` 仅复用 `org.opencontainers.image.revision` 与当前 HEAD、`artifactory.dockerfile.sha256` 与对应 Dockerfile 均匹配的镜像。`--probe-image` 可复用包含 python3、Git、cc、OpenSSL 的 Linux 测试工具镜像；Emissary 二进制仍从本次源码快照重新编译，验收脚本也由本次 run 单独挂载。
+`--image-prefix` 可指定拉取镜像所用的 registry 镜像源；输入变更、各镜像的实际平台与 ID 随证据记录，不修改默认部署镜像或全局 Docker 配置。可选 `--control-plane-image` / `--web-image` 仅复用 `org.opencontainers.image.revision` 与当前 HEAD、`artifactory.dockerfile.sha256` 与对应 Dockerfile 均匹配的镜像。`--probe-image` 可复用包含 python3、Git、cc、OpenSSL 的 Linux 测试工具镜像；Emissary 二进制仍从本次源码快照重新编译，验收脚本也由本次 run 单独挂载。
 
 日志和证据保存在 `.local/compose-tls/<run>/`。其中源码快照含本次部署的主密钥、数据库 / S3 密码和测试 PKI，必须保持私有；CI 仅上传显式列出的诊断日志和证据文件，不上传快照、生成的 Compose 配置或 Emissary 私钥。专用 probe 容器只承载该验收的原生 Linux 进程，不属于产品的容器执行器，也不证明实体 Emissary 服务、五类真实应用、发行签名或公网 DNS / ACME 已验收。
 
@@ -134,7 +134,7 @@ Worker 在 SIGTERM / SIGINT、租约到期和父控制管道 EOF 时先终止任
 }
 ```
 
-只是对已有完整配置的增量示例，不是可独立运行的配置。中心只保存引用名和授权；不要上传应用签名私钥。项目、节点设置及本机配置都需授权同一引用。
+只是对已有完整配置的增量示例，不是可独立运行的配置。控制平面只保存引用名和授权；不要上传应用签名私钥。项目、节点设置及本机配置都需授权同一引用。
 
 doctor 报告路径、版本命令是否成功、实际 OS/CPU、可发现工具及本机配置的签名引用；不保证 SDK 完整、证书有效、iOS 设备可安装或商店可发布。可使用本机 `tools` 配置协助发现非标准路径；实际脚本仍需明确可执行路径 / PATH。
 
@@ -150,7 +150,7 @@ doctor 报告路径、版本命令是否成功、实际 OS/CPU、可发现工具
 
 ## 故障处理
 
-- 中心重启：数据库租约保留，90 秒内重连可以继续同一个 attempt；不要手动把 running 改为 queued。
+- 控制平面重启：数据库租约保留，90 秒内重连可以继续同一个 attempt；不要手动把 running 改为 queued。
 - 网络分区：本地租约截止杀进程树；已开始任务记 lost，不自动重跑。确认副作用后显式 retry。
 - Emissary 崩溃：Worker 控制管道关闭，终止子进程；服务恢复后旧任务不能复活。检查本机 `lost/`、`spool/` 和审计。
 - 日志超额 / 存储不可用：任务明确失败或保留未确认日志，不删除 spool 来伪造成功。需要人工按 attempt 对照数据库保存日志证据。
@@ -161,7 +161,7 @@ doctor 报告路径、版本命令是否成功、实际 OS/CPU、可发现工具
 
 必须协调备份各 TimescaleDB 数据库、S3 对象、`.deploy/env` 中主密钥及 PKI；只有数据库备份无法解密凭据，也无法恢复制品。备份应离线加密，并独立限制访问。
 
-1. 排空节点、停止新触发、等待在途任务结束，停止 control / web / ai-worker 及独立 Runtime / Source / Telemetry 写入。
+1. 排空节点、停止新触发、等待在途任务结束，停止 control-plane / web / agent-worker 及独立 Runtime / Source / Telemetry 写入。
 2. `pg_dump` 分别保存实际部署的业务、Runtime、Source、遥测数据库，记录 schema 与 TimescaleDB 扩展版本；同时保存 S3 内容与对象校验清单。分别导出的数据库不自动构成跨库事务快照，必须先停写。
 3. 保存主密钥、S3 密钥、签发 CA、节点授权与镜像版本；不要在普通工单里复制这些秘密。
 4. 在相同 TimescaleDB 版本的隔离环境恢复：各库预装扩展，执行 `timescaledb_pre_restore()`，串行 `pg_restore` 后执行 `timescaledb_post_restore()`。使用相同 master key，检查凭据解密、Release 下载 SHA-256、遥测列存 / 聚合 / 后台策略及最新摘要，再开放流量。
@@ -171,6 +171,6 @@ doctor 报告路径、版本命令是否成功、实际 OS/CPU、可发现工具
 
 开发环境可用 `scripts/recovery_acceptance.py` 重放隔离冷恢复，执行顺序见 README。它使用 process-only rclone remote 和空配置文件，不修改已有全局 remotes；备份位于私有 `.local/acceptance/<run_id>/backup`。脚本不会自动加密或异地传输该目录，生产环境需另行提供密钥托管、加密备份与恢复流程。
 
-## AI worker 与源码缓存
+## Agent worker 与源码缓存
 
 模型配置、worker 注册、任务预算、源码下载、缓存指标与升级顺序见 [AI 构建运维](ai-builds.md)。首次部署必须配置真实模型并完成 worker 注册；七服务 Compose 的 worker 默认等待注册，不持有模型密钥环境变量。备份必须包含 worker 身份和平台源码快照元数据。

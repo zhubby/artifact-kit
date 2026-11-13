@@ -1,10 +1,10 @@
 {
-  "name": "artifactory-ai-worker",
+  "name": "artifactory-agent-worker",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "engines": { "node": ">=24 <25" },
-  "bin": { "artifactory-ai-worker": "dist/main.js" },
+  "bin": { "artifactory-agent-worker": "dist/main.js" },
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",

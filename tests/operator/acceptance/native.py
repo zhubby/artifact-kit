@@ -51,7 +51,7 @@ def run(args):
     node = None
     source_pool = json.loads(a.kubectl('get', 'sourcepool', 'sources', '-o', 'json'))['spec']
     agent_pool = json.loads(a.kubectl('get', 'agentpool', 'default', '-o', 'json'))['spec']
-    original_control = environment(a, 'control')
+    original_control = environment(a, 'control-plane')
     original_upstream = environment(a, 'upstream')
     evidence = {'context': args.context, 'namespace': args.namespace, 'platform': host_os + '/' + arch, 'host_process': True, 'system_service_installed': False, 'passed': False}
     try:
@@ -63,14 +63,14 @@ def run(args):
         a.wait(lambda: 'https://127.0.0.1:38090' in a.kubectl('get', 'statefulset', 'sources', '-o', 'json'))
         a.kubectl('rollout', 'status', 'statefulset/sources', '--timeout=180s')
         set_environment(a, 'upstream', {'FIXTURE_OS': host_os, 'FIXTURE_ARCH': arch})
-        set_environment(a, 'control', {'ARTIFACTORY_S3_PUBLIC_ENDPOINT': 'http://127.0.0.1:38333'})
+        set_environment(a, 'control-plane', {'ARTIFACTORY_S3_PUBLIC_ENDPOINT': 'http://127.0.0.1:38333'})
         for forward in a.processes:
             forward.terminate()
             forward.wait(timeout=10)
         a.processes.clear()
         a.resume()
         a.forward('pod/sources-0', '38090:8090')
-        a.forward('service/control', '38443:8443')
+        a.forward('service/control-plane', '38443:8443')
         a.forward('service/artifactory-telemetry','38444:8444')
         a.forward('service/s3', '38333:8333')
         a.wait(lambda: a.service_request(39443,'/test/mode',{'build_seconds':25}) is not None)
@@ -119,7 +119,7 @@ def run(args):
         evidence['images'] = a.images()
         if args.live_protocol:
             a.forward('service/postgres', '38543:5432')
-            values = json.loads(a.kubectl('get','secret','control','-o','json'))['data']
+            values = json.loads(a.kubectl('get','secret','control-plane','-o','json'))['data']
             database = urlsplit(base64.b64decode(values['DATABASE_URL']).decode())
             database = urlunsplit((database.scheme, database.netloc.rsplit('@',1)[0]+'@127.0.0.1:38543',database.path,database.query,''))
             live_environment = dict(os.environ, DATABASE_URL=database,
@@ -151,7 +151,7 @@ def run(args):
             assert a.sql('business', "SELECT revoked AND draining FROM nodes WHERE id='" + node['id'] + "'") == 't', 'Temporary device identity must be revoked'
             evidence['temporary_device_identity_revoked'] = True
         set_environment(a, 'upstream', {key: original_upstream.get(key) for key in ['FIXTURE_OS','FIXTURE_ARCH']})
-        set_environment(a, 'control', {'ARTIFACTORY_S3_PUBLIC_ENDPOINT': original_control.get('ARTIFACTORY_S3_PUBLIC_ENDPOINT')})
+        set_environment(a, 'control-plane', {'ARTIFACTORY_S3_PUBLIC_ENDPOINT': original_control.get('ARTIFACTORY_S3_PUBLIC_ENDPOINT')})
         a.kubectl('patch', 'sourcepool', 'sources', '--type=merge', '-p', json.dumps({'spec': {'publicUrlTemplate': source_pool.get('publicUrlTemplate')}}))
         a.kubectl('patch', 'agentpool', 'default', '--type=merge', '-p', json.dumps({'spec': agent_pool}))
         a.wait(lambda: json.loads(a.kubectl('get','sourcepool','sources','-o','json'))['metadata']['generation'] == json.loads(a.kubectl('get','sourcepool','sources','-o','json')).get('status',{}).get('observedGeneration'))

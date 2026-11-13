@@ -41,9 +41,9 @@ data:
       auto_https off
     }
     :8080 {
-      @control path /api/* /healthz
-      handle @control {
-        reverse_proxy {{ include "artifactory.fullname" . }}-control:8080 {
+      @control-plane path /api/* /healthz
+      handle @control-plane {
+        reverse_proxy {{ include "artifactory.fullname" . }}-control-plane:8080 {
           flush_interval -1
         }
       }

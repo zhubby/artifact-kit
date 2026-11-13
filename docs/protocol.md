@@ -6,7 +6,7 @@
 
 1. 管理员为指定节点池创建 15 分钟、一次性注册令牌。
 2. Emissary 本地产生 ECDSA P-256 私钥与 CSR，通过钉住 CA 的 TLS 调用 `Enrollment.Enroll`。
-3. 中心验证 CSR，签发 30 天节点证书；仅保存证书摘要与到期时间。节点私钥不离开本机。
+3. 控制平面验证 CSR，签发 30 天节点证书；仅保存证书摘要与到期时间。节点私钥不离开本机。
 4. 所有 `Control` RPC 校验客户端证书链和数据库登记的证书摘要，并检查吊销 / 到期状态。TLS 层允许无证书连接只为注册；这不意味着 Control 可匿名调用。
 5. `Connect` 为双向流。hello 绑定节点 ID、协议版本、能力及诊断。新连接会替代旧 session；旧 session 不能继续改写任务。
 6. 每 10 秒心跳。35 秒未收到消息关闭连接；是否重派由 90 秒持久化任务租约决定，而不是简单的 online 标志。
@@ -29,13 +29,13 @@ worker: 收到 start grant 后才能执行
 
 任务身份为 `attempt_id + lease_token`。命令有独立 `command_id`，续租 / start grant 的 `request_id` 回显 Emissary 请求编号。Emissary 记录请求发出时的单调时间，以该锚点计算本地截止期限，网络延迟不能延长服务端租约。
 
-执行开始前过期，旧 attempt 记为 lost、job 可重新排队；执行开始后过期，job 为 lost，必须显式重试生成新 attempt。中心重启保留 PostgreSQL 内的在途租约，不立即重派。心跳只续有效且未取消任务的租约，不能复活旧 attempt。
+执行开始前过期，旧 attempt 记为 lost、job 可重新排队；执行开始后过期，job 为 lost，必须显式重试生成新 attempt。控制平面重启保留 PostgreSQL 内的在途租约，不立即重派。心跳只续有效且未取消任务的租约，不能复活旧 attempt。
 
 任务事件等待 attempt / 节点行锁后，在同一事务连接上重新检查当前租约与构建取消标记。等待期间已提交的取消阻止新的 start 授权；finished 也按当前取消状态登记为 canceled。
 
 Emissary 在租约内断线保持 Worker，重连后补报；无续租则本地终止进程树。父 Emissary 退出 / 崩溃关闭 Worker 控制管道，Worker 终止正在运行的命令。Unix 使用进程组，Windows 在恢复挂起的初始进程前分配 Job Object，关闭 Job 时杀死所有后代。
 
-`started` 的保守定义是中心已提交 running 并准备发送 start；即使随后响应丢失，也不假定副作用未发生，因此不自动重跑。
+`started` 的保守定义是控制平面已提交 running 并准备发送 start；即使随后响应丢失，也不假定副作用未发生，因此不自动重跑。
 
 ## 事件与日志
 
@@ -58,8 +58,8 @@ Emissary 在租约内断线保持 Worker，重连后补报；无续租则本地�
 
 ## AI 与平台源码扩展
 
-新 Emissary 声明 `source-cache-v1` 和 `external-build-plan-v1` 能力后，才可获得 AI 构建。Assignment 增加源码快照/仓库对象、计划版本及外置脚本。源码临时 token 只绑定有效 attempt，凭据通过 Askpass 使用；上游 Git 凭据不离开控制中心。Emissary 的 `source_cache` 事件记录每个仓库命中状态和固定 commit，服务端与快照核对并按既有序号去重。
+新 Emissary 声明 `source-cache-v1` 和 `external-build-plan-v1` 能力后，才可获得 AI 构建。Assignment 增加源码快照/仓库对象、计划版本及外置脚本。源码临时 token 只绑定有效 attempt，凭据通过 Askpass 使用；上游 Git 凭据不离开控制平面。Emissary 的 `source_cache` 事件记录每个仓库命中状态和固定 commit，服务端与快照核对并按既有序号去重。
 
-独立 `PlannerEnrollment.Enroll` 签发 AI worker 身份；`Planning.Poll/Heartbeat/Tool/Report` 使用 mTLS、规划 run ID 与 lease token。每个 worker 同时一个任务，90 秒租约、10 秒心跳；持久截止时间默认十分钟、调用预算二十次。重启恢复 checkpoint 和剩余预算。排空停止新任务，吊销立即使 RPC 失效。
+独立 `PlannerEnrollment.Enroll` 签发 Agent worker 身份；`Planning.Poll/Heartbeat/Tool/Report` 使用 mTLS、规划 run ID 与 lease token。每个 worker 同时一个任务，90 秒租约、10 秒心跳；持久截止时间默认十分钟、调用预算二十次。重启恢复 checkpoint 和剩余预算。排空停止新任务，吊销立即使 RPC 失效。
 
 计划提交、澄清、取消和过期回收在数据库事务内校验最新状态。被拒计划完整回滚；旧 token、旧 run 和重复完成不能排队。修订固定源码与权限，只替换失败目标；每个 attempt 持久引用自己的 source_snapshot_id 与 plan_revision_id。消息主版本和既有执行/日志/制品契约保持为 1。

@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "artifactory.fullname" . }}-control
+  name: {{ include "artifactory.fullname" . }}-control-plane
   labels:
     {{- include "artifactory.labels" . | nindent 4 }}
 spec:
@@ -11,12 +11,12 @@ spec:
   selector:
     matchLabels:
       {{- include "artifactory.selector" . | nindent 6 }}
-      app.kubernetes.io/component: control
+      app.kubernetes.io/component: control-plane
   template:
     metadata:
       labels:
         {{- include "artifactory.selector" . | nindent 8 }}
-        app.kubernetes.io/component: control
+        app.kubernetes.io/component: control-plane
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/config.yaml") . | sha256sum }}
         {{- with .Values.podAnnotations }}
@@ -35,9 +35,9 @@ spec:
         fsGroup: 10001
         seccompProfile: {type: RuntimeDefault}
       containers:
-        - name: control
-          image: "{{ .Values.images.control.repository }}:{{ .Values.images.control.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.images.control.pullPolicy }}
+        - name: control-plane
+          image: "{{ (index .Values.images "control-plane").repository }}:{{ (index .Values.images "control-plane").tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ (index .Values.images "control-plane").pullPolicy }}
           securityContext:
             {{- include "artifactory.containerSecurity" . | nindent 12 }}
           ports:
@@ -74,7 +74,7 @@ spec:
             httpGet: {path: /healthz, port: http}
             periodSeconds: 15
           resources:
-            {{- toYaml .Values.resources.control | nindent 12 }}
+            {{- toYaml (index .Values.resources "control-plane") | nindent 12 }}
           volumeMounts:
             - {name: data, mountPath: /var/lib/artifactory}
             - {name: pki, mountPath: /run/artifactory-pki, readOnly: true}
@@ -91,7 +91,7 @@ spec:
         {{- end }}
         - name: data
           persistentVolumeClaim:
-            claimName: {{ include "artifactory.fullname" . }}-control
+            claimName: {{ include "artifactory.fullname" . }}-control-plane
         - name: pki
           secret:
             secretName: {{ include "artifactory.pki" . }}

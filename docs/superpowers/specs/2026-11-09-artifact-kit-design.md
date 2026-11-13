@@ -11,7 +11,7 @@ Linux、macOS、Windows 是 Agent 宿主；Linux、macOS、Windows、Android、i
 
 ## 架构
 
-- Rust/Axum/Tonic 模块化单体控制中心，Linux 单实例部署。
+- Rust/Axum/Tonic 模块化单体控制平面，Linux 单实例部署。
 - PostgreSQL 持久化身份、配置、节点、队列、执行租约、制品索引、发布与审计。
 - S3 兼容对象存储保存制品与日志，桶不公开。
 - Go Agent 主动连接，独立 Worker 执行任务；系统服务支持 Linux、macOS、Windows。
@@ -27,7 +27,7 @@ Linux、macOS、Windows 是 Agent 宿主；Linux、macOS、Windows、Android、i
 
 ## 配置与构建
 
-仓库根目录使用版本化 artifact-kit.yaml。中心将引用解析为确切提交，保存配置快照及参数。
+仓库根目录使用版本化 artifact-kit.yaml。控制平面将引用解析为确切提交，保存配置快照及参数。
 Agent 拉取相同提交，逐目标执行有超时的 build/sign/verify 步骤。
 配置可声明目标宿主、架构、能力、标签、参数、制品规则、签名引用和发布规则。
 只允许 native 执行器，不接受未实现的容器能力，不接受未知配置字段。
@@ -43,7 +43,7 @@ PostgreSQL 事务、行锁和 SKIP LOCKED 防止并发领取同一任务。
 状态：queued/leased/running/succeeded/failed/canceled/lost。
 attempt ID、租约凭证及事件序号用于 fencing、去重和重连；迟到结果不能覆盖当前状态。
 Agent 崩溃或控制管道关闭也必须终止 Worker 的任务进程树。
-中心重启保留在途租约，不立即重派任务。
+控制平面重启保留在途租约，不立即重派任务。
 
 ## 日志、制品与发布
 
@@ -60,12 +60,12 @@ Agent 崩溃或控制管道关闭也必须终止 Worker 的任务进程树。
 
 项目、构建矩阵与日志、节点能力与租约、制品、Release、凭据引用和审计。
 不提供伪造机器、构建进度、签名成功或发布成功的演示数据。
-Compose 只部署控制面；Agent 原生安装，不使用 Docker socket 代替宿主能力。
+Compose 只部署控制平面；Agent 原生安装，不使用 Docker socket 代替宿主能力。
 升级先排空再手动更新；诊断不自动安装 SDK。
 
 ## 验收
 
 必须测试真实 Rust/Go 协议互通、真实 PostgreSQL 的并发调度和租约恢复、S3 完整性、鉴权、幂等发布。
-故障包括断线、中心重启、证书吊销、取消、Agent 崩溃、重复消息、迟到结果、日志缓冲耗尽。
+故障包括断线、控制平面重启、证书吊销、取消、Agent 崩溃、重复消息、迟到结果、日志缓冲耗尽。
 真实构建与签名需要相应实体机、SDK、证书和设备；缺失项明确记为未验收。
 交叉编译通过不等于 Windows/Linux 运行通过；工具存在不等于原生应用可用。

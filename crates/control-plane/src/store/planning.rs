@@ -159,7 +159,7 @@ pub(super) async fn persist_plan(
 }
 impl ControlStore {
     pub(crate) async fn planner_identity(&self, hash: String) -> std::result::Result<Uuid, Status> {
-        sql::optional_scalar(&mut self.pool.clone(), "SELECT id FROM ai_workers WHERE certificate_hash=$1 AND NOT revoked AND certificate_expires_at>clock_timestamp()", params![hash]).await.map_err(internal)?.ok_or_else(||Status::unauthenticated("AI worker revoked, expired or unknown"))
+        sql::optional_scalar(&mut self.pool.clone(), "SELECT id FROM ai_workers WHERE certificate_hash=$1 AND NOT revoked AND certificate_expires_at>clock_timestamp()", params![hash]).await.map_err(internal)?.ok_or_else(||Status::unauthenticated("Agent worker revoked, expired or unknown"))
     }
     pub(crate) async fn enroll_planner<F, Fut>(
         &self,

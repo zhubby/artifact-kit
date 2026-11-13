@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/control", "crates/runtime-protocol", "crates/planner-runtime", "crates/source-core", "crates/source-service", "crates/emissary-protocol", "crates/emissary", "crates/database", "crates/telemetry-model", "crates/telemetry-service", "operator"]
+members = ["crates/control-plane", "crates/runtime-protocol", "crates/planner-runtime", "crates/source-core", "crates/source-service", "crates/emissary-protocol", "crates/emissary", "crates/database", "crates/telemetry-model", "crates/telemetry-service", "operator"]
 exclude = ["vendor/toasty", "vendor/toasty-driver-postgresql"]
 resolver = "2"
 
