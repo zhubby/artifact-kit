@@ -1,6 +1,6 @@
 # Control 多副本与设备容量
 
-本次实现已在三个实际 Control 进程上通过 10,000 条 mTLS 设备连接、1,000 个活动执行租约的故障压测，采用 PostgreSQL Outbox、NOTIFY 和定时补偿，无新增消息中间件。HA 配置每进程 40 条数据库连接；心跳 P99 768.37 ms、API P95 304.80 ms，全部 6,667 次重连在 20 秒预算内完成，期间有 247 次可恢复 RPC 重试。测试使用虚拟执行器，真实构建吞吐与生产容量仍需独立验收；详见 [验收报告](acceptance/control-ha/2026-11-14.md)。
+当前 Toasty 实现已在三个实际 Control 进程上通过 10,000 条 mTLS 设备连接、1,000 个活动执行租约的故障压测，采用 PostgreSQL Outbox、NOTIFY 和定时补偿，无新增消息中间件。HA 配置每进程 40 条数据库连接；心跳 P99 682.09 ms、API P95 201.46 ms，全部 6,667 次重连在 20 秒预算内完成，期间有 215 次可恢复 RPC 重试。测试使用虚拟执行器，真实构建吞吐与生产容量仍需独立验收；详见 [Toasty 整合验收](acceptance/control-ha/2026-11-14-toasty.md)。
 
 ## 数据流与故障语义
 
@@ -49,7 +49,7 @@ SIGTERM 先令 `/readyz` 返回 503，停止新会话和本地调度，并以每
 
 | 设置 | 默认 | 范围 / 用途 |
 | --- | --- | --- |
-| `ARTIFACTORY_DB_MAX_CONNECTIONS` | 20 | 每个 Control / Source 进程 8–256；包括一条 LISTEN 连接 |
+| `ARTIFACTORY_DB_MAX_CONNECTIONS` | 20 | 每个 Control / Source 进程 8–256；Control 包含一条独立 LISTEN 连接，Source 不订阅 |
 | `ARTIFACTORY_ARTIFACT_VERIFY_CONCURRENCY` | 4 | 每副本 1–32 |
 | `ARTIFACTORY_SCHEDULER_BATCH_SIZE` | 64 | 每轮 1–256 |
 | `ARTIFACTORY_CONTROL_DRAIN_SECONDS` | 5 | 1–30 秒 |
@@ -65,14 +65,14 @@ Control 的 `temporaryStorage` 默认 10Gi，实际应大于“校验并发 × �
 
 ## Helm 部署与已有 PVC 迁移
 
-默认仍兼容原来的单副本部署。启用 `localSource.enabled=true` 后，Control 使用独立 emptyDir 和 RollingUpdate，`serve-source` 以单副本 Recreate 独占原 `<release>-control` PVC。网关直接将 `/api/v1/source/*` 流量转发到 Source，不经 Control 转发源码字节。此兼容 Source 仍是源码解析/下载的单点；它不可用时源码相关操作会失败，尚未完成的源码下载会受影响，设备续租和正在执行的步骤可继续。新的 Kubernetes Runtime / Source 后端保持原有路由和恢复机制。
+默认仍使用单副本。当前组件、镜像和持久卷均使用 `control-plane` / `agent-worker` 命名；旧命名先按 [模块迁移](module-layout.md#从旧布局升级) 处理。启用 `localSource.enabled=true` 后，Control 使用独立 emptyDir 和 RollingUpdate，`serve-source` 以单副本 Recreate 独占原 `<release>-control-plane` PVC。网关直接将 `/api/v1/source/*` 流量转发到 Source，不经 Control 转发源码字节。此兼容 Source 仍是源码解析/下载的单点；它不可用时源码相关操作会失败，尚未完成的源码下载会受影响，设备续租和正在执行的步骤可继续。新的 Kubernetes Runtime / Source 后端保持原有路由和恢复机制。
 
 首次切换必须在维护窗口分阶段完成，避免两个进程同时写原 RWO 卷：
 
 1. 备份业务库、对象存储、原 control PVC、master key、CA 与 OTA 信任配置。停止创建新构建，等待活动构建结束，记录原 Helm values、镜像和源码路由。
-2. 使用原 values 将 `control.replicas` 改为 0，等待原 Control Pod 完全退出。不要只等待 Deployment 发出滚动更新事件。
+2. 使用原 values 将 `controlPlane.replicas` 改为 0，等待原 Control Pod 完全退出。不要只等待 Deployment 发出滚动更新事件。
 3. 用原 CA 为服务器证书补充 `<release>-local-source`、`<release>-local-source.<namespace>.svc` SAN，更新原 PKI Secret。新版 `init-helm.py` 的新安装包含这些 SAN；已有安装不得重新初始化 CA 或 master key。
-4. 用同一版本镜像开启 `localSource.enabled=true`，暂时保持 `control.replicas=0`。确认 Source 挂载原卷、内部 HTTPS 正常，原 snapshot ID 和下载地址不变。将原 OTA 配置制作为所有副本可读的 ConfigMap，并设置 `control.releaseSourceConfigMap`；文件中只放仓库及可信公钥，凭据继续使用 Secret。
+4. 用同一版本镜像开启 `localSource.enabled=true`，暂时保持 `controlPlane.replicas=0`。确认 Source 挂载原卷、内部 HTTPS 正常，原 snapshot ID 和下载地址不变。将原 OTA 配置制作为所有副本可读的 ConfigMap，并设置 `controlPlane.releaseSourceConfigMap`；文件中只放仓库及可信公钥，凭据继续使用 Secret。
 5. 合并原环境配置和 `charts/artifactory/values-ha.yaml`，将 Control 设置为 3 副本。确认每副本独立 emptyDir、数据库预算、PDB、反亲和性和 45 秒终止窗口。验证真实登录、跨副本重连、旧 snapshot 下载、制品完成和 OTA 导入后再开放创建构建。
 
 上述升级命令需要由部署负责人针对实际 context、namespace 和 release 执行。本实现没有修改任何已有安装。
@@ -110,6 +110,6 @@ Emissary 回归运行真实进程并注入一次日志 RPC 失败，断言所有
 
 重点观察最老未确认命令年龄、queued job 等待、租约续约分位数、重连率、数据库池等待、锁等待/WAL、校验队列和临时盘、遥测积压。重连期间的已开始任务应保留原 attempt；数据库中断超过租约窗口仍可能产生 lost，不能以恢复连接代替执行验收。
 
-临时使用 `RUST_LOG=artifactory_control=debug` 可记录新连接的 `admission_ms`、`identity_ms`、`session_ms` 和 `hello_ms`，分别定位准入等待、证书身份提取、有条件授权与会话写入、首个报告处理。压测可通过 `ARTIFACTORY_LOAD_LOG` 将过滤器传入测试子进程；默认保持 warn。
+临时使用 `RUST_LOG=artifactory_control_plane=debug` 可记录新连接的 `admission_ms`、`identity_ms`、`session_ms` 和 `hello_ms`，分别定位准入等待、证书身份提取、有条件授权与会话写入、首个报告处理。压测可通过 `ARTIFACTORY_LOAD_LOG` 将过滤器传入测试子进程；默认保持 warn。
 
-回退优先保留新版本，缩至单副本并保留独立 Source。若要恢复原卷一体部署，先停止所有 Control 和 Source，再将唯一 Control 重新挂载原 PVC；不得在 Source 存活时挂回同一卷。迁移 0012 增加的表、列、触发器可以保留，**不能直接运行旧二进制并让新旧调度器混跑**：旧调度器不识别 Outbox 与连接归属。降级二进制需要停机、核对旧版 sqlx migration 校验，并按备份恢复方案执行。
+回退优先保留新版本，缩至单副本并保留独立 Source。若要恢复原卷一体部署，先停止所有 Control 和 Source，再将唯一 Control 重新挂载原 PVC；不得在 Source 存活时挂回同一卷。Toasty 增量迁移 `2026111401 / 0001_control_replication.sql` 在 `2026111301` 基线上增加表、列、触发器并回填在途命令。回退至新版本单副本时保留这些对象，**不能直接运行旧二进制并让新旧调度器混跑**：旧调度器不识别 Outbox 与连接归属。降级二进制需要停机、核对目标版本的 Toasty migration 历史，并按备份恢复方案执行；旧 SQLx 数据库必须先遵循 [Toasty 迁移指南](toasty-migration.md) 准备新数据库、存储与身份；当前不支持 SQLx 原位转换。

@@ -1,4 +1,4 @@
-{{- $components := list "control" "web" "grpc" }}
+{{- $components := list "control-plane" "web" "grpc" }}
 {{- if .Values.postgres.enabled }}{{- $components = append $components "postgres" }}{{- end }}
 {{- if .Values.s3.enabled }}{{- $components = append $components "s3" }}{{- end }}
 {{- if .Values.localSource.enabled }}{{- $components = append $components "local-source" }}{{- end }}
@@ -11,7 +11,7 @@
 {{- $settings = $.Values.s3.service }}
 {{- $port = 8333 }}
 {{- $target = "s3" }}
-{{- else if or (eq $component "control") (eq $component "local-source") }}
+{{- else if or (eq $component "control-plane") (eq $component "local-source") }}
 {{- $port = 8080 }}
 {{- $target = "http" }}
 {{- else if eq $component "web" }}
@@ -22,7 +22,7 @@
 {{- $settings = $.Values.grpc.service }}
 {{- $port = 8443 }}
 {{- $target = "grpc" }}
-{{- $selector = "control" }}
+{{- $selector = "control-plane" }}
 {{- end }}
 ---
 apiVersion: v1

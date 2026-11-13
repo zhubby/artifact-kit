@@ -1,6 +1,6 @@
 # Emissary 时序观测
 
-所有后端使用 TimescaleDB 2.32+。默认镜像为 `timescale/timescaledb:2.32.0-pg17`，继续使用 SQLx PostgreSQL 驱动。Control、Runtime、Source 的状态表保持普通关系表；遥测使用独立逻辑数据库、写池、查询池和 Rust 服务。
+所有后端使用 TimescaleDB 2.32+。默认镜像为 `timescale/timescaledb:2.32.0-pg17`，数据库访问统一由 store 层通过 Toasty 0.11 执行；连接恢复补丁及来源记录位于 `vendor/toasty/PATCH.md`。Control、Runtime、Source 的状态表保持普通关系表；遥测使用独立逻辑数据库、写池、查询池和 Rust 服务。
 
 ```mermaid
 flowchart LR
@@ -54,7 +54,18 @@ flowchart LR
 
 服务器批次上限 1 MiB，单批最多 2048 个托管进程。读写和授权池分别限连接数，查询有超时、时间范围、6000 行与 2 MiB 响应预算。历史 API 返回 `{"samples":[],"truncated":false}`；`truncated=true` 时缩小时间区间。清单历史最多返回最近 100 次观察。
 
-Control 对节点查询要求 viewer 会话，对 attempt 查询要求所属项目的 read 权限。内部查询使用独立 bearer token 和 TLS，Emissary 无该 token。生产授权连接建议使用只授予 `nodes` 与 `attempts` SELECT 权限的数据库角色；服务连接本身也设置只读模式。查询池可通过 `ARTIFACTORY_TELEMETRY_READ_DATABASE_URL` 指向专门的只读连接。
+Control 对节点查询要求 viewer 会话，对 attempt 查询要求所属项目的 read 权限。内部查询使用独立 bearer token 和 TLS，Emissary 无该 token。生产授权连接使用独立登录角色，所需权限为业务数据库的 `CONNECT`、业务 schema 的 `USAGE`，以及 `nodes`、`attempts`、`__toasty_migrations` 三张表的 `SELECT`。其中迁移表用于启动时校验 Business 版本；缺少权限会使启动失败。服务连接本身也设置只读模式。查询池可通过 `ARTIFACTORY_TELEMETRY_READ_DATABASE_URL` 指向专门的只读连接。
+
+先由管理员创建授权登录角色并配置凭据，在 Control 初始化 Business baseline 后，以该业务库的所有者执行最小授权脚本：
+
+```sh
+psql "$ARTIFACTORY_BUSINESS_ADMIN_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+  -v business_database=artifactory -v business_schema=public \
+  -v telemetry_business_role=telemetry_authorizer \
+  -f deploy/telemetry-business-readonly.sql
+```
+
+将数据库名、schema 与角色名替换为实际值，并将 `ARTIFACTORY_BUSINESS_DATABASE_URL` 配置为该角色的连接。脚本可重复执行，只授予上述对象的读取权限；授权角色不需要拥有业务表、写权限或迁移权限。自定义 schema 时，连接的 `search_path` 必须与授权 schema 一致。
 
 遥测用于趋势、能力筛选与负载参考。现有权限、设备签名限制、capability 和 slots 决定任务匹配；不自动抢占、预留资源或调整并发。
 
@@ -91,7 +102,7 @@ CREATE EXTENSION timescaledb;
 ```sh
 cargo test --locked --workspace
 # 仅对隔离的、已启用 TimescaleDB 的管理员测试数据库执行：
-cargo test --locked -p artifactory-telemetry-service --test database -- --ignored
+cargo test --locked -p artifactory-telemetry-service --all-targets -- --ignored
 python3 tests/operator/acceptance/telemetry.py --context <explicit-context> --namespace <owned-acceptance-namespace>
 ```
 

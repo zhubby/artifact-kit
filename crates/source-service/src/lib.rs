@@ -5,3 +5,5 @@ pub mod state {
     pub use crate::service::AppState;
 }
 pub mod source_http;
+
+pub mod store;

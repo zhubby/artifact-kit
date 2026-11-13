@@ -4,16 +4,16 @@ imagePullSecrets: []
 podAnnotations: {}
 
 images:
-  control:
-    repository: ghcr.io/zhubby/artifactory-control
+  control-plane:
+    repository: ghcr.io/zhubby/artifactory-control-plane
     tag: "" # Defaults to Chart.appVersion; set this to a published release tag.
     pullPolicy: IfNotPresent
   web:
     repository: ghcr.io/zhubby/artifactory-web
     tag: ""
     pullPolicy: IfNotPresent
-  ai-worker:
-    repository: ghcr.io/zhubby/artifactory-ai-worker
+  agent-worker:
+    repository: ghcr.io/zhubby/artifactory-agent-worker
     tag: ""
     pullPolicy: IfNotPresent
   gateway:
@@ -35,7 +35,7 @@ secrets:
   credentials: ""
   pki: ""
 
-control:
+controlPlane:
   replicas: 1
   databaseConnections: 20
   artifactVerifications: 4
@@ -45,7 +45,7 @@ control:
   # Optional ConfigMap containing emissary-releases.json; mounted on every replica.
   releaseSourceConfigMap: ""
 localSource:
-  # Required before setting control.replicas > 1. Retains the existing control PVC.
+  # Required before setting controlPlane.replicas > 1. Retains the existing control PVC.
   enabled: false
 postgres:
   enabled: true
@@ -95,7 +95,7 @@ s3:
 development:
   insecureHttp: false
 
-aiWorker:
+agentWorker:
   enabled: true
   serverName: "" # Defaults to the internal gRPC service certificate SAN.
 
@@ -114,19 +114,19 @@ ingress:
 # PVCs survive helm uninstall; removing a namespace still deletes its PVCs.
 persistence:
   storageClass: "" # Use the cluster default; "-" disables dynamic provisioning.
-  control: 5Gi
+  control-plane: 5Gi
   postgres: 5Gi
   s3: 20Gi
-  ai-worker: 1Gi
+  agent-worker: 1Gi
 
 resources:
-  control:
+  control-plane:
     requests: {cpu: 100m, memory: 128Mi}
     limits: {cpu: "2", memory: 512Mi}
   web:
     requests: {cpu: 100m, memory: 128Mi}
     limits: {cpu: "1", memory: 512Mi}
-  ai-worker:
+  agent-worker:
     requests: {cpu: 100m, memory: 256Mi}
     limits: {cpu: "2", memory: 1Gi}
   gateway:

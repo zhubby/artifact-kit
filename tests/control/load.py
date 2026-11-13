@@ -38,7 +38,7 @@ def main():
                ARTIFACTORY_LOAD_SECONDS=str(args.seconds), ARTIFACTORY_LOAD_OUTPUT=str(output / "evidence.json"),
                ARTIFACTORY_LOAD_CARGO_CONFIGS=json.dumps(args.cargo_config))
     command = ["cargo", *[part for value in args.cargo_config for part in ["--config", value]],
-               "test", "--locked", "-p", "artifactory-control", "--test", "database",
+               "test", "--locked", "-p", "artifactory-control-plane", "--test", "database",
                *(["--release"] if args.release else []),
                "transport::load::device_fleet_load", "--", "--ignored", "--exact", "--nocapture"]
     with (output / "run.log").open("w") as log:

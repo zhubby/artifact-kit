@@ -1,6 +1,6 @@
 # 零侵入 AI 构建验收记录
 
-日期：2026-11-11，Asia/Shanghai。本次实现保留已有更名改动，GitHub 仓库及本地目录仍为 `artifact-kit`。验收时主工作区尚未提交或推送；Compose 使用独立临时 Git 仓库归档候选代码。
+日期：2026-11-11，Asia/Shanghai。本次实现保留已有更名改动。验收时主工作区尚未提交或推送；Compose 使用独立临时 Git 仓库归档候选代码。
 
 ## 实现与部署
 
@@ -8,9 +8,9 @@
 
 默认模型为 DashScope **`qwen3.8-max`**，接口为 OpenAI Chat Completions。Node.js 24 的独立 worker 使用固定版本 1.5.2 的两个 Pi SDK。模型密钥加密落库，普通 API 返回掩码；Go Agent 不接收该密钥。
 
-本地控制台入口为 `https://macbook-pro.civet-beta.ts.net:9443`。`/api` 直接转发控制服务，停止 Next 时仍能访问 API。Mac mini 的 `artifactory-agent` 系统服务继续使用专用账户 `artifactbuild`，保留节点 ID、证书、私钥、OTA 信任和 generation。启动环境补齐 git-lfs 与完整 Xcode 的路径。
+本地控制台入口为 `https://macbook-pro.civet-beta.ts.net:9443`。`/api` 直接转发控制平面，停止 Next 时仍能访问 API。Mac mini 的 `artifactory-agent` 系统服务继续使用专用账户 `artifactbuild`，保留节点 ID、证书、私钥、OTA 信任和 generation。启动环境补齐 git-lfs 与完整 Xcode 的路径。
 
-本地已部署优化 release 控制服务，二进制 SHA-256 为 `5b0258ac7918f6a7c3bbcc37129880f053d479f65de4581f785d8e5e1251b96f`。重启后再次使用真实 Qwen 完成本地与 Mac mini 构建；此时上游 fixture 已关闭，控制平面和 Agent 都从持久缓存取得原提交的源码。
+本地已部署优化 release 控制平面，二进制 SHA-256 为 `5b0258ac7918f6a7c3bbcc37129880f053d479f65de4581f785d8e5e1251b96f`。重启后再次使用真实 Qwen 完成本地与 Mac mini 构建；此时上游 fixture 已关闭，控制平面和 Agent 都从持久缓存取得原提交的源码。
 
 升级前排空任务，备份数据库、配置、PKI 和对象存储；S3 备份为 1,801 个对象、599,717,532 字节，下载校验无差异。原私有配置、身份及业务数据保留，测试使用独立 schema、桶、目录和容器。
 
@@ -26,7 +26,7 @@
 | 不可恢复对象 | 删除上游保留的旧标签对象并 GC 后明确失败，不能替换为最新提交或标签 |
 | 权限与竞争 | 越权签名/平台、虚构文件依据、过期租约、重复提交、取消竞争、事务回滚、worker 吊销和 20 次调用预算均验证；Git/LFS 在等待缓存锁后重新校验授权 |
 | 源码只读检查 | 受控执行修改 tracked 文件被终止；文件模式、独立工作目录和缓存隔离有 Go 回归覆盖 |
-| 重启恢复 | worker 重启恢复同一规划 run，调用数由 2 累积至 5，截止时间与身份不变；控制服务和 Mac 系统 Agent 重启后恢复连接 |
+| 重启恢复 | worker 重启恢复同一规划 run，调用数由 2 累积至 5，截止时间与身份不变；控制平面和 Mac 系统 Agent 重启后恢复连接 |
 | 数据和密钥 | 升级前项目、构建、制品、Release 保留；扫描本地 5,962 个文件和远端 181 个文件，实际 DashScope 密钥未进入源码、任务目录或日志 |
 | 浏览器 | 63 项 UI 测试通过；真实部署的中英文、1440px 桌面和 390px 手机计划/模型/worker 页面通过，无页面异常或横向溢出 |
 | 自动检查 | Rust 36 项（含 18 项数据库测试）、fmt、clippy；Python 13 项；Go test/vet；前端类型检查及生产构建；worker 8 项均通过 |
@@ -38,7 +38,7 @@
 
 隔离完整 AI 场景的 Agent 源码统计为 33 次缓存命中、3 次未命中；平台累计下发 Git 正文 2,672 字节、LFS 正文 77,824 字节。并发 fixture 的上游 Git 响应正文 4,203 字节、LFS 正文 77,824 字节，其中三个 pack 响应正文共 1,927 字节。统计口径不含 TLS/TCP 开销，`fetched_bytes` 为 Git 缓存磁盘增长，不能当作线路传输量。
 
-最终 Compose 运行 ID 为 `441c1880709b`。control、web 和 ai-worker 镜像从候选 Git 归档构建为 `linux/arm64`；测试工具、PostgreSQL 和 S3 使用 `linux/amd64` 镜像，通过本机模拟执行。镜像拉取使用 `docker.m.daocloud.io`，因本机依赖下载缓慢，仅在私有验收包装器中将镜像构建等待上限由 1,200 秒延长至 3,600 秒，生产 Dockerfile 和验收断言保持原样。实际验证包含 HTTPS/mTLS、CSRF、SSE、编译、私有制品、中心重启及 S3 暂停后的日志缓冲耗尽与恢复。
+最终 Compose 运行 ID 为 `441c1880709b`。control-plane、web 和 agent-worker 镜像从候选 Git 归档构建为 `linux/arm64`；测试工具、PostgreSQL 和 S3 使用 `linux/amd64` 镜像，通过本机模拟执行。镜像拉取使用 `docker.m.daocloud.io`，因本机依赖下载缓慢，仅在私有验收包装器中将镜像构建等待上限由 1,200 秒延长至 3,600 秒，生产 Dockerfile 和验收断言保持原样。实际验证包含 HTTPS/mTLS、CSRF、SSE、编译、私有制品、控制平面重启及 S3 暂停后的日志缓冲耗尽与恢复。
 
 ## 修复记录与边界
 

@@ -18,7 +18,7 @@ runtime:
   secretName: artifactory-runtime
   url: https://artifactory-runtime:8091
   grpcUrl: https://artifactory-runtime:8092
-controlUrl: https://artifactory-control
+controlUrl: https://artifactory-control-plane
 tls:
   # tls.crt, tls.key, ca.crt. SANs cover Runtime and all Source shard endpoints.
   secretName: artifactory-services-tls
@@ -28,7 +28,7 @@ agentPool:
   name: default
   maxActive: 8
   maxPerProject: 4
-  image: ghcr.io/zhubby/artifactory-ai-worker:0.1.0
+  image: ghcr.io/zhubby/artifactory-agent-worker:0.1.0
   cpu: 250m
   memory: 512Mi
 sourcePool:

@@ -1,5 +1,5 @@
 # Overlay after separating the legacy source volume; see docs/control-ha.md.
-control:
+controlPlane:
   replicas: 3
   databaseConnections: 40
   artifactVerifications: 4
@@ -16,7 +16,7 @@ telemetry:
   readConnections: 4
   authorizationConnections: 4
 resources:
-  control:
+  control-plane:
     requests: {cpu: "1", memory: 512Mi}
     limits: {cpu: "4", memory: 2Gi}
   postgres:

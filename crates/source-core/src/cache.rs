@@ -5,7 +5,6 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use sqlx::Row;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -60,18 +59,12 @@ pub fn valid_oid(oid: &str) -> bool {
 }
 
 pub async fn load(state: &AppState, id: Uuid) -> Result<Snapshot> {
-    let value: Value = sqlx::query_scalar("SELECT manifest FROM source_snapshots WHERE id=$1")
-        .bind(id)
-        .fetch_one(&state.pool)
-        .await?;
+    let value = state.store.manifest(id).await?;
     Ok(serde_json::from_value(value)?)
 }
 
 pub async fn repository_path(state: &AppState, id: Uuid) -> Result<PathBuf> {
-    let key: String = sqlx::query_scalar("SELECT cache_key FROM source_repositories WHERE id=$1")
-        .bind(id)
-        .fetch_one(&state.pool)
-        .await?;
+    let key = state.store.cache_key(id).await?;
     ensure!(valid_oid(&key), "invalid source cache key");
     Ok(state
         .settings
@@ -260,11 +253,8 @@ async fn fetch(
             && !reference.contains(['\0', '\n', '\r']),
         "invalid Git reference"
     );
-    let credential_revision: String = if let Some(id) = auth_id {
-        sqlx::query_scalar("SELECT revision FROM credentials WHERE id=$1")
-            .bind(id)
-            .fetch_one(&state.pool)
-            .await?
+    let credential_revision = if let Some(id) = auth_id {
+        state.store.credential_revision(id).await?
     } else {
         String::new()
     };
@@ -273,97 +263,100 @@ async fn fetch(
         crypto::hash(credential_revision)
     ));
     let request_started = Utc::now();
-    let mut tx = state.pool.begin().await?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
-        .bind(&key)
-        .execute(&mut *tx)
-        .await?;
-    let id: Uuid = sqlx::query_scalar("INSERT INTO source_repositories(id,project_id,repository_url,credential_id,cache_key) VALUES($1,$2,$3,$4,$5) ON CONFLICT(cache_key) DO UPDATE SET last_used_at=now() RETURNING id")
-        .bind(Uuid::new_v4()).bind(project).bind(url).bind(auth_id).bind(&key).fetch_one(&mut *tx).await?;
-    let path = state
-        .settings
-        .data_dir
-        .join("sources/repos")
-        .join(format!("{key}.git"));
-    tokio::fs::create_dir_all(path.parent().unwrap()).await?;
-    let auth = authentication(state, auth_id).await?;
-    if !path.join("HEAD").exists() {
-        tokio::fs::create_dir_all(&path).await?;
-        git_with(&path, &["init", "--bare"], &auth.environment).await?;
-        git(&path, &["config", "http.receivepack", "false"]).await?;
-        git(&path, &["config", "gc.auto", "0"]).await?;
-        git(&path, &["config", "remote.origin.url", url]).await?;
-    }
-    let coalesced: Option<String> = sqlx::query_scalar("SELECT commit_sha FROM source_resolutions WHERE repository_id=$1 AND reference=$2 AND fetched_at>=$3")
-        .bind(id).bind(reference).bind(request_started).fetch_optional(&mut *tx).await?;
-    let existing = valid_commit(reference)
-        && git(
-            &path,
-            &["cat-file", "-e", &format!("{reference}^{{commit}}")],
+    state
+        .store
+        .fetch_repository(
+            crate::store::FetchRequest {
+                project,
+                url,
+                auth_id,
+                key: &key,
+                reference,
+                started: request_started,
+            },
+            |coalesced| async {
+                let path = state
+                    .settings
+                    .data_dir
+                    .join("sources/repos")
+                    .join(format!("{key}.git"));
+                tokio::fs::create_dir_all(path.parent().unwrap()).await?;
+                let auth = authentication(state, auth_id).await?;
+                if !path.join("HEAD").exists() {
+                    tokio::fs::create_dir_all(&path).await?;
+                    git_with(&path, &["init", "--bare"], &auth.environment).await?;
+                    git(&path, &["config", "http.receivepack", "false"]).await?;
+                    git(&path, &["config", "gc.auto", "0"]).await?;
+                    git(&path, &["config", "remote.origin.url", url]).await?;
+                }
+                let mut fetched_bytes = None;
+                let existing = valid_commit(reference)
+                    && git(
+                        &path,
+                        &["cat-file", "-e", &format!("{reference}^{{commit}}")],
+                    )
+                    .await
+                    .is_ok();
+                let coalesced = if let Some(commit) = coalesced {
+                    if git(&path, &["cat-file", "-e", &format!("{commit}^{{commit}}")])
+                        .await
+                        .is_ok()
+                    {
+                        Some(commit)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let commit = if existing {
+                    reference.to_owned()
+                } else if let Some(commit) = coalesced {
+                    commit
+                } else {
+                    let before = disk_size(path.clone()).await?;
+                    git_with(
+                        &path,
+                        &[
+                            "fetch",
+                            "--force",
+                            "--tags",
+                            "--no-recurse-submodules",
+                            "--",
+                            url,
+                            reference,
+                        ],
+                        &auth.environment,
+                    )
+                    .await?;
+                    let commit = String::from_utf8(
+                        git(&path, &["rev-parse", "--verify", "FETCH_HEAD^{commit}"]).await?,
+                    )?
+                    .trim()
+                    .to_owned();
+                    ensure!(valid_commit(&commit), "invalid resolved commit");
+                    git(
+                        &path,
+                        &[
+                            "update-ref",
+                            &format!("refs/artifactory/commits/{commit}"),
+                            &commit,
+                        ],
+                    )
+                    .await?;
+                    let delta = disk_size(path.clone()).await?.saturating_sub(before);
+                    fetched_bytes = Some(delta as i64);
+                    commit
+                };
+                Ok(crate::store::FetchObservation {
+                    path,
+                    commit,
+                    fetched_bytes,
+                    existing,
+                })
+            },
         )
         .await
-        .is_ok();
-    let coalesced = if let Some(commit) = coalesced {
-        if git(&path, &["cat-file", "-e", &format!("{commit}^{{commit}}")])
-            .await
-            .is_ok()
-        {
-            Some(commit)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    let commit = if existing {
-        reference.to_owned()
-    } else if let Some(commit) = coalesced {
-        commit
-    } else {
-        let before = disk_size(path.clone()).await?;
-        git_with(
-            &path,
-            &[
-                "fetch",
-                "--force",
-                "--tags",
-                "--no-recurse-submodules",
-                "--",
-                url,
-                reference,
-            ],
-            &auth.environment,
-        )
-        .await?;
-        let commit = String::from_utf8(
-            git(&path, &["rev-parse", "--verify", "FETCH_HEAD^{commit}"]).await?,
-        )?
-        .trim()
-        .to_owned();
-        ensure!(valid_commit(&commit), "invalid resolved commit");
-        git(
-            &path,
-            &[
-                "update-ref",
-                &format!("refs/artifactory/commits/{commit}"),
-                &commit,
-            ],
-        )
-        .await?;
-        let delta = disk_size(path.clone()).await?.saturating_sub(before);
-        sqlx::query("UPDATE source_repositories SET fetched_bytes=fetched_bytes+$2,cache_hits=cache_hits+CASE WHEN $2=0 THEN 1 ELSE 0 END WHERE id=$1").bind(id).bind(delta as i64).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO source_resolutions(repository_id,reference,commit_sha) VALUES($1,$2,$3) ON CONFLICT(repository_id,reference) DO UPDATE SET commit_sha=$3,fetched_at=clock_timestamp()")
-            .bind(id).bind(reference).bind(&commit).execute(&mut *tx).await?;
-        commit
-    };
-    if existing {
-        sqlx::query("UPDATE source_repositories SET cache_hits=cache_hits+1 WHERE id=$1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-    }
-    tx.commit().await?;
-    Ok((id, path, commit))
 }
 
 async fn tree(repo: &Path, commit: &str) -> Result<Vec<(String, String, String, u64)>> {
@@ -599,103 +592,98 @@ pub async fn capture(
     bindings: Vec<CredentialBinding>,
     operation: Uuid,
 ) -> Result<Snapshot> {
-    let mut protection = state.pool.begin().await?;
-    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,1))")
-        .bind(project.to_string())
-        .execute(&mut *protection)
-        .await?;
-    let pinned: Option<String> =
-        sqlx::query_scalar("SELECT root_commit FROM source_operations WHERE id=$1")
-            .bind(operation)
-            .fetch_one(&state.pool)
-            .await?;
-    let mut pending = vec![(
-        String::new(),
-        url.to_string(),
-        pinned.unwrap_or_else(|| reference.to_string()),
-        credential_id,
-        0u32,
-    )];
-    let mut repositories = Vec::new();
-    while let Some((path, url, reference, auth_id, depth)) = pending.pop() {
-        ensure!(
-            depth <= 16 && repositories.len() < 256,
-            "source submodule graph exceeds limit"
-        );
-        let (repository_id, repo, commit) =
-            fetch(state, project, &url, &reference, auth_id).await?;
-        if path.is_empty() {
-            sqlx::query(
-                "UPDATE source_operations SET root_commit=coalesce(root_commit,$2) WHERE id=$1",
-            )
-            .bind(operation)
-            .bind(&commit)
-            .execute(&state.pool)
-            .await?;
-        }
-        let (mut tags, lfs, children) = inspect(state, &repo, &commit, auth_id).await?;
-        let frozen: Option<Value> = sqlx::query_scalar(
-            "SELECT tags FROM source_operation_repos WHERE operation_id=$1 AND path=$2",
-        )
-        .bind(operation)
-        .bind(&path)
-        .fetch_optional(&state.pool)
-        .await?;
-        if let Some(value) = frozen {
-            tags = serde_json::from_value(value)?;
-        } else {
-            sqlx::query("INSERT INTO source_operation_repos(operation_id,path,tags) VALUES($1,$2,$3) ON CONFLICT DO NOTHING").bind(operation).bind(&path).bind(serde_json::to_value(&tags)?).execute(&state.pool).await?;
-        }
-        for (child_path, child_url, child_commit) in children.into_iter().rev() {
-            let child_url = resolve_submodule(&url, &child_url)?;
-            let child_auth = bindings
-                .iter()
-                .find(|binding| binding.repository_url == child_url)
-                .map(|b| b.credential_id)
-                .or_else(|| {
-                    if origin(&url) == origin(&child_url) {
-                        auth_id
+    state
+        .store
+        .capture_sources(project, || async {
+            let pinned = state.store.pinned_root(operation).await?;
+            let mut pending = vec![(
+                String::new(),
+                url.to_string(),
+                pinned.unwrap_or_else(|| reference.to_string()),
+                credential_id,
+                0u32,
+            )];
+            let mut repositories = Vec::new();
+            while let Some((path, url, reference, auth_id, depth)) = pending.pop() {
+                ensure!(
+                    depth <= 16 && repositories.len() < 256,
+                    "source submodule graph exceeds limit"
+                );
+                let (repository_id, repo, commit) =
+                    fetch(state, project, &url, &reference, auth_id).await?;
+                if path.is_empty() {
+                    state.store.pin_root(operation, &commit).await?;
+                }
+                let (mut tags, lfs, children) = inspect(state, &repo, &commit, auth_id).await?;
+                let frozen = state.store.frozen_tags(operation, &path).await?;
+                if let Some(value) = frozen {
+                    tags = serde_json::from_value(value)?;
+                } else {
+                    state
+                        .store
+                        .freeze_tags(operation, &path, serde_json::to_value(&tags)?)
+                        .await?;
+                }
+                for (child_path, child_url, child_commit) in children.into_iter().rev() {
+                    let child_url = resolve_submodule(&url, &child_url)?;
+                    let child_auth = bindings
+                        .iter()
+                        .find(|binding| binding.repository_url == child_url)
+                        .map(|b| b.credential_id)
+                        .or_else(|| {
+                            if origin(&url) == origin(&child_url) {
+                                auth_id
+                            } else {
+                                None
+                            }
+                        });
+                    let child_path = if path.is_empty() {
+                        child_path
                     } else {
-                        None
-                    }
+                        format!("{path}/{child_path}")
+                    };
+                    validate_path(&child_path)?;
+                    pending.push((child_path, child_url, child_commit, child_auth, depth + 1));
+                }
+                repositories.push(Repository {
+                    id: Uuid::new_v4(),
+                    repository_id,
+                    path,
+                    commit,
+                    tags,
+                    lfs,
                 });
-            let child_path = if path.is_empty() {
-                child_path
-            } else {
-                format!("{path}/{child_path}")
+            }
+            repositories.sort_by(|a, b| a.path.cmp(&b.path));
+            let root = repositories.first().context("empty source snapshot")?;
+            ensure!(root.path.is_empty(), "missing root repository");
+            let mut stable = serde_json::to_value(&repositories)?;
+            for entry in stable.as_array_mut().unwrap() {
+                entry.as_object_mut().unwrap().remove("id");
+            }
+            let digest = crypto::hash(serde_json::to_vec(&stable)?);
+            let snapshot = Snapshot {
+                id: Uuid::new_v4(),
+                project_id: project,
+                commit: root.commit.clone(),
+                repositories,
             };
-            validate_path(&child_path)?;
-            pending.push((child_path, child_url, child_commit, child_auth, depth + 1));
-        }
-        repositories.push(Repository {
-            id: Uuid::new_v4(),
-            repository_id,
-            path,
-            commit,
-            tags,
-            lfs,
-        });
-    }
-    repositories.sort_by(|a, b| a.path.cmp(&b.path));
-    let root = repositories.first().context("empty source snapshot")?;
-    ensure!(root.path.is_empty(), "missing root repository");
-    let mut stable = serde_json::to_value(&repositories)?;
-    for entry in stable.as_array_mut().unwrap() {
-        entry.as_object_mut().unwrap().remove("id");
-    }
-    let digest = crypto::hash(serde_json::to_vec(&stable)?);
-    let snapshot = Snapshot {
-        id: Uuid::new_v4(),
-        project_id: project,
-        commit: root.commit.clone(),
-        repositories,
-    };
-    let manifest: Value = sqlx::query_scalar("INSERT INTO source_snapshots(id,project_id,root_repository_id,commit_sha,manifest,digest) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(project_id,digest) DO UPDATE SET last_used_at=now() RETURNING manifest")
-        .bind(snapshot.id).bind(project).bind(snapshot.repositories[0].repository_id).bind(&snapshot.commit).bind(serde_json::to_value(&snapshot)?).bind(digest).fetch_one(&state.pool).await?;
-    let snapshot: Snapshot = serde_json::from_value(manifest)?;
-    ensure_available(state, &snapshot).await?;
-    protection.commit().await?;
-    Ok(snapshot)
+            let manifest = state
+                .store
+                .save_snapshot(
+                    snapshot.id,
+                    project,
+                    snapshot.repositories[0].repository_id,
+                    &snapshot.commit,
+                    serde_json::to_value(&snapshot)?,
+                    digest,
+                )
+                .await?;
+            let snapshot: Snapshot = serde_json::from_value(manifest)?;
+            ensure_available(state, &snapshot).await?;
+            Ok(snapshot)
+        })
+        .await
 }
 
 async fn recover_object(repo: &Path, url: &str, oid: &str, auth: &Authentication) -> Result<()> {
@@ -733,97 +721,79 @@ async fn recover_object(repo: &Path, url: &str, oid: &str, auth: &Authentication
 
 pub async fn ensure_available(state: &AppState, snapshot: &Snapshot) -> Result<()> {
     for entry in &snapshot.repositories {
-        let row = sqlx::query(
-            "SELECT repository_url,credential_id,cache_key FROM source_repositories WHERE id=$1",
-        )
-        .bind(entry.repository_id)
-        .fetch_one(&state.pool)
-        .await?;
-        let mut tx = state.pool.begin().await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
-            .bind(row.get::<String, _>("cache_key"))
-            .execute(&mut *tx)
-            .await?;
-        let repo = repository_path(state, entry.repository_id).await?;
-        if !repo.join("HEAD").exists()
-            || git(
-                &repo,
-                &["cat-file", "-e", &format!("{}^{{commit}}", entry.commit)],
-            )
-            .await
-            .is_err()
-        {
-            let auth = authentication(state, row.get("credential_id")).await?;
-            tokio::fs::create_dir_all(&repo).await?;
-            git(&repo, &["init", "--bare"]).await?;
-            git(&repo, &["config", "http.receivepack", "false"]).await?;
-            git(
-                &repo,
-                &[
-                    "config",
-                    "remote.origin.url",
-                    &row.get::<String, _>("repository_url"),
-                ],
-            )
-            .await?;
-            recover_object(
-                &repo,
-                &row.get::<String, _>("repository_url"),
-                &entry.commit,
-                &auth,
-            )
-            .await
-            .context("pinned source is no longer available upstream")?;
-        }
-        // Partial cache loss can leave the commit present while its annotated
-        // tag or LFS payload is missing. Restore those exact pinned identities.
-        for oid in entry.tags.values() {
-            if git(&repo, &["cat-file", "-e", oid]).await.is_err() {
-                let auth = authentication(state, row.get("credential_id")).await?;
-                recover_object(&repo, &row.get::<String, _>("repository_url"), oid, &auth)
+        state
+            .store
+            .restore_repository(entry.repository_id, |access| async move {
+                let repo = repository_path(state, entry.repository_id).await?;
+                if !repo.join("HEAD").exists()
+                    || git(
+                        &repo,
+                        &["cat-file", "-e", &format!("{}^{{commit}}", entry.commit)],
+                    )
                     .await
-                    .context("pinned tag object is no longer available upstream")?;
-            }
-        }
-        if entry
-            .lfs
-            .iter()
-            .any(|item| !lfs_path(&repo, &item.oid).is_ok_and(|path| path.exists()))
-        {
-            let auth = authentication(state, row.get("credential_id")).await?;
-            git_with(
-                &repo,
-                &["lfs", "fetch", "origin", &entry.commit],
-                &auth.environment,
-            )
+                    .is_err()
+                {
+                    let auth = authentication(state, access.credential_id).await?;
+                    tokio::fs::create_dir_all(&repo).await?;
+                    git(&repo, &["init", "--bare"]).await?;
+                    git(&repo, &["config", "http.receivepack", "false"]).await?;
+                    git(
+                        &repo,
+                        &["config", "remote.origin.url", &access.repository_url],
+                    )
+                    .await?;
+                    recover_object(&repo, &access.repository_url, &entry.commit, &auth)
+                        .await
+                        .context("pinned source is no longer available upstream")?;
+                }
+                // Partial cache loss can leave the commit present while its annotated
+                // tag or LFS payload is missing. Restore those exact pinned identities.
+                for oid in entry.tags.values() {
+                    if git(&repo, &["cat-file", "-e", oid]).await.is_err() {
+                        let auth = authentication(state, access.credential_id).await?;
+                        recover_object(&repo, &access.repository_url, oid, &auth)
+                            .await
+                            .context("pinned tag object is no longer available upstream")?;
+                    }
+                }
+                if entry
+                    .lfs
+                    .iter()
+                    .any(|item| !lfs_path(&repo, &item.oid).is_ok_and(|path| path.exists()))
+                {
+                    let auth = authentication(state, access.credential_id).await?;
+                    git_with(
+                        &repo,
+                        &["lfs", "fetch", "origin", &entry.commit],
+                        &auth.environment,
+                    )
+                    .await?;
+                }
+                let prefix = format!("refs/namespaces/{}/refs", namespace(snapshot.id, entry.id));
+                git(
+                    &repo,
+                    &[
+                        "update-ref",
+                        &format!("{prefix}/heads/source"),
+                        &entry.commit,
+                    ],
+                )
+                .await?;
+                for (name, oid) in &entry.tags {
+                    git(
+                        &repo,
+                        &["update-ref", &format!("{prefix}/tags/{name}"), oid],
+                    )
+                    .await?;
+                }
+                for item in &entry.lfs {
+                    verify_lfs(&repo, item).await?;
+                }
+                Ok(())
+            })
             .await?;
-        }
-        let prefix = format!("refs/namespaces/{}/refs", namespace(snapshot.id, entry.id));
-        git(
-            &repo,
-            &[
-                "update-ref",
-                &format!("{prefix}/heads/source"),
-                &entry.commit,
-            ],
-        )
-        .await?;
-        for (name, oid) in &entry.tags {
-            git(
-                &repo,
-                &["update-ref", &format!("{prefix}/tags/{name}"), oid],
-            )
-            .await?;
-        }
-        for item in &entry.lfs {
-            verify_lfs(&repo, item).await?;
-        }
-        tx.commit().await?;
     }
-    sqlx::query("UPDATE source_snapshots SET last_used_at=now() WHERE id=$1")
-        .bind(snapshot.id)
-        .execute(&state.pool)
-        .await?;
+    state.store.touch_snapshot(snapshot.id).await?;
     Ok(())
 }
 

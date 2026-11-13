@@ -1,0 +1,21 @@
+{
+  "name": "artifactory-agent-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24 <25" },
+  "bin": { "artifactory-agent-worker": "dist/main.js" },
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "test": "npm run build && node --test dist/*.test.js",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "1.5.2",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@grpc/grpc-js": "1.14.3",
+    "@grpc/proto-loader": "0.8.0"
+  },
+  "devDependencies": { "@types/node": "^24.0.0", "typescript": "~5.9.3" }
+}

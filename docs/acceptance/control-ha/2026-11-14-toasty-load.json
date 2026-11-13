@@ -1,0 +1,234 @@
+{
+  "main_base": "e18d0ea1cd94473b5fdad149b40f5deae7c6216d",
+  "source_diff_sha256": "45415992dcd8187e634e184df22eb28dbe1f2a2dc2e6b39d8bd68c39c5ede293",
+  "source_diff_paths": [
+    "Cargo.lock",
+    "crates",
+    "vendor/toasty-driver-postgresql",
+    "charts",
+    "web/src",
+    "scripts/init-helm.py",
+    "tests/control"
+  ],
+  "control_binary_sha256": "210527f29c076a047c5b33ee1746ecd8a494e1e82e673762da6e236fc8102efa",
+  "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+  "database_container_memory_limit_bytes": 0,
+  "docker_vm_memory_bytes": 16818991104,
+  "runs": [
+    {
+      "evidence_path": ".local/control-load/20261113-215804-toasty-1000-100/evidence.json",
+      "nodes": 1000,
+      "active_attempts": 100,
+      "replicas": 3,
+      "seconds": 60,
+      "passed": true,
+      "database_connections_per_replica": 20,
+      "build_profile": "release",
+      "cargo_config_overrides": [],
+      "control_log_filter": "artifactory_control_plane=debug",
+      "database_configuration": {
+        "fsync": "on",
+        "full_page_writes": "on",
+        "max_connections": 200,
+        "server_version": "17.11",
+        "shared_buffers": "4009MB",
+        "synchronous_commit": "on",
+        "wal_buffers": "16MB"
+      },
+      "connect_seconds": 2.180049625,
+      "heartbeat_p99_ms": 57.243375,
+      "heartbeat_samples": 6002,
+      "heartbeat_phases": {
+        "after_sigkill": {
+          "max_ms": 120.118792,
+          "p50_ms": 5.826167,
+          "p95_ms": 34.688125,
+          "p99_ms": 59.695958,
+          "samples": 1994
+        },
+        "after_sigterm": {
+          "max_ms": 256.13495800000004,
+          "p50_ms": 6.415125,
+          "p95_ms": 34.556041,
+          "p99_ms": 54.193459,
+          "samples": 2001
+        },
+        "steady": {
+          "max_ms": 116.65475,
+          "p50_ms": 6.4165,
+          "p95_ms": 34.013333,
+          "p99_ms": 56.716542000000004,
+          "samples": 2007
+        }
+      },
+      "api_p95_ms": 40.565208,
+      "api_samples": 890,
+      "api_errors": 0,
+      "reconnects": 667,
+      "reconnect_latency": {
+        "max_ms": 659.296208,
+        "p50_ms": 452.447041,
+        "p95_ms": 609.490334,
+        "p99_ms": 648.790292,
+        "samples": 667
+      },
+      "reconnect_errors": {},
+      "transient_transport_retries": 0,
+      "errors": 0,
+      "all_nodes_recovered": true,
+      "attempt_ids_preserved": true,
+      "valid_running_attempts": 100,
+      "hard_kill": true,
+      "sigterm_drain": true,
+      "database_connections_peak_including_harness": 44,
+      "database_lock_waits_peak": 0,
+      "survivor_rss_kib": 112176,
+      "survivor_cpu_percent_snapshot": 3.4,
+      "scope": "real Control child processes and mTLS; virtual executors; controlled S3 peer; no telemetry ingest or artifact throughput load"
+    },
+    {
+      "evidence_path": ".local/control-load/20261113-215922-toasty-5000-500/evidence.json",
+      "nodes": 5000,
+      "active_attempts": 500,
+      "replicas": 3,
+      "seconds": 60,
+      "passed": true,
+      "database_connections_per_replica": 40,
+      "build_profile": "release",
+      "cargo_config_overrides": [],
+      "control_log_filter": "artifactory_control_plane=debug",
+      "database_configuration": {
+        "fsync": "on",
+        "full_page_writes": "on",
+        "max_connections": 200,
+        "server_version": "17.11",
+        "shared_buffers": "4009MB",
+        "synchronous_commit": "on",
+        "wal_buffers": "16MB"
+      },
+      "connect_seconds": 12.071889709,
+      "heartbeat_p99_ms": 86.282792,
+      "heartbeat_samples": 30120,
+      "heartbeat_phases": {
+        "after_sigkill": {
+          "max_ms": 362.424875,
+          "p50_ms": 6.391958,
+          "p95_ms": 45.311125000000004,
+          "p99_ms": 80.490375,
+          "samples": 9996
+        },
+        "after_sigterm": {
+          "max_ms": 478.100333,
+          "p50_ms": 6.874917,
+          "p95_ms": 52.151375,
+          "p99_ms": 120.396291,
+          "samples": 10146
+        },
+        "steady": {
+          "max_ms": 134.589,
+          "p50_ms": 5.919917,
+          "p95_ms": 42.002959,
+          "p99_ms": 67.799959,
+          "samples": 10007
+        }
+      },
+      "api_p95_ms": 52.691416999999994,
+      "api_samples": 814,
+      "api_errors": 0,
+      "reconnects": 3333,
+      "reconnect_latency": {
+        "max_ms": 4119.037458,
+        "p50_ms": 1780.752667,
+        "p95_ms": 3754.319375,
+        "p99_ms": 3967.874625,
+        "samples": 3333
+      },
+      "reconnect_errors": {},
+      "transient_transport_retries": 0,
+      "errors": 0,
+      "all_nodes_recovered": true,
+      "attempt_ids_preserved": true,
+      "valid_running_attempts": 500,
+      "hard_kill": true,
+      "sigterm_drain": true,
+      "database_connections_peak_including_harness": 91,
+      "database_lock_waits_peak": 0,
+      "survivor_rss_kib": 312096,
+      "survivor_cpu_percent_snapshot": 9.1,
+      "scope": "real Control child processes and mTLS; virtual executors; controlled S3 peer; no telemetry ingest or artifact throughput load"
+    },
+    {
+      "evidence_path": ".local/control-load/20261113-220107-toasty-10000-1000/evidence.json",
+      "nodes": 10000,
+      "active_attempts": 1000,
+      "replicas": 3,
+      "seconds": 60,
+      "passed": true,
+      "database_connections_per_replica": 40,
+      "build_profile": "release",
+      "cargo_config_overrides": [],
+      "control_log_filter": "artifactory_control_plane=debug",
+      "database_configuration": {
+        "fsync": "on",
+        "full_page_writes": "on",
+        "max_connections": 200,
+        "server_version": "17.11",
+        "shared_buffers": "4009MB",
+        "synchronous_commit": "on",
+        "wal_buffers": "16MB"
+      },
+      "connect_seconds": 26.255179292,
+      "heartbeat_p99_ms": 682.0906249999999,
+      "heartbeat_samples": 60231,
+      "heartbeat_phases": {
+        "after_sigkill": {
+          "max_ms": 1729.4804159999999,
+          "p50_ms": 18.985249999999997,
+          "p95_ms": 444.598625,
+          "p99_ms": 737.031791,
+          "samples": 19894
+        },
+        "after_sigterm": {
+          "max_ms": 1120.509042,
+          "p50_ms": 19.770709,
+          "p95_ms": 329.323875,
+          "p99_ms": 527.880209,
+          "samples": 20333
+        },
+        "steady": {
+          "max_ms": 2011.3928749999998,
+          "p50_ms": 18.07375,
+          "p95_ms": 367.47604099999995,
+          "p99_ms": 798.4625,
+          "samples": 20077
+        }
+      },
+      "api_p95_ms": 201.459584,
+      "api_samples": 464,
+      "api_errors": 0,
+      "reconnects": 6667,
+      "reconnect_latency": {
+        "max_ms": 12985.605583,
+        "p50_ms": 5605.322791,
+        "p95_ms": 12386.160458999999,
+        "p99_ms": 12768.756040999999,
+        "samples": 6667
+      },
+      "reconnect_errors": {
+        "io_ConnectionReset": 215
+      },
+      "transient_transport_retries": 215,
+      "errors": 0,
+      "all_nodes_recovered": true,
+      "attempt_ids_preserved": true,
+      "valid_running_attempts": 1000,
+      "hard_kill": true,
+      "sigterm_drain": true,
+      "database_connections_peak_including_harness": 133,
+      "database_lock_waits_peak": 0,
+      "survivor_rss_kib": 518048,
+      "survivor_cpu_percent_snapshot": 16.9,
+      "scope": "real Control child processes and mTLS; virtual executors; controlled S3 peer; no telemetry ingest or artifact throughput load"
+    }
+  ]
+}

@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 case "$ARTIFACTORY_DOMAIN:$ARTIFACTORY_S3_DOMAIN:$ARTIFACTORY_GRPC_HOST" in *[!a-zA-Z0-9.:-]*) printf '%s\n' 'Only DNS hostnames are accepted.' >&2; exit 1;; esac
 if [ "$(id -u)" = 0 ]; then printf '%s\n' 'Run as the dedicated non-root deployment account.' >&2; exit 1; fi
 if [ -e .deploy/env ]; then printf '%s\n' '.deploy/env exists; refusing to rotate persistent keys.' >&2; exit 1; fi
-mkdir -p .deploy/pki .deploy/control .deploy/ai-worker
+mkdir -p .deploy/pki .deploy/control-plane .deploy/agent-worker
 openssl req -x509 -newkey rsa:3072 -nodes -keyout .deploy/pki/ca.key -out .deploy/pki/ca.pem -sha256 -days 3650 -subj '/CN=artifactory Emissary Issuer' >/dev/null 2>&1
 openssl req -newkey rsa:3072 -nodes -keyout .deploy/pki/server.key -out .deploy/pki/server.csr -subj "/CN=$ARTIFACTORY_GRPC_HOST" >/dev/null 2>&1
 printf '%s\n' "subjectAltName=DNS:$ARTIFACTORY_GRPC_HOST,DNS:telemetry" 'extendedKeyUsage=serverAuth' 'keyUsage=critical,digitalSignature,keyEncipherment' > .deploy/pki/server.ext

@@ -36,15 +36,16 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler openssh-server postgresql-client rclone git-lfs && sudo mkdir -p /run/sshd
       - run: npm ci && npm run check && npm test
-        working-directory: ai-worker
+        working-directory: packages/agent-worker
       - run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy && rustup default 1.95.0
       - run: sh scripts/local-services.sh
+      - run: python3 scripts/check_data_access.py --dependencies
       - run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
       - run: cargo fmt --all --check && cargo clippy --locked --all-targets -- -D warnings
       - name: Rust unit, Runtime/Source, business and Timescale telemetry regressions
         run: |
           set -a; source .local/env; set +a
-          cargo test --locked --workspace --all-targets -- --include-ignored --skip live_emissary_protocol --skip native_service_lifecycle
+          cargo test --locked --workspace --all-targets -- --include-ignored --skip live_emissary_protocol --skip native_service_lifecycle --skip device_fleet_load
       - name: Generated CRDs match both release manifests
         run: |
           cargo run --locked -q -p artifactory-operator --bin crdgen > /tmp/artifactory-crds.yaml
@@ -59,8 +60,8 @@ jobs:
         working-directory: web
         env:
           ARTIFACTORY_UI_PRODUCTION: '1'
-      - run: cargo build --locked --bin artifactory-control
-      - name: Real Rust Control / Emissary / TimescaleDB / private S3 / browser
+      - run: cargo build --locked --bin artifactory-control-plane
+      - name: Real Rust Control Plane / Emissary / TimescaleDB / private S3 / browser
         shell: bash
         run: |
           set -euo pipefail
@@ -105,7 +106,7 @@ jobs:
             .local/acceptance-run.log
             .local/protocol-live.log
             .local/web.log
-            .local/acceptance/*/control.log
+            .local/acceptance/*/control-plane.log
             .local/acceptance/*/emissary.log
             .local/acceptance/*/sshd.log
             .local/acceptance/*/evidence.json
@@ -169,7 +170,7 @@ jobs:
           path: |
             .local/operator-acceptance/*/evidence.json
             .local/operator-acceptance/*/build.json
-            .local/operator-acceptance/*/control.log
+            .local/operator-acceptance/*/control-plane.log
             .local/operator-acceptance/*/native-operator.log
             .local/operator-acceptance/*/native-runtime.log
             .local/operator-acceptance/*/native-telemetry.log

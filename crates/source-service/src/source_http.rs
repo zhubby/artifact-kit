@@ -26,44 +26,19 @@ use uuid::Uuid;
 
 struct Download {
     _permit: tokio::sync::SemaphorePermit<'static>,
-    _lock: sqlx::Transaction<'static, sqlx::Postgres>,
-    pool: sqlx::PgPool,
-    repository: Uuid,
-    lfs: bool,
+    _lease: artifactory_source_core::store::SourceDownload,
     bytes: Arc<AtomicU64>,
-}
-impl Drop for Download {
-    fn drop(&mut self) {
-        let pool = self.pool.clone();
-        let id = self.repository;
-        let lfs = self.lfs;
-        let bytes = self.bytes.load(Ordering::Relaxed) as i64;
-        tokio::spawn(async move {
-            let _=sqlx::query("UPDATE source_repositories SET git_download_bytes=git_download_bytes+CASE WHEN $3 THEN 0 ELSE $2 END,lfs_download_bytes=lfs_download_bytes+CASE WHEN $3 THEN $2 ELSE 0 END,last_used_at=now() WHERE id=$1").bind(id).bind(bytes).bind(lfs).execute(&pool).await;
-        });
-    }
 }
 async fn download(state: &AppState, repository: Uuid, lfs: bool) -> Result<Download> {
     // Long downloads retain a DB lock against eviction. Leave pool capacity for
     // lease heartbeats, cancellation and scheduling even under parallel LFS.
     static TRANSFERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(6);
     let permit = TRANSFERS.acquire().await.map_err(anyhow::Error::from)?;
-    let key: String = sqlx::query_scalar("SELECT cache_key FROM source_repositories WHERE id=$1")
-        .bind(repository)
-        .fetch_one(&state.pool)
-        .await?;
-    let mut lock = state.pool.begin().await?;
-    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))")
-        .bind(key)
-        .execute(&mut *lock)
-        .await?;
+    let lease = state.store.download_repository(repository, lfs).await?;
     Ok(Download {
         _permit: permit,
-        _lock: lock,
-        pool: state.pool.clone(),
-        repository,
-        lfs,
-        bytes: Arc::new(AtomicU64::new(0)),
+        bytes: lease.bytes.clone(),
+        _lease: lease,
     })
 }
 

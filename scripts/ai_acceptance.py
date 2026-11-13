@@ -66,7 +66,7 @@ class Acceptance:
         self.config['DATABASE_URL'] = urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
         self.config.update(ARTIFACTORY_HTTP_BIND='127.0.0.1:38080', ARTIFACTORY_GRPC_BIND='127.0.0.1:38443',
                            ARTIFACTORY_PUBLIC_URL='http://127.0.0.1:38080', ARTIFACTORY_INSECURE_DEV='true',
-                           ARTIFACTORY_DATA_DIR=str(self.run / 'control'), ARTIFACTORY_BOOTSTRAP_USERNAME='ai-admin',
+                           ARTIFACTORY_DATA_DIR=str(self.run / 'control-plane'), ARTIFACTORY_BOOTSTRAP_USERNAME='ai-admin',
                            ARTIFACTORY_BOOTSTRAP_PASSWORD=uuid.uuid4().hex, ARTIFACTORY_S3_BUCKET='ai-' + uuid.uuid4().hex[:12])
         self.grpc_endpoint = 'localhost:38443'
         if args.tailnet_address:
@@ -263,7 +263,7 @@ class Acceptance:
             threading.Thread(target=self.proxy.serve_forever,daemon=True).start()
         env = {key: os.environ[key] for key in ['PATH','HOME','LANG','TMPDIR'] if key in os.environ}
         env.update(self.config, GIT_SSL_CAINFO=str(Path(self.config['ARTIFACTORY_PKI_DIR'])/'ca.pem'))
-        self.start('control', [str(ROOT/'target/debug/artifactory-control'),'serve'], env=env)
+        self.start('control-plane', [str(ROOT/'target/debug/artifactory-control-plane'),'serve'], env=env)
         self.wait(lambda: self.http.open(self.base+'/healthz',timeout=2).status==200)
         self.api('/auth/login', {'username':self.config['ARTIFACTORY_BOOTSTRAP_USERNAME'],'password':self.config['ARTIFACTORY_BOOTSTRAP_PASSWORD']})
         self.check('new session cookie', any(c.name=='artifactory_session' for c in self.jar))
@@ -279,9 +279,9 @@ class Acceptance:
             'certificate_file':str(self.run/'worker.pem'),'key_file':str(self.run/'worker.key'),'name':'isolated-pi-worker'}
         path=self.run/'worker.json';path.write_text(json.dumps(config))
         token=self.api('/ai-enrollment-tokens',{})['token']
-        result=self.start('worker-enroll',[self.args.node,str(ROOT/'ai-worker/dist/main.js'),'enroll','--config',str(path)],stdin=token,env=env)
+        result=self.start('worker-enroll',[self.args.node,str(ROOT/'packages/agent-worker/dist/main.js'),'enroll','--config',str(path)],stdin=token,env=env)
         if result.wait(timeout=60)!=0:raise RuntimeError('worker enrollment failed; inspect worker-enroll.log')
-        self.start('worker',[self.args.node,str(ROOT/'ai-worker/dist/main.js'),'--config',str(path)],env=env)
+        self.start('worker',[self.args.node,str(ROOT/'packages/agent-worker/dist/main.js'),'--config',str(path)],env=env)
         self.emissary_config=self.run/'emissary.json'
         host_os={'Darwin':'darwin','Linux':'linux','Windows':'windows'}[platform.system()]
         arch='arm64' if platform.machine() in ['arm64','aarch64'] else 'amd64'
@@ -385,7 +385,7 @@ class Acceptance:
         self.check('no upstream write requests in any scenario',self.evidence['upstream']['writes']==0)
         key=os.environ.get('ARTIFACTORY_ACCEPTANCE_MODEL_KEY') or os.environ.get('ANTHROPIC_AUTH_TOKEN') or os.environ.get('ANTHROPIC_API_KEY')
         leaked=[]
-        for root in [self.run/'emissary',self.run/'control']:
+        for root in [self.run/'emissary',self.run/'control-plane']:
             for path in root.rglob('*'):
                 if path.is_file() and path.stat().st_size<8*1024*1024 and key.encode() in path.read_bytes():leaked.append(str(path.relative_to(self.run)))
         for path in self.run.glob('*.log'):

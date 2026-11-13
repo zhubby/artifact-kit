@@ -16,14 +16,14 @@ class HelmBootstrapTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which('helm'), 'requires helm')
     def test_replicated_control_requires_source_isolation_and_renders_ha_resources(self):
         chart = SCRIPT.parents[1] / 'charts/artifactory'
-        invalid = subprocess.run(['helm', 'template', 'ha-test', str(chart), '--set', 'control.replicas=3'],
+        invalid = subprocess.run(['helm', 'template', 'ha-test', str(chart), '--set', 'controlPlane.replicas=3'],
                                  capture_output=True, text=True)
         self.assertNotEqual(invalid.returncode, 0)
         self.assertIn('localSource.enabled', invalid.stderr)
         result = subprocess.run(['helm', 'template', 'ha-test', str(chart), '-f', str(chart / 'values-ha.yaml')],
                                 check=True, capture_output=True, text=True)
         self.assertIn('replicas: 3', result.stdout)
-        self.assertIn('command: [artifactory-control, serve-source]', result.stdout)
+        self.assertIn('command: [artifactory-control-plane, serve-source]', result.stdout)
         self.assertIn('emptyDir: {sizeLimit: 10Gi}', result.stdout)
         self.assertIn('kind: PodDisruptionBudget', result.stdout)
         self.assertIn('https://ha-test-local-source:8080', result.stdout)

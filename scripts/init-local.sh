@@ -2,13 +2,13 @@
 set -eu
 umask 077
 cd "$(dirname "$0")/.."
-mkdir -p .local/pki .local/control .local/emissary
+mkdir -p .local/pki .local/control-plane .local/emissary
 if [ ! -f .local/pki/ca.key ]; then
   openssl req -x509 -newkey rsa:3072 -nodes -keyout .local/pki/ca.key -out .local/pki/ca.pem -sha256 -days 3650 -subj '/CN=artifactory Development CA' >/dev/null 2>&1
 fi
 if [ ! -f .local/pki/server.key ]; then
   openssl req -newkey rsa:3072 -nodes -keyout .local/pki/server.key -out .local/pki/server.csr -subj '/CN=localhost' >/dev/null 2>&1
-  printf '%s\n' 'subjectAltName=DNS:localhost,DNS:control,IP:127.0.0.1' 'extendedKeyUsage=serverAuth' 'keyUsage=critical,digitalSignature,keyEncipherment' > .local/pki/server.ext
+  printf '%s\n' 'subjectAltName=DNS:localhost,DNS:control-plane,IP:127.0.0.1' 'extendedKeyUsage=serverAuth' 'keyUsage=critical,digitalSignature,keyEncipherment' > .local/pki/server.ext
   openssl x509 -req -in .local/pki/server.csr -CA .local/pki/ca.pem -CAkey .local/pki/ca.key -CAcreateserial -out .local/pki/server.pem -days 365 -sha256 -extfile .local/pki/server.ext >/dev/null 2>&1
 fi
 if [ ! -f .local/env ]; then
@@ -25,7 +25,7 @@ ARTIFACTORY_INSECURE_DEV=true
 ARTIFACTORY_REGISTRATION_ENABLED=${ARTIFACTORY_REGISTRATION_ENABLED:-true}
 ARTIFACTORY_MASTER_KEY=$(openssl rand -base64 32)
 ARTIFACTORY_PKI_DIR=$(pwd)/.local/pki
-ARTIFACTORY_DATA_DIR=$(pwd)/.local/control
+ARTIFACTORY_DATA_DIR=$(pwd)/.local/control-plane
 ARTIFACTORY_S3_ENDPOINT=http://127.0.0.1:19000
 ARTIFACTORY_S3_PUBLIC_ENDPOINT=http://127.0.0.1:19000
 ARTIFACTORY_S3_BUCKET=artifactory

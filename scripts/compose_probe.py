@@ -214,7 +214,7 @@ targets:
         enrollment = api('/enrollment-tokens', {'pool_id': pool})['token']
         config_file = DIRECTORY / 'emissary.json'
         environment = {key: value for key, value in os.environ.items() if not key.startswith('ARTIFACTORY_')}
-        command([str(DIRECTORY / 'artifactory-emissary'), 'register', '--config', str(config_file), '--endpoint', 'control:8443', '--ca', str(DIRECTORY / 'grpc-ca.pem'), '--root', str(DIRECTORY / 'emissary-data'), '--name', 'compose-tls-probe'], env=dict(environment, ARTIFACTORY_ENROLLMENT_TOKEN=enrollment))
+        command([str(DIRECTORY / 'artifactory-emissary'), 'register', '--config', str(config_file), '--endpoint', 'control-plane:8443', '--ca', str(DIRECTORY / 'grpc-ca.pem'), '--root', str(DIRECTORY / 'emissary-data'), '--name', 'compose-tls-probe'], env=dict(environment, ARTIFACTORY_ENROLLMENT_TOKEN=enrollment))
         config = json.loads(config_file.read_text())
         config['git_ca_file'] = str(DIRECTORY / 'grpc-ca.pem')
         config['log_buffer_bytes'] = 1024 * 1024
@@ -283,7 +283,7 @@ targets:
         attempt_id = running['jobs'][0]['attempts'][-1]['id']
         previous_seen = next(item for item in api('/nodes') if item['id'] == node_id)['last_seen']
         (DIRECTORY / 'ready-for-restart').touch()
-        wait(lambda: (DIRECTORY / 'control-restarted').is_file(), 90)
+        wait(lambda: (DIRECTORY / 'control-plane-restarted').is_file(), 90)
         wait(ready, 60)
         wait(lambda: next((item for item in api('/nodes') if item['id'] == node_id and item['online'] and item['last_seen'] > previous_seen), None), 60)
         check('Emissary reconnects with its existing certificate after center restart', emissary.poll() is None)

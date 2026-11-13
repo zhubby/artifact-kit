@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=localhost:5001/artifact-kit/operator:rust-native
+ARG BASE_IMAGE=localhost:5001/artifactory/operator:rust-native
 FROM ${BASE_IMAGE}
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends tini && rm -rf /var/lib/apt/lists/*

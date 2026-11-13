@@ -22,9 +22,9 @@ jobs:
       matrix:
         arch: [amd64, arm64]
         image:
-          - {name: control, context: ., file: Dockerfile}
+          - {name: control-plane, context: ., file: Dockerfile}
           - {name: web, context: web, file: web/Dockerfile}
-          - {name: ai-worker, context: ., file: ai-worker/Dockerfile}
+          - {name: agent-worker, context: ., file: packages/agent-worker/Dockerfile}
           - {name: operator, context: ., file: operator/Dockerfile}
           - {name: emissary, context: ., file: crates/emissary/Dockerfile}
     steps:
@@ -80,7 +80,7 @@ jobs:
     timeout-minutes: 10
     strategy:
       matrix:
-        component: [control, web, ai-worker, operator, emissary]
+        component: [control-plane, web, agent-worker, operator, emissary]
     steps:
       - uses: actions/checkout@v4
         with:

@@ -56,7 +56,7 @@ class Comparison:
         return {db: int(self.a.sql(db, "SELECT coalesce(sum(git_download_bytes+lfs_download_bytes),0) FROM source_repositories")) for db in ["business", "sources"]}
 
     def git_trace_events(self):
-        return int(self.a.kubectl('exec', 'deploy/control', '--', 'sh', '-ec', 'if test -f /tmp/load-git-trace.json; then wc -l < /tmp/load-git-trace.json; else echo 0; fi').strip())
+        return int(self.a.kubectl('exec', 'deploy/control-plane', '--', 'sh', '-ec', 'if test -f /tmp/load-git-trace.json; then wc -l < /tmp/load-git-trace.json; else echo 0; fi').strip())
 
     def prepare_repository(self):
         payload = random.Random(20261112).randbytes(self.args.payload_mib * 1024 * 1024)
@@ -76,7 +76,7 @@ class Comparison:
             name = f"poll-load-{self.suffix}-{index}"
             token = self.a.api("/api/v1/ai-enrollment-tokens", {})["token"]
             secret = self.a.secret(name, {"ENROLLMENT_TOKEN": token})
-            workload = self.a.workload(name, "localhost:5001/artifact-kit/operator-pi:rust-native", [], env={"ARTIFACTORY_AI_CONFIG": "/tmp/worker.json", "ARTIFACTORY_AI_ENDPOINT": "control:8443", "ARTIFACTORY_AI_CA_FILE": "/run/load-ca/ca.pem", "ARTIFACTORY_AI_SERVER_NAME": "control", "ARTIFACTORY_AI_NAME": name, "NODE_EXTRA_CA_CERTS": "/run/load-ca/ca.pem"}, secret=name)
+            workload = self.a.workload(name, "localhost:5001/artifactory/operator-pi:rust-native", [], env={"ARTIFACTORY_AI_CONFIG": "/tmp/worker.json", "ARTIFACTORY_AI_ENDPOINT": "control-plane:8443", "ARTIFACTORY_AI_CA_FILE": "/run/load-ca/ca.pem", "ARTIFACTORY_AI_SERVER_NAME": "control-plane", "ARTIFACTORY_AI_NAME": name, "NODE_EXTRA_CA_CERTS": "/run/load-ca/ca.pem"}, secret=name)
             pod = workload["spec"]["template"]["spec"]
             pod["automountServiceAccountToken"] = False
             pod["containers"][0]["command"] = ["sh", "-ec", 'printf "%s" "$ENROLLMENT_TOKEN" | node dist/main.js enroll; unset ENROLLMENT_TOKEN; exec node dist/main.js']
@@ -161,7 +161,7 @@ class Comparison:
             self.a.service_request(39443, "/test/mode", {})
         after = self.source_bytes()
         p95 = sorted(samples)[max(0, math.ceil(len(samples) * .95) - 1)] if samples else None
-        control = [p for o in observations for p in o["resources"]["pods"] if p["name"].startswith("control-")]
+        control = [p for o in observations for p in o["resources"]["pods"] if p["name"].startswith("control-plane-")]
         result = {"backend": backend, "build_ids": builds, "elapsed_seconds": round(time.monotonic() - started, 3), "acquisition_seconds": round(acquired, 3), "overview_samples": len(samples), "overview_p95_ms": round(p95, 3) if p95 is not None else None, "errors": failures, "source_download_bytes_delta": {db: after[db] - before[db] for db in before}, "control_peak_rss_bytes": max((p["rss_bytes"] for p in control), default=0), "pg_before": before_db, "pg_after": self.database(), "observations": observations}
         if len(control) > 1:
             assert len({p['uid'] for p in control}) == 1, 'Do not compare counters across replaced control Pods'
@@ -187,8 +187,8 @@ class Comparison:
 
     def run(self):
         # Poll's Git client must trust the same private fixture CA as Source.
-        self.a.kubectl('set', 'env', 'deployment/control', 'GIT_SSL_CAINFO=/run/pki/ca.pem', 'GIT_TRACE2_EVENT=/tmp/load-git-trace.json', 'ARTIFACTORY_PUBLIC_URL=http://control:8080')
-        self.a.kubectl('rollout', 'status', 'deployment/control', '--timeout=120s')
+        self.a.kubectl('set', 'env', 'deployment/control-plane', 'GIT_SSL_CAINFO=/run/pki/ca.pem', 'GIT_TRACE2_EVENT=/tmp/load-git-trace.json', 'ARTIFACTORY_PUBLIC_URL=http://control-plane:8080')
+        self.a.kubectl('rollout', 'status', 'deployment/control-plane', '--timeout=120s')
         self.a.resume()
         original_pool = json.loads(self.a.kubectl("get", "agentpool", "default", "-o", "json"))["spec"]
         try:

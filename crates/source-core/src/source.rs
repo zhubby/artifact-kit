@@ -53,11 +53,7 @@ pub fn validate_repository(repository: &str) -> Result<()> {
 
 pub async fn credential(state: &AppState, id: Option<uuid::Uuid>) -> Result<Option<GitCredential>> {
     if let Some(id) = id {
-        let encrypted: String =
-            sqlx::query_scalar("SELECT ciphertext FROM credentials WHERE id=$1")
-                .bind(id)
-                .fetch_one(&state.pool)
-                .await?;
+        let encrypted = state.store.credential_ciphertext(id).await?;
         Ok(Some(serde_json::from_slice(&crypto::open(
             &state.settings.master_key,
             &encrypted,

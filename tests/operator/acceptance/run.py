@@ -59,7 +59,7 @@ class Acceptance:
         return [{'pod': p['metadata']['name'], 'uid': p['metadata']['uid'], 'images': [{'image': c['image'], 'imageID': c.get('imageID')} for c in p.get('status', {}).get('containerStatuses', [])]} for p in pods if p['status']['phase'] == 'Running' and not p['metadata'].get('deletionTimestamp')]
 
     def image(self, name):
-        return f'localhost:5001/artifact-kit/{name}:{self.image_tag}'
+        return f'localhost:5001/artifactory/{name}:{self.image_tag}'
 
     def apply(self, *items):
         self.kubectl('apply', '-f', '-', data=json.dumps({'apiVersion': 'v1', 'kind': 'List', 'items': list(items)}).encode())
@@ -94,7 +94,7 @@ class Acceptance:
 
     def workload(self, name, image, args, env=None, secret=None, pki=False):
         container = {'name': name, 'image': image, 'args': args, 'imagePullPolicy': self.pull_policy}
-        if name == 'control':
+        if name == 'control-plane':
             container['readinessProbe'] = {'tcpSocket': {'port': 8080}, 'initialDelaySeconds': 1}
         if env:
             container['env'] = [{'name': key, 'value': value} for key, value in env.items()]
@@ -117,7 +117,7 @@ class Acceptance:
         pki = self.run / 'pki'; pki.mkdir()
         self.command(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', str(pki/'ca.key'), '-out', str(pki/'ca.pem'), '-days', '2', '-subj', '/CN=Operator isolated acceptance', '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign,cRLSign', '-addext', 'subjectKeyIdentifier=hash'])
         self.command(['openssl', 'req', '-newkey', 'rsa:2048', '-nodes', '-keyout', str(pki/'server.key'), '-out', str(pki/'server.csr'), '-subj', '/CN=upstream'])
-        (pki/'ext').write_text('subjectAltName=DNS:localhost,DNS:control,DNS:upstream,DNS:artifactory-runtime,DNS:artifactory-telemetry,DNS:sources-0.sources.'+self.ns+'.svc,IP:127.0.0.1\nextendedKeyUsage=serverAuth\nkeyUsage=critical,digitalSignature,keyEncipherment\nbasicConstraints=critical,CA:FALSE\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n')
+        (pki/'ext').write_text('subjectAltName=DNS:localhost,DNS:control-plane,DNS:upstream,DNS:artifactory-runtime,DNS:artifactory-telemetry,DNS:sources-0.sources.'+self.ns+'.svc,IP:127.0.0.1\nextendedKeyUsage=serverAuth\nkeyUsage=critical,digitalSignature,keyEncipherment\nbasicConstraints=critical,CA:FALSE\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n')
         self.command(['openssl', 'x509', '-req', '-in', str(pki/'server.csr'), '-CA', str(pki/'ca.pem'), '-CAkey', str(pki/'ca.key'), '-CAcreateserial', '-out', str(pki/'server.pem'), '-days', '2', '-extfile', str(pki/'ext')])
         self.command(['openssl', 'verify', '-x509_strict', '-CAfile', str(pki/'ca.pem'), str(pki/'server.pem')])
         self.apply(self.secret('acceptance-pki', {name: (pki/name).read_text() for name in ['ca.key','ca.pem','server.key','server.pem']}), self.secret('service-tls', {'ca.crt': (pki/'ca.pem').read_text(), 'tls.crt': (pki/'server.pem').read_text(), 'tls.key': (pki/'server.key').read_text()}))
@@ -125,12 +125,12 @@ class Acceptance:
         self.token=token
         self.tls=ssl.create_default_context(cafile=str(pki/'ca.pem'))
         databases = "\n".join(f"CREATE USER {role} PASSWORD '{password}'; CREATE DATABASE {role} OWNER {role};\n\\connect {role}\nCREATE EXTENSION IF NOT EXISTS timescaledb;\n\\connect postgres" for role in ['business','planner','sources','telemetry'])
-        postgres = self.workload('postgres', 'localhost:5001/artifact-kit/timescaledb:2.32.0-pg17', [], {'POSTGRES_USER': 'admin', 'POSTGRES_PASSWORD': password, 'TIMESCALEDB_TELEMETRY':'off'})
+        postgres = self.workload('postgres', 'localhost:5001/artifactory/timescaledb:2.32.0-pg17', [], {'POSTGRES_USER': 'admin', 'POSTGRES_PASSWORD': password, 'TIMESCALEDB_TELEMETRY':'off'})
         postgres['spec']['template']['spec']['containers'][0]['volumeMounts'] = [{'name': 'init', 'mountPath': '/docker-entrypoint-initdb.d'}]
         postgres['spec']['template']['spec']['volumes'] = [{'name': 'init', 'configMap': {'name': 'init-databases'}}]
         self.apply({'apiVersion':'v1','kind':'ConfigMap','metadata':{'name':'init-databases'},'data':{'100_init.sql':databases}}, postgres, self.service('postgres',[5432]))
         s3config = {'identities':[{'name':'acceptance','credentials':[{'accessKey':'acceptance','secretKey':password}],'actions':['Admin','Read','Write','List','Tagging']}]}
-        s3 = self.workload('s3','localhost:5001/artifact-kit/seaweedfs:4.53',['mini','-dir=/data','-s3.port=8333','-s3.config=/run/s3/s3.json','-s3.iam.readOnly=true','-admin.ui=false','-ip.bind=0.0.0.0'])
+        s3 = self.workload('s3','localhost:5001/artifactory/seaweedfs:4.53',['mini','-dir=/data','-s3.port=8333','-s3.config=/run/s3/s3.json','-s3.iam.readOnly=true','-admin.ui=false','-ip.bind=0.0.0.0'])
         s3['spec']['template']['spec']['containers'][0]['volumeMounts']=[{'name':'config','mountPath':'/run/s3','readOnly':True}]
         s3['spec']['template']['spec']['volumes']=[{'name':'config','secret':{'secretName':'s3-config'}}]
         self.apply(self.secret('s3-config',{'s3.json':json.dumps(s3config)}),s3,self.service('s3',[8333]))
@@ -145,16 +145,16 @@ class Acceptance:
         control.update(ARTIFACTORY_TELEMETRY_ENDPOINT='https://artifactory-telemetry:8444',ARTIFACTORY_TELEMETRY_URL='https://artifactory-telemetry:8093',ARTIFACTORY_TELEMETRY_TOKEN=token)
         # Device Pods must reach the legacy source origin; localhost is only
         # the harness port-forward, not the application's advertised address.
-        control['ARTIFACTORY_PUBLIC_URL']='http://control:8080'
+        control['ARTIFACTORY_PUBLIC_URL']='http://control-plane:8080'
         self.origin=control['ARTIFACTORY_PUBLIC_URL']
-        self.apply(self.secret('telemetry',telemetry),self.secret('runtime',runtime),self.secret('source',source),self.secret('control',control),self.workload('control',self.image('operator'),['control','serve'],secret='control',pki=True),self.service('control',[8080,8443]),self.workload('upstream',self.image('operator-fixture'),[],env={'FIXTURE_ARCH':self.arch},pki=True),self.service('upstream',[9443]))
+        self.apply(self.secret('telemetry',telemetry),self.secret('runtime',runtime),self.secret('source',source),self.secret('control-plane',control),self.workload('control-plane',self.image('operator'),['control-plane','serve'],secret='control-plane',pki=True),self.service('control-plane',[8080,8443]),self.workload('upstream',self.image('operator-fixture'),[],env={'FIXTURE_ARCH':self.arch},pki=True),self.service('upstream',[9443]))
         self.wait(lambda:self.sql('business','SELECT 1')=='1')
         self.command(['kubectl','--context',self.context,'apply','-f',str(ROOT/'operator/config/crd/resources.yaml')])
-        values={'image':{'repository':'localhost:5001/artifact-kit/operator','tag':self.image_tag,'pullPolicy':self.pull_policy},'runtime':{'secretName':'runtime'},'telemetry':{'secretName':'telemetry','pkiSecretName':'acceptance-pki'},'sourcePool':{'secretName':'source','storageSize':'1Gi'},'agentPool':{'image':self.image('operator-pi'),'maxActive':2,'maxPerProject':1},'tls':{'secretName':'service-tls'},'controlUrl':'https://upstream:9443','networkPolicy':{'enabled':True}}
+        values={'image':{'repository':'localhost:5001/artifactory/operator','tag':self.image_tag,'pullPolicy':self.pull_policy},'runtime':{'secretName':'runtime'},'telemetry':{'secretName':'telemetry','pkiSecretName':'acceptance-pki'},'sourcePool':{'secretName':'source','storageSize':'1Gi'},'agentPool':{'image':self.image('operator-pi'),'maxActive':2,'maxPerProject':1},'tls':{'secretName':'service-tls'},'controlUrl':'https://upstream:9443','networkPolicy':{'enabled':True}}
         path=self.run/'values.json';path.write_text(json.dumps(values))
         self.command(['helm','--kube-context',self.context,'upgrade','--install','native',str(ROOT/'charts/artifactory-operator'),'-n',self.ns,'-f',str(path)])
-        self.kubectl('rollout','status','deploy/control','--timeout=180s')
-        self.forward('service/control','38081:8080')
+        self.kubectl('rollout','status','deploy/control-plane','--timeout=180s')
+        self.forward('service/control-plane','38081:8080')
         self.forward('service/upstream','39443:9443')
         self.wait(lambda:self.api('/healthz').get('status')=='ok')
         self.enroll(admin)
@@ -165,7 +165,7 @@ class Acceptance:
             self.api('/api/v1/model-profiles',{'name':'Operator fixture','api':'openai-completions','base_url':'https://upstream:9443/v1','model':'fixture','api_key':'fixture-provider-key','parameters':{'thinking_level':'off','max_tokens':4096},'max_calls':20,'timeout_seconds':600,'is_default':True})
         enrollment=self.api('/api/v1/enrollment-tokens',{'pool_id':'00000000-0000-0000-0000-000000000001'})['token']
         self.apply(self.secret('emissary-token',{'ARTIFACTORY_ENROLLMENT_TOKEN':enrollment}))
-        shell='artifactory-emissary register --config /tmp/emissary.json --endpoint control:8443 --ca /run/pki/ca.pem --root /tmp/emissary --name operator-native-device --allow-http-uploads && sed -i \'s|"git_ca_file":""|"git_ca_file":"/run/pki/ca.pem"|\' /tmp/emissary.json && exec artifactory-emissary run --config /tmp/emissary.json'
+        shell='artifactory-emissary register --config /tmp/emissary.json --endpoint control-plane:8443 --ca /run/pki/ca.pem --root /tmp/emissary --name operator-native-device --allow-http-uploads && sed -i \'s|"git_ca_file":""|"git_ca_file":"/run/pki/ca.pem"|\' /tmp/emissary.json && exec artifactory-emissary run --config /tmp/emissary.json'
         device=self.workload('device',self.image('operator-fixture'),[],secret='emissary-token',pki=True);device['spec']['template']['spec']['containers'][0]['command']=['/usr/bin/tini','--','sh','-ec',shell]
         if not any(node['online'] for node in self.api('/api/v1/nodes')):self.apply(device)
         self.wait(lambda:any(node['online'] for node in self.api('/api/v1/nodes')))
@@ -176,15 +176,15 @@ class Acceptance:
 
     def resume(self):
         # Only resume an installation created by this harness with the same private CA.
-        secret=json.loads(self.kubectl('get','secret','control','-o','json'))['data']
+        secret=json.loads(self.kubectl('get','secret','control-plane','-o','json'))['data']
         expected=(self.run/'pki/ca.pem').read_bytes()
         pki=json.loads(self.kubectl('get','secret','acceptance-pki','-o','json'))['data']
         if base64.b64decode(pki['ca.pem'])!=expected:
             raise ValueError('Existing namespace does not belong to this saved run')
         self.token=base64.b64decode(secret['ARTIFACTORY_SERVICE_TOKEN']).decode()
         self.tls=ssl.create_default_context(cafile=str(self.run/'pki/ca.pem'))
-        self.origin=self.kubectl('exec','deploy/control','--','printenv','ARTIFACTORY_PUBLIC_URL').strip()
-        self.forward('service/control','38081:8080');self.forward('service/upstream','39443:9443')
+        self.origin=self.kubectl('exec','deploy/control-plane','--','printenv','ARTIFACTORY_PUBLIC_URL').strip()
+        self.forward('service/control-plane','38081:8080');self.forward('service/upstream','39443:9443')
         self.wait(lambda:self.api('/healthz').get('status')=='ok')
         self.enroll(base64.b64decode(secret['ARTIFACTORY_BOOTSTRAP_PASSWORD']).decode())
 
@@ -217,7 +217,7 @@ class Acceptance:
         origin=detail['source_snapshot_id']
         cache_key=self.sql('business',f"SELECT r.cache_key FROM source_repositories r JOIN source_snapshots s ON s.root_repository_id=r.id WHERE s.id='{origin}' AND s.service_origin IS NOT NULL")
         assert len(cache_key)==64 and all(c in '0123456789abcdef' for c in cache_key)
-        self.check('control has no Git cache for this build',self.kubectl('exec','deploy/control','--','sh','-c','test ! -d /tmp/control/sources/repos/'+cache_key+'.git && echo offloaded').strip()=='offloaded')
+        self.check('control has no Git cache for this build',self.kubectl('exec','deploy/control-plane','--','sh','-c','test ! -d /tmp/control/sources/repos/'+cache_key+'.git && echo offloaded').strip()=='offloaded')
         source_bytes=int(self.sql('sources','SELECT coalesce(sum(git_download_bytes+lfs_download_bytes),0) FROM source_repositories'))
         business_bytes_total=int(self.sql('business','SELECT coalesce(sum(git_download_bytes+lfs_download_bytes),0) FROM source_repositories'))
         business_bytes=business_bytes_total-business_bytes_before
@@ -359,7 +359,7 @@ class Acceptance:
 
     def cleanup(self):
         for process in self.processes:process.terminate()
-        for name in ['control','native-operator','native-runtime','native-telemetry','upstream','device']:
+        for name in ['control-plane','native-operator','native-runtime','native-telemetry','upstream','device']:
             try:(self.run/(name+'.log')).write_text(self.kubectl('logs','deploy/'+name,'--all-containers=true','--tail=500'))
             except RuntimeError:pass
         # Keep the namespace for inspection; explicit user cleanup is separate.

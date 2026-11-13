@@ -11,10 +11,10 @@ metadata:
   labels:
     {{- include "artifactory.labels" . | nindent 4 }}
 data:
-  ARTIFACTORY_DB_MAX_CONNECTIONS: {{ .Values.control.databaseConnections | quote }}
-  ARTIFACTORY_ARTIFACT_VERIFY_CONCURRENCY: {{ .Values.control.artifactVerifications | quote }}
-  ARTIFACTORY_SCHEDULER_BATCH_SIZE: {{ .Values.control.schedulerBatch | quote }}
-  ARTIFACTORY_CONTROL_DRAIN_SECONDS: {{ .Values.control.drainSeconds | quote }}
+  ARTIFACTORY_DB_MAX_CONNECTIONS: {{ .Values.controlPlane.databaseConnections | quote }}
+  ARTIFACTORY_ARTIFACT_VERIFY_CONCURRENCY: {{ .Values.controlPlane.artifactVerifications | quote }}
+  ARTIFACTORY_SCHEDULER_BATCH_SIZE: {{ .Values.controlPlane.schedulerBatch | quote }}
+  ARTIFACTORY_CONTROL_DRAIN_SECONDS: {{ .Values.controlPlane.drainSeconds | quote }}
   {{- if .Values.localSource.enabled }}
   ARTIFACTORY_LOCAL_SOURCE_URL: {{ printf "https://%s-local-source:8080" (include "artifactory.fullname" .) | quote }}
   {{- end }}
@@ -58,9 +58,9 @@ data:
         }
       }
       {{- end }}
-      @control path /api/* /healthz /readyz
-      handle @control {
-        reverse_proxy {{ include "artifactory.fullname" . }}-control:8080 {
+      @control-plane path /api/* /healthz /readyz
+      handle @control-plane {
+        reverse_proxy {{ include "artifactory.fullname" . }}-control-plane:8080 {
           flush_interval -1
         }
       }

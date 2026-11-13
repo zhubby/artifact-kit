@@ -218,13 +218,13 @@ def main():
 
         base = f'http://127.0.0.1:{http_port}'
         environment = dict(saved, DATABASE_URL=f'postgres://artifactory:{urllib.parse.quote(password, safe="")}@127.0.0.1:{pg_port}/artifactory', ARTIFACTORY_HTTP_BIND=f'127.0.0.1:{http_port}', ARTIFACTORY_GRPC_BIND=f'127.0.0.1:{grpc_port}', ARTIFACTORY_PUBLIC_URL=base, ARTIFACTORY_PKI_DIR=str(restored / 'pki'), ARTIFACTORY_DATA_DIR=str(restored / "control's data with spaces"), ARTIFACTORY_S3_ENDPOINT=s3_endpoint, ARTIFACTORY_S3_PUBLIC_ENDPOINT=s3_endpoint, GIT_SSL_CAINFO=str(restored / 'pki/ca.pem'))
-        log = (directory / 'control.log').open('ab')
+        log = (directory / 'control-plane.log').open('ab')
         handles.append(log)
-        control = subprocess.Popen([str(acceptance.ROOT / 'target/debug/artifactory-control')], cwd=acceptance.ROOT, env=environment, stdout=log, stderr=log)
+        control = subprocess.Popen([str(acceptance.ROOT / 'target/debug/artifactory-control-plane')], cwd=acceptance.ROOT, env=environment, stdout=log, stderr=log)
 
         def control_ready():
             if control.poll() is not None:
-                raise RuntimeError('restored control exited: ' + (directory / 'control.log').read_text()[-8192:])
+                raise RuntimeError('restored control exited: ' + (directory / 'control-plane.log').read_text()[-8192:])
             with urllib.request.urlopen(base + '/healthz', timeout=2) as response:
                 return response.status == 200
 
