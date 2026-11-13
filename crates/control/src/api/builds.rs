@@ -15,36 +15,16 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sqlx::Row;
 use std::{convert::Infallible, time::Duration};
 use uuid::Uuid;
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BuildInput {
-    #[serde(rename = "ref")]
-    reference: String,
-    #[serde(default = "empty_object")]
-    parameters: Value,
-    #[serde(default)]
-    targets: Vec<String>,
-    release_version: Option<String>,
-    goal: Option<String>,
-    #[serde(default = "empty_array")]
-    target_requirements: Value,
-}
-fn empty_array() -> Value {
-    json!([])
-}
-fn empty_object() -> Value {
-    json!({})
-}
+pub use crate::store::BuildInput;
 
 pub async fn create(
     State(state): State<AppState>,
     auth: Auth,
     Path(project): Path<Uuid>,
-    Json(input): Json<BuildInput>,
+    Json(mut input): Json<BuildInput>,
 ) -> Result<Json<Value>> {
     auth.project(project, "build")?;
     if input.release_version.is_some() {
@@ -61,9 +41,9 @@ pub async fn create(
         return Err(ApiError::BadRequest("invalid build request".into()));
     }
     if let Some(version) = &input.release_version {
-        validate_version(version)?;
+        crate::build::validate_release_version(version)?;
     }
-    let goal = input.goal.unwrap_or_else(|| {
+    let goal = input.goal.take().unwrap_or_else(|| {
         "Build and verify this project, then collect its distributable artifacts.".into()
     });
     if goal.trim().is_empty() || goal.len() > 16000 {
@@ -88,16 +68,10 @@ pub async fn create(
     {
         return Err(ApiError::BadRequest("invalid platform requirements".into()));
     }
-    let project_row=sqlx::query("SELECT model_profile_id,pool_ids,signing_profiles,build_context,source_credentials FROM projects WHERE id=$1").bind(project).fetch_one(&state.pool).await?;
-    let model =
-        super::ai_management::model_snapshot(&state, project_row.get("model_profile_id")).await?;
-    let context = json!({"pool_ids":project_row.get::<Vec<Uuid>,_>("pool_ids"),"signing_profiles":project_row.get::<Vec<String>,_>("signing_profiles"),"build_context":project_row.get::<String,_>("build_context"),"source_credentials":project_row.get::<Value,_>("source_credentials")});
-    let id = Uuid::new_v4();
-    let created=sqlx::query("INSERT INTO builds(id,project_id,requested_ref,parameters,selected_targets,release_version,publish_status,requested_by,source_repository_url,source_credential_id,goal,target_requirements,planning_context,model_config_snapshot) SELECT $1,id,$3,$4,$5,$6,$7,$8,repository_url,credential_id,$9,$10,$11,$12 FROM projects WHERE id=$2")
-        .bind(id).bind(project).bind(&input.reference).bind(input.parameters).bind(input.targets).bind(&input.release_version).bind(if input.release_version.is_some(){"pending"}else{"not_requested"}).bind(auth.user_id).bind(goal).bind(input.target_requirements).bind(context).bind(model).execute(&state.pool).await?;
-    if created.rows_affected() != 1 {
-        return Err(ApiError::NotFound);
-    }
+    let id = state
+        .store
+        .create_build(project, auth.user_id, &input, goal)
+        .await?;
     state
         .audit(
             auth.user_id,
@@ -107,13 +81,6 @@ pub async fn create(
         )
         .await?;
     Ok(Json(json!({"id":id})))
-}
-
-fn validate_version(version: &str) -> Result<()> {
-    if version.is_empty() || version.len() > 100 || version.chars().any(char::is_control) {
-        return Err(ApiError::BadRequest("invalid release version".into()));
-    }
-    Ok(())
 }
 
 #[derive(Deserialize, Default)]
@@ -137,25 +104,16 @@ pub async fn list(
     if let Some(project) = filter.project_id {
         auth.project(project, "read")?;
     }
-    Ok(Json(sqlx::query_scalar("SELECT (to_jsonb(b)-'config_yaml'-'config_snapshot'-'model_config_snapshot') || jsonb_build_object('project_name',p.name,'targets',(SELECT coalesce(jsonb_agg(jsonb_build_object('id',j.id,'target',j.target,'status',j.status)),'[]') FROM jobs j WHERE j.build_id=b.id)) FROM builds b JOIN projects p ON p.id=b.project_id WHERE ($1::uuid IS NULL OR b.project_id=$1) AND ($2::uuid[] IS NULL OR b.project_id=ANY($2)) ORDER BY b.created_at DESC LIMIT 100")
-        .bind(filter.project_id).bind(auth.visible_projects()).fetch_all(&state.pool).await?))
-}
-
-async fn build_project(state: &AppState, id: Uuid) -> Result<Uuid> {
-    Ok(
-        sqlx::query_scalar("SELECT project_id FROM builds WHERE id=$1")
-            .bind(id)
-            .fetch_one(&state.pool)
+    Ok(Json(
+        state
+            .store
+            .builds(filter.project_id, auth.visible_projects())
             .await?,
-    )
+    ))
 }
 
 pub async fn build_detail(state: &AppState, id: Uuid) -> Result<Value> {
-    let mut build:Value=sqlx::query_scalar("SELECT (to_jsonb(b)-'model_config_snapshot') || jsonb_build_object('project_name',p.name) FROM builds b JOIN projects p ON p.id=b.project_id WHERE b.id=$1").bind(id).fetch_one(&state.pool).await?;
-    let jobs:Vec<Value>=sqlx::query_scalar("SELECT to_jsonb(j) || jsonb_build_object('attempts',(SELECT coalesce(jsonb_agg((to_jsonb(a)-'lease_token'-'command_id') || jsonb_build_object('node_name',n.name,'steps',(SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY s.step_index),'[]') FROM step_runs s WHERE s.attempt_id=a.id)) ORDER BY a.created_at),'[]') FROM attempts a JOIN nodes n ON n.id=a.node_id WHERE a.job_id=j.id)) FROM jobs j WHERE j.build_id=$1 ORDER BY j.target").bind(id).fetch_all(&state.pool).await?;
-    let artifacts:Vec<Value>=sqlx::query_scalar("SELECT (to_jsonb(ar)-'object_key') || jsonb_build_object('target',j.target,'attempt_status',a.status) FROM artifacts ar JOIN attempts a ON a.id=ar.attempt_id JOIN jobs j ON j.id=a.job_id WHERE j.build_id=$1 ORDER BY ar.created_at").bind(id).fetch_all(&state.pool).await?;
-    build["jobs"] = json!(jobs);
-    build["artifacts"] = json!(artifacts);
+    let mut build = state.store.build_detail(id).await?;
     build["source_snapshot"] = if let Some(snapshot) = build["source_snapshot_id"].as_str() {
         let id = Uuid::parse_str(snapshot).map_err(anyhow::Error::from)?;
         serde_json::to_value(crate::source_cache::load(state, id).await?)
@@ -163,14 +121,6 @@ pub async fn build_detail(state: &AppState, id: Uuid) -> Result<Value> {
     } else {
         Value::Null
     };
-    build["publish_attempts"] = json!(
-        sqlx::query_scalar::<_, Value>(
-            "SELECT to_jsonb(p) FROM publish_attempts p WHERE build_id=$1 ORDER BY created_at DESC"
-        )
-        .bind(id)
-        .fetch_all(&state.pool)
-        .await?
-    );
     Ok(build)
 }
 
@@ -179,7 +129,7 @@ pub async fn detail(
     auth: Auth,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>> {
-    auth.project(build_project(&state, id).await?, "read")?;
+    auth.project(state.store.build_project(id).await?, "read")?;
     Ok(Json(build_detail(&state, id).await?))
 }
 
@@ -188,31 +138,8 @@ pub async fn cancel(
     auth: Auth,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>> {
-    auth.project(build_project(&state, id).await?, "build")?;
-    let mut transaction = state.pool.begin().await?;
-    let status: String = sqlx::query_scalar("SELECT status FROM builds WHERE id=$1 FOR UPDATE")
-        .bind(id)
-        .fetch_one(&mut *transaction)
-        .await?;
-    if ["succeeded", "failed", "lost", "canceled"].contains(&status.as_str()) {
-        return Err(ApiError::Conflict("build is already terminal".into()));
-    }
-    sqlx::query("UPDATE builds SET cancel_requested=true,status='canceling' WHERE id=$1")
-        .bind(id)
-        .execute(&mut *transaction)
-        .await?;
-    sqlx::query("UPDATE jobs SET status='canceled' WHERE build_id=$1 AND status='queued'")
-        .bind(id)
-        .execute(&mut *transaction)
-        .await?;
-    sqlx::query("UPDATE planning_runs SET state='canceled',finished_at=now() WHERE build_id=$1 AND state IN ('queued','leased')").bind(id).execute(&mut *transaction).await?;
-    if ["resolving", "planning", "replanning", "needs_input"].contains(&status.as_str()) {
-        sqlx::query("UPDATE builds SET status='canceled',finished_at=now() WHERE id=$1")
-            .bind(id)
-            .execute(&mut *transaction)
-            .await?;
-    }
-    transaction.commit().await?;
+    auth.project(state.store.build_project(id).await?, "build")?;
+    state.store.cancel_build(id).await?;
     state
         .audit(auth.user_id, "build_canceled", id, json!({}))
         .await?;
@@ -224,27 +151,7 @@ pub async fn retry(
     auth: Auth,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>> {
-    let mut transaction = state.pool.begin().await?;
-    let row=sqlx::query("SELECT j.status,b.status AS build_status,b.id,b.project_id,b.release_version,EXISTS(SELECT 1 FROM releases r WHERE r.build_id=b.id) AS published FROM jobs j JOIN builds b ON b.id=j.build_id WHERE j.id=$1 FOR UPDATE OF j,b").bind(id).fetch_one(&mut *transaction).await?;
-    auth.project(row.get("project_id"), "build")?;
-    if row.get::<Option<String>, _>("release_version").is_some() {
-        auth.project(row.get("project_id"), "release")?;
-    }
-    if row.get::<bool, _>("published")
-        || ["planning", "replanning", "needs_input"]
-            .contains(&row.get::<String, _>("build_status").as_str())
-        || !["failed", "lost", "canceled"].contains(&row.get::<String, _>("status").as_str())
-    {
-        return Err(ApiError::Conflict(
-            "only failed, lost or canceled unpublished jobs can be retried".into(),
-        ));
-    }
-    sqlx::query("UPDATE jobs SET status='queued' WHERE id=$1")
-        .bind(id)
-        .execute(&mut *transaction)
-        .await?;
-    sqlx::query("UPDATE builds SET status='queued',cancel_requested=false,finished_at=NULL,publish_status=CASE WHEN release_version IS NULL THEN 'not_requested' ELSE 'pending' END,publish_error=NULL WHERE id=$1").bind(row.get::<Uuid,_>("id")).execute(&mut *transaction).await?;
-    transaction.commit().await?;
+    state.store.retry_job(id, &auth).await?;
     state
         .audit(auth.user_id, "job_retry_requested", id, json!({}))
         .await?;
@@ -263,34 +170,8 @@ pub async fn publish(
     Path(id): Path<Uuid>,
     Json(input): Json<PublishInput>,
 ) -> Result<Json<Value>> {
-    auth.project(build_project(&state, id).await?, "release")?;
-    let mut transaction = state.pool.begin().await?;
-    let row = sqlx::query("SELECT status,release_version FROM builds WHERE id=$1 FOR UPDATE")
-        .bind(id)
-        .fetch_one(&mut *transaction)
-        .await?;
-    if row.get::<String, _>("status") != "succeeded" {
-        return Err(ApiError::Conflict(
-            "build must succeed before publication".into(),
-        ));
-    }
-    let current: Option<String> = row.get("release_version");
-    if let Some(version) = input.version {
-        validate_version(&version)?;
-        if current.as_ref().is_some_and(|current| current != &version) {
-            return Err(ApiError::Conflict(
-                "release version is immutable for this build".into(),
-            ));
-        }
-        sqlx::query("UPDATE builds SET release_version=$2 WHERE id=$1")
-            .bind(id)
-            .bind(version)
-            .execute(&mut *transaction)
-            .await?;
-    } else if current.is_none() {
-        return Err(ApiError::BadRequest("version is required".into()));
-    }
-    transaction.commit().await?;
+    auth.project(state.store.build_project(id).await?, "release")?;
+    state.store.request_publication(id, input.version).await?;
     let release = scheduler::publish_build(&state, id)
         .await
         .map_err(|error| ApiError::Conflict(error.to_string()))?;
@@ -314,8 +195,12 @@ pub async fn artifacts(
     if let Some(project) = filter.project_id {
         auth.project(project, "read")?;
     }
-    Ok(Json(sqlx::query_scalar("SELECT (to_jsonb(ar)-'object_key') || jsonb_build_object('target',j.target,'build_id',b.id,'project_name',p.name,'project_id',p.id) FROM artifacts ar JOIN attempts a ON a.id=ar.attempt_id JOIN jobs j ON j.id=a.job_id JOIN builds b ON b.id=j.build_id JOIN projects p ON p.id=b.project_id WHERE ($1::uuid IS NULL OR p.id=$1) AND ($2::uuid[] IS NULL OR p.id=ANY($2)) ORDER BY ar.created_at DESC LIMIT 100")
-        .bind(filter.project_id).bind(auth.visible_projects()).fetch_all(&state.pool).await?))
+    Ok(Json(
+        state
+            .store
+            .artifacts(filter.project_id, auth.visible_projects())
+            .await?,
+    ))
 }
 
 pub async fn download(
@@ -323,15 +208,13 @@ pub async fn download(
     auth: Auth,
     Path(id): Path<Uuid>,
 ) -> Result<Redirect> {
-    let row=sqlx::query("SELECT ar.object_key,b.project_id FROM artifacts ar JOIN attempts a ON a.id=ar.attempt_id JOIN jobs j ON j.id=a.job_id JOIN builds b ON b.id=j.build_id WHERE ar.id=$1").bind(id).fetch_one(&state.pool).await?;
-    auth.project(row.get("project_id"), "read")?;
+    let artifact = state.store.artifact_download(id).await?;
+    auth.project(artifact.project_id, "read")?;
     state
         .audit(auth.user_id, "artifact_downloaded", id, json!({}))
         .await?;
     Ok(Redirect::temporary(
-        &state
-            .storage
-            .download_url(&row.get::<String, _>("object_key")),
+        &state.storage.download_url(&artifact.object_key),
     ))
 }
 
@@ -344,8 +227,12 @@ pub async fn releases(
     if let Some(project) = filter.project_id {
         auth.project(project, "read")?;
     }
-    Ok(Json(sqlx::query_scalar("SELECT to_jsonb(r) || jsonb_build_object('project_name',p.name,'artifact_count',(SELECT count(*) FROM release_artifacts ra WHERE ra.release_id=r.id)) FROM releases r JOIN projects p ON p.id=r.project_id WHERE ($1::uuid IS NULL OR p.id=$1) AND ($2::uuid[] IS NULL OR p.id=ANY($2)) ORDER BY r.created_at DESC LIMIT 100")
-        .bind(filter.project_id).bind(auth.visible_projects()).fetch_all(&state.pool).await?))
+    Ok(Json(
+        state
+            .store
+            .releases(filter.project_id, auth.visible_projects())
+            .await?,
+    ))
 }
 
 pub async fn release_detail(
@@ -353,12 +240,12 @@ pub async fn release_detail(
     auth: Auth,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>> {
-    let mut release:Value=sqlx::query_scalar("SELECT to_jsonb(r) || jsonb_build_object('project_name',p.name) FROM releases r JOIN projects p ON p.id=r.project_id WHERE r.id=$1").bind(id).fetch_one(&state.pool).await?;
+    let mut release = state.store.release(id).await?;
     auth.project(
         Uuid::parse_str(release["project_id"].as_str().unwrap()).unwrap(),
         "read",
     )?;
-    release["artifacts"]=json!(sqlx::query_scalar::<_,Value>("SELECT (to_jsonb(ar)-'object_key') || jsonb_build_object('target',j.target) FROM release_artifacts ra JOIN artifacts ar ON ar.id=ra.artifact_id JOIN attempts a ON a.id=ar.attempt_id JOIN jobs j ON j.id=a.job_id WHERE ra.release_id=$1 ORDER BY j.target,ar.path").bind(id).fetch_all(&state.pool).await?);
+    release["artifacts"] = json!(state.store.release_artifacts(id).await?);
     Ok(Json(release))
 }
 
@@ -375,7 +262,7 @@ pub async fn events(
     Query(query): Query<EventQuery>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-    auth.project(build_project(&state, id).await?, "read")?;
+    auth.project(state.store.build_project(id).await?, "read")?;
     let mut cursor = headers
         .get("last-event-id")
         .and_then(|value| value.to_str().ok())
@@ -386,12 +273,12 @@ pub async fn events(
         let started=tokio::time::Instant::now();
         loop {
             if let Ok(snapshot)=build_detail(&state,id).await {yield Ok::<Event,Infallible>(Event::default().event("snapshot").data(snapshot.to_string()));}
-            let logs=sqlx::query("SELECT l.id,l.attempt_id,l.step,l.object_key FROM log_chunks l JOIN attempts a ON a.id=l.attempt_id JOIN jobs j ON j.id=a.job_id WHERE j.build_id=$1 AND l.id>$2 ORDER BY l.id LIMIT 100").bind(id).bind(cursor).fetch_all(&state.pool).await;
+            let logs = state.store.log_chunks(id, cursor).await;
             if let Ok(logs)=logs {
                 for log in logs {
-                    let text=match state.storage.get_log(&log.get::<String,_>("object_key")).await {Ok(bytes)=>String::from_utf8_lossy(&bytes).into_owned(),Err(_)=>break};
-                    cursor=log.get("id");
-                    yield Ok(Event::default().id(cursor.to_string()).event("log").data(json!({"id":cursor,"attempt_id":log.get::<Uuid,_>("attempt_id"),"step":log.get::<String,_>("step"),"text":text}).to_string()));
+                    let text=match state.storage.get_log(&log.object_key).await {Ok(bytes)=>String::from_utf8_lossy(&bytes).into_owned(),Err(_)=>break};
+                    cursor=log.id;
+                    yield Ok(Event::default().id(cursor.to_string()).event("log").data(json!({"id":cursor,"attempt_id":log.attempt_id,"step":log.step,"text":text}).to_string()));
                 }
             }
             if started.elapsed()>Duration::from_secs(55) {break;}

@@ -15,7 +15,6 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sqlx::Row;
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
@@ -81,29 +80,21 @@ impl FromRequestParts<AppState> for Auth {
             let token = value
                 .strip_prefix("Bearer ")
                 .ok_or(ApiError::Unauthorized)?;
-            let row = sqlx::query("SELECT u.id,u.username,u.role,t.project_ids,t.scopes FROM api_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=$1 AND NOT t.revoked AND t.expires_at>now()")
-                .bind(crypto::hash(token)).fetch_optional(&state.pool).await?.ok_or(ApiError::Unauthorized)?;
-            return Ok(Self {
-                user_id: row.get("id"),
-                username: row.get("username"),
-                role: row.get("role"),
-                token_projects: Some(row.get("project_ids")),
-                token_scopes: row.get("scopes"),
-            });
+            return state
+                .store
+                .authenticate_token(&crypto::hash(token))
+                .await?
+                .ok_or(ApiError::Unauthorized);
         }
         if ![Method::GET, Method::HEAD, Method::OPTIONS].contains(&parts.method) {
             csrf(&parts.headers, state)?;
         }
         let token = cookie(&parts.headers).ok_or(ApiError::Unauthorized)?;
-        let row = sqlx::query("SELECT u.id,u.username,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now()")
-            .bind(crypto::hash(token)).fetch_optional(&state.pool).await?.ok_or(ApiError::Unauthorized)?;
-        Ok(Self {
-            user_id: row.get("id"),
-            username: row.get("username"),
-            role: row.get("role"),
-            token_projects: None,
-            token_scopes: vec![],
-        })
+        state
+            .store
+            .authenticate_session(&crypto::hash(token))
+            .await?
+            .ok_or(ApiError::Unauthorized)
     }
 }
 
@@ -157,27 +148,6 @@ pub async fn registration_config(State(state): State<AppState>) -> impl IntoResp
     )
 }
 
-async fn reserve_registration(state: &AppState) -> Result<()> {
-    let mut transaction = state.pool.begin().await?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('artifactory:registration',0))")
-        .execute(&mut *transaction)
-        .await?;
-    let (attempts, retry_after): (i64, i64) = sqlx::query_as(
-        "SELECT count(*),coalesce(ceil(extract(epoch FROM (min(created_at)+interval '5 minutes'-statement_timestamp())))::bigint,0) FROM audit_events WHERE action='registration_attempt' AND created_at>statement_timestamp()-interval '5 minutes'",
-    )
-    .fetch_one(&mut *transaction)
-    .await?;
-    if attempts >= 10 {
-        transaction.rollback().await?;
-        return Err(ApiError::TooManyRequests(retry_after.max(1) as u64));
-    }
-    sqlx::query("INSERT INTO audit_events(actor,action,resource_id,created_at) VALUES('anonymous','registration_attempt','registration',clock_timestamp())")
-        .execute(&mut *transaction)
-        .await?;
-    transaction.commit().await?;
-    Ok(())
-}
-
 pub async fn register(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -203,30 +173,17 @@ pub async fn register(
             "password must contain 12..256 bytes".into(),
         ));
     }
-    reserve_registration(&state).await?;
+    state.store.reserve_registration().await?;
     let password = input.password;
     let encoded = tokio::task::spawn_blocking(move || password_hash(&password))
         .await
         .map_err(anyhow::Error::from)??;
     let user_id = Uuid::new_v4();
     let token = crypto::token();
-    let mut transaction = state.pool.begin().await?;
-    sqlx::query("INSERT INTO users(id,username,password_hash,role) VALUES($1,$2,$3,'viewer')")
-        .bind(user_id)
-        .bind(username)
-        .bind(encoded)
-        .execute(&mut *transaction)
+    state
+        .store
+        .register_viewer(user_id, username, &encoded, &crypto::hash(&token))
         .await?;
-    sqlx::query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '24 hours')")
-        .bind(crypto::hash(&token))
-        .bind(user_id)
-        .execute(&mut *transaction)
-        .await?;
-    sqlx::query("INSERT INTO audit_events(actor,action,resource_id,details) VALUES($1,'user_registered',$1,'{\"role\":\"viewer\"}')")
-        .bind(user_id.to_string())
-        .execute(&mut *transaction)
-        .await?;
-    transaction.commit().await?;
     Ok((
         StatusCode::CREATED,
         [(
@@ -254,17 +211,13 @@ pub async fn login(
     if input.username.len() > 100 || input.password.len() > 256 {
         return Err(ApiError::Unauthorized);
     }
-    let recent: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE action='login_failed' AND resource_id=$1 AND created_at>now()-interval '5 minutes'")
-        .bind(&input.username).fetch_one(&state.pool).await?;
+    let recent = state.store.recent_login_failures(&input.username).await?;
     if recent >= 10 {
         return Err(ApiError::Unauthorized);
     }
-    let row = sqlx::query("SELECT id,password_hash,role FROM users WHERE username=$1")
-        .bind(&input.username)
-        .fetch_optional(&state.pool)
-        .await?;
+    let row = state.store.login_account(&input.username).await?;
     let valid = if let Some(row) = &row {
-        let encoded: String = row.get("password_hash");
+        let encoded = row.password_hash.clone();
         let password = input.password.clone();
         tokio::task::spawn_blocking(move || {
             PasswordHash::new(&encoded).is_ok_and(|encoded| {
@@ -285,17 +238,19 @@ pub async fn login(
         return Err(ApiError::Unauthorized);
     }
     let row = row.unwrap();
-    let user_id: Uuid = row.get("id");
+    let user_id = row.id;
     let token = crypto::token();
-    sqlx::query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '24 hours')")
-        .bind(crypto::hash(&token)).bind(user_id).execute(&state.pool).await?;
+    state
+        .store
+        .create_session(&crypto::hash(&token), user_id)
+        .await?;
     state.audit(user_id, "login", user_id, json!({})).await?;
     Ok((
         [(
             header::SET_COOKIE,
             session_cookie(&token, state.settings.insecure_dev),
         )],
-        Json(json!({"id":user_id,"username":input.username,"role":row.get::<String,_>("role")})),
+        Json(json!({"id":user_id,"username":input.username,"role":row.role})),
     ))
 }
 
@@ -305,10 +260,7 @@ pub async fn logout(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     if let Some(token) = cookie(&headers) {
-        sqlx::query("DELETE FROM sessions WHERE token_hash=$1")
-            .bind(crypto::hash(token))
-            .execute(&state.pool)
-            .await?;
+        state.store.remove_session(&crypto::hash(token)).await?;
     }
     Ok((
         [(

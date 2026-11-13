@@ -1,3 +1,4 @@
+pub use crate::store::{NewToken, NodeUpdate};
 use crate::{
     auth::{self, Auth},
     crypto,
@@ -9,21 +10,19 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use chrono::{Duration, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 pub async fn overview(State(state): State<AppState>, auth: Auth) -> Result<Json<Value>> {
     auth.session_role("viewer")?;
-    let value: Value = sqlx::query_scalar("SELECT jsonb_build_object('projects',(SELECT count(*) FROM projects),'nodes_online',(SELECT count(*) FROM nodes WHERE NOT revoked AND last_seen>now()-interval '30 seconds'),'running',(SELECT count(*) FROM jobs WHERE status IN ('leased','running')),'queued',(SELECT count(*) FROM jobs WHERE status='queued'),'releases',(SELECT count(*) FROM releases),'builds_today',(SELECT count(*) FROM builds WHERE created_at>now()-interval '24 hours'))")
-        .fetch_one(&state.pool).await?;
+    let value: Value = state.store.overview().await?;
     Ok(Json(value))
 }
 
 pub async fn users(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
     auth.session_role("admin")?;
-    Ok(Json(sqlx::query_scalar("SELECT jsonb_build_object('id',id,'username',username,'role',role,'created_at',created_at) FROM users ORDER BY created_at").fetch_all(&state.pool).await?))
+    Ok(Json(state.store.users().await?))
 }
 
 #[derive(Deserialize)]
@@ -49,12 +48,9 @@ pub async fn create_user(
     let password = auth::password_hash(&input.password)
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO users(id,username,password_hash,role) VALUES($1,$2,$3,$4)")
-        .bind(id)
-        .bind(input.username)
-        .bind(password)
-        .bind(input.role)
-        .execute(&state.pool)
+    state
+        .store
+        .create_user(id, &input.username, &password, &input.role)
         .await?;
     state
         .audit(auth.user_id, "user_created", id, json!({}))
@@ -64,16 +60,7 @@ pub async fn create_user(
 
 pub async fn tokens(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
     auth.session_role("viewer")?;
-    Ok(Json(sqlx::query_scalar("SELECT to_jsonb(t)-'token_hash' FROM api_tokens t WHERE user_id=$1 ORDER BY created_at DESC").bind(auth.user_id).fetch_all(&state.pool).await?))
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NewToken {
-    name: String,
-    project_ids: Vec<Uuid>,
-    scopes: Vec<String>,
-    days: i64,
+    Ok(Json(state.store.tokens(auth.user_id).await?))
 }
 
 pub async fn create_token(
@@ -98,18 +85,17 @@ pub async fn create_token(
         for scope in &input.scopes {
             auth.project(*project, scope)?;
         }
-        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1)")
-            .bind(project)
-            .fetch_one(&state.pool)
-            .await?;
+        let exists: bool = state.store.project_exists(*project).await?;
         if !exists {
             return Err(ApiError::NotFound);
         }
     }
     let id = Uuid::new_v4();
     let token = format!("artifactory_{}", crypto::token());
-    sqlx::query("INSERT INTO api_tokens(id,user_id,name,token_hash,project_ids,scopes,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7)")
-        .bind(id).bind(auth.user_id).bind(input.name).bind(crypto::hash(&token)).bind(input.project_ids).bind(input.scopes).bind(Utc::now()+Duration::days(input.days)).execute(&state.pool).await?;
+    state
+        .store
+        .create_token(id, auth.user_id, input, crypto::hash(&token))
+        .await?;
     state
         .audit(auth.user_id, "api_token_created", id, json!({}))
         .await?;
@@ -122,11 +108,7 @@ pub async fn revoke_token(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>> {
     auth.session_role("viewer")?;
-    sqlx::query("UPDATE api_tokens SET revoked=true WHERE id=$1 AND user_id=$2")
-        .bind(id)
-        .bind(auth.user_id)
-        .execute(&state.pool)
-        .await?;
+    state.store.revoke_token(id, auth.user_id).await?;
     state
         .audit(auth.user_id, "api_token_revoked", id, json!({}))
         .await?;
@@ -135,11 +117,7 @@ pub async fn revoke_token(
 
 pub async fn pools(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
     auth.session_role("viewer")?;
-    Ok(Json(
-        sqlx::query_scalar("SELECT to_jsonb(p) FROM node_pools p ORDER BY name")
-            .fetch_all(&state.pool)
-            .await?,
-    ))
+    Ok(Json(state.store.pools().await?))
 }
 
 #[derive(Deserialize)]
@@ -158,11 +136,7 @@ pub async fn create_pool(
         return Err(ApiError::BadRequest("invalid pool name".into()));
     }
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO node_pools(id,name) VALUES($1,$2)")
-        .bind(id)
-        .bind(input.name)
-        .execute(&state.pool)
-        .await?;
+    state.store.create_pool(id, &input.name).await?;
     state
         .audit(auth.user_id, "pool_created", id, json!({}))
         .await?;
@@ -183,7 +157,10 @@ pub async fn enrollment_token(
     auth.session_role("admin")?;
     let id = Uuid::new_v4();
     let token = crypto::token();
-    sqlx::query("INSERT INTO enrollment_tokens(id,token_hash,pool_id,expires_at) VALUES($1,$2,$3,now()+interval '15 minutes')").bind(id).bind(crypto::hash(&token)).bind(input.pool_id).execute(&state.pool).await?;
+    state
+        .store
+        .enrollment_token(id, crypto::hash(&token), input.pool_id)
+        .await?;
     state
         .audit(
             auth.user_id,
@@ -197,18 +174,7 @@ pub async fn enrollment_token(
 
 pub async fn nodes(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
     auth.session_role("viewer")?;
-    Ok(Json(sqlx::query_scalar("SELECT (to_jsonb(n)-'certificate_hash'-'active_session') || jsonb_build_object('emissary_desired_release',coalesce(n.emissary_target_release,p.emissary_target_release),'emissary_pool_paused',p.emissary_updates_paused,'pool_name',p.name,'online',NOT n.revoked AND n.last_seen>now()-interval '30 seconds','active_jobs',(SELECT count(*) FROM attempts a WHERE a.node_id=n.id AND a.status IN ('leased','running') AND a.lease_expires_at>now())) FROM nodes n JOIN node_pools p ON p.id=n.pool_id ORDER BY n.created_at DESC").fetch_all(&state.pool).await?))
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NodeUpdate {
-    draining: bool,
-    revoked: bool,
-    slots: i32,
-    labels: Value,
-    signing_profiles: Vec<String>,
-    pool_id: Uuid,
+    Ok(Json(state.store.nodes().await?))
 }
 
 pub async fn update_node(
@@ -225,25 +191,7 @@ pub async fn update_node(
     {
         return Err(ApiError::BadRequest("invalid node settings".into()));
     }
-    let mut transaction = state.pool.begin().await?;
-    sqlx::query("SELECT id FROM nodes WHERE id=$1 FOR UPDATE")
-        .bind(id)
-        .execute(&mut *transaction)
-        .await?;
-    let changing_pool_while_updating: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM nodes WHERE id=$1 AND ota_draining AND pool_id<>$2)",
-    )
-    .bind(id)
-    .bind(input.pool_id)
-    .fetch_one(&mut *transaction)
-    .await?;
-    if changing_pool_while_updating {
-        return Err(ApiError::Conflict(
-            "wait for the active Emissary update before changing its pool".into(),
-        ));
-    }
-    let revoked=sqlx::query_scalar::<_,bool>("UPDATE nodes SET draining=$2,revoked=revoked OR $3,slots=$4,labels=$5,signing_profiles=$6,pool_id=$7 WHERE id=$1 RETURNING revoked").bind(id).bind(input.draining).bind(input.revoked).bind(input.slots).bind(input.labels).bind(input.signing_profiles).bind(input.pool_id).fetch_optional(&mut *transaction).await?.ok_or(ApiError::NotFound)?;
-    transaction.commit().await?;
+    let revoked = state.store.update_node(id, &input).await?;
     state
         .audit(
             auth.user_id,
@@ -257,13 +205,7 @@ pub async fn update_node(
 
 pub async fn credentials(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
     auth.session_role("admin")?;
-    Ok(Json(
-        sqlx::query_scalar(
-            "SELECT to_jsonb(c)-'ciphertext' FROM credentials c ORDER BY created_at DESC",
-        )
-        .fetch_all(&state.pool)
-        .await?,
-    ))
+    Ok(Json(state.store.credentials().await?))
 }
 
 #[derive(Deserialize)]
@@ -307,12 +249,9 @@ pub async fn create_credential(
         &state.settings.master_key,
         &serde_json::to_vec(&input).map_err(anyhow::Error::from)?,
     )?;
-    sqlx::query("INSERT INTO credentials(id,name,kind,ciphertext) VALUES($1,$2,$3,$4)")
-        .bind(id)
-        .bind(input_name)
-        .bind(input.kind)
-        .bind(encrypted)
-        .execute(&state.pool)
+    state
+        .store
+        .create_credential(id, input_name, input.kind, encrypted)
         .await?;
     state
         .audit(actor.user_id, "credential_created", id, json!({}))
@@ -322,9 +261,5 @@ pub async fn create_credential(
 
 pub async fn audit(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
     auth.session_role("admin")?;
-    Ok(Json(
-        sqlx::query_scalar("SELECT to_jsonb(a) FROM audit_events a ORDER BY id DESC LIMIT 200")
-            .fetch_all(&state.pool)
-            .await?,
-    ))
+    Ok(Json(state.store.audit_events().await?))
 }

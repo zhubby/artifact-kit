@@ -27,7 +27,7 @@ async fn pvc_loss_restores_exact_commit_tag_and_lfs_without_upstream_and_tools_s
     let directory = tempfile::tempdir().unwrap();
     let state = AppState {
         core: core::AppState {
-            pool,
+            store: core::store::SourceStore::new(pool.clone()),
             settings: Arc::new(core::Settings {
                 data_dir: directory.path().into(),
                 master_key: [3; 32],
@@ -61,7 +61,7 @@ async fn pvc_loss_restores_exact_commit_tag_and_lfs_without_upstream_and_tools_s
     let project = Uuid::new_v4();
     let repository = Uuid::new_v4();
     let key = crypto::hash(repository.to_string());
-    sqlx::query("INSERT INTO source_repositories(id,project_id,repository_url,cache_key) VALUES($1,$2,'https://unreachable.invalid/source.git',$3)").bind(repository).bind(project).bind(key).execute(&state.pool).await.unwrap();
+    sqlx::query("INSERT INTO source_repositories(id,project_id,repository_url,cache_key) VALUES($1,$2,'https://unreachable.invalid/source.git',$3)").bind(repository).bind(project).bind(key).execute(&pool).await.unwrap();
     let repo = core::repository_path(&state, repository).await.unwrap();
     tokio::fs::create_dir_all(&repo).await.unwrap();
     core::git(&repo, &["init", "-b", "main"]).await.unwrap();
@@ -140,7 +140,7 @@ async fn pvc_loss_restores_exact_commit_tag_and_lfs_without_upstream_and_tools_s
             }],
         }],
     };
-    sqlx::query("INSERT INTO source_snapshots(id,project_id,root_repository_id,commit_sha,manifest,digest) VALUES($1,$2,$3,$4,$5,$6)").bind(snapshot.id).bind(project).bind(repository).bind(commit).bind(serde_json::to_value(&snapshot).unwrap()).bind(crypto::hash(serde_json::to_vec(&snapshot).unwrap())).execute(&state.pool).await.unwrap();
+    sqlx::query("INSERT INTO source_snapshots(id,project_id,root_repository_id,commit_sha,manifest,digest) VALUES($1,$2,$3,$4,$5,$6)").bind(snapshot.id).bind(project).bind(repository).bind(commit).bind(serde_json::to_value(&snapshot).unwrap()).bind(crypto::hash(serde_json::to_vec(&snapshot).unwrap())).execute(&pool).await.unwrap();
     core::ensure_available(&state, &snapshot).await.unwrap();
     persist(&state, &snapshot).await.unwrap();
     tokio::fs::remove_dir_all(&repo).await.unwrap();

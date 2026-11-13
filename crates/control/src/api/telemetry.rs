@@ -74,18 +74,14 @@ async fn fetch(state: &AppState, path: &str, range: Option<&Range>) -> Result<Js
 }
 async fn node(state: &AppState, auth: &Auth, id: Uuid) -> Result<()> {
     auth.session_role("viewer")?;
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM nodes WHERE id=$1)")
-        .bind(id)
-        .fetch_one(&state.pool)
-        .await?;
+    let exists = state.store.node_exists(id).await?;
     if !exists {
         return Err(ApiError::NotFound);
     }
     Ok(())
 }
 async fn attempt(state: &AppState, auth: &Auth, id: Uuid) -> Result<()> {
-    let project:Uuid=sqlx::query_scalar("SELECT b.project_id FROM attempts a JOIN jobs j ON j.id=a.job_id JOIN builds b ON b.id=j.build_id WHERE a.id=$1")
-        .bind(id).fetch_optional(&state.pool).await?.ok_or(ApiError::NotFound)?;
+    let project = state.store.attempt_project(id).await?;
     auth.project(project, "read")?;
     Ok(())
 }

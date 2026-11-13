@@ -1,6 +1,7 @@
 pub use artifactory_runtime_protocol::crypto;
 mod cache;
 pub mod source;
+pub mod store;
 use anyhow::{Result, ensure};
 pub use cache::*;
 use std::{path::PathBuf, sync::Arc};
@@ -11,7 +12,7 @@ pub struct Settings {
 }
 #[derive(Clone)]
 pub struct AppState {
-    pub pool: sqlx::PgPool,
+    pub store: store::SourceStore,
     pub settings: Arc<Settings>,
 }
 pub fn validate_path(path: &str) -> Result<()> {

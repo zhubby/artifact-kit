@@ -5,7 +5,6 @@ pub mod store;
 use artifactory_emissary_protocol::{TelemetryAck, TelemetryBatch, telemetry_server::Telemetry};
 use artifactory_runtime_protocol::crypto;
 use artifactory_telemetry_model::{Batch, MAX_BATCH_BYTES};
-use sqlx::PgPool;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use tonic::{
     Request, Response, Status,
@@ -34,9 +33,8 @@ pub fn metrics() -> String {
 /// Separate telemetry data pools and a read-only business authorization pool.
 #[derive(Clone)]
 pub struct Service {
-    pub write: PgPool,
-    pub read: PgPool,
-    pub business: PgPool,
+    pub store: store::TelemetryStore,
+    pub authorization: store::BusinessAuthorizationRepository,
 }
 
 pub(crate) fn internal(error: impl std::fmt::Display) -> Status {
@@ -80,9 +78,10 @@ impl Service {
             .and_then(|info| info.peer_certs())
             .and_then(|certs| certs.first().cloned())
             .ok_or_else(|| Status::unauthenticated("Emissary certificate required"))?;
-        let node:Uuid=sqlx::query_scalar("SELECT id FROM nodes WHERE certificate_hash=$1 AND NOT revoked AND certificate_expires_at>now()")
-            .bind(crypto::hash(cert.as_ref())).fetch_optional(&self.business).await.map_err(internal)?
-            .ok_or_else(||Status::unauthenticated("Emissary certificate revoked, expired or unknown"))?;
+        let node = self
+            .authorization
+            .identify(crypto::hash(cert.as_ref()))
+            .await?;
         let bytes = request.into_inner().json;
         if bytes.len() > MAX_BATCH_BYTES {
             return Err(Status::invalid_argument("telemetry batch too large"));
@@ -107,21 +106,10 @@ impl Service {
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
-        if !attempts.is_empty() {
-            let owned: i64 =
-                sqlx::query_scalar("SELECT count(*) FROM attempts WHERE node_id=$1 AND id=ANY($2)")
-                    .bind(node)
-                    .bind(&attempts)
-                    .fetch_one(&self.business)
-                    .await
-                    .map_err(internal)?;
-            if owned as usize != attempts.len() {
-                return Err(Status::permission_denied(
-                    "process telemetry must belong to this Emissary's attempts",
-                ));
-            }
-        }
-        let duplicate = store::ingest(&self.write, node, &batch, &bytes, now).await?;
+        self.authorization
+            .authorize_attempts(node, &attempts)
+            .await?;
+        let duplicate = self.store.ingest(node, &batch, &bytes, now).await?;
         Ok(Response::new(TelemetryAck {
             batch_id: batch.id.to_string(),
             duplicate,

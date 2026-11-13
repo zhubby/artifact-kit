@@ -1,5 +1,4 @@
 use crate::{protocol::Command, settings::Settings, storage::Storage};
-use sqlx::PgPool;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{RwLock, mpsc};
 use uuid::Uuid;
@@ -12,7 +11,7 @@ pub struct Connection {
 
 #[derive(Clone)]
 pub struct AppState {
-    pub pool: PgPool,
+    pub store: crate::store::ControlStore,
     pub settings: Arc<Settings>,
     pub storage: Arc<Storage>,
     pub connections: Arc<RwLock<HashMap<Uuid, Connection>>>,
@@ -26,15 +25,9 @@ impl AppState {
         resource: impl ToString,
         details: serde_json::Value,
     ) -> anyhow::Result<()> {
-        sqlx::query(
-            "INSERT INTO audit_events(actor,action,resource_id,details) VALUES($1,$2,$3,$4)",
-        )
-        .bind(actor.to_string())
-        .bind(action)
-        .bind(resource.to_string())
-        .bind(details)
-        .execute(&self.pool)
-        .await?;
+        self.store
+            .audit(actor.to_string(), action, resource.to_string(), details)
+            .await?;
         Ok(())
     }
 }

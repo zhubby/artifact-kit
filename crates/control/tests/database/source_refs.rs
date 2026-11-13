@@ -17,12 +17,12 @@ async fn token(database: &Database, role: &str, projects: &[Uuid], scopes: &[&st
         .bind(user)
         .bind(user.to_string())
         .bind(role)
-        .execute(&database.state.pool)
+        .execute(&database.pool)
         .await
         .unwrap();
     sqlx::query("INSERT INTO api_tokens(id,user_id,name,token_hash,project_ids,scopes,expires_at) VALUES($1,$2,'refs-test',$3,$4,$5,now()+interval '1 hour')")
         .bind(Uuid::new_v4()).bind(user).bind(crypto::hash(&secret)).bind(projects)
-        .bind(scopes).execute(&database.state.pool).await.unwrap();
+        .bind(scopes).execute(&database.pool).await.unwrap();
     secret
 }
 
@@ -47,7 +47,7 @@ async fn references_enforce_read_scope_project_scope_and_not_found() {
     let database = Database::new().await;
     let project = Uuid::new_v4();
     sqlx::query("INSERT INTO projects(id,name,repository_url) VALUES($1,'refs','https://127.0.0.1:1/repo.git')")
-        .bind(project).execute(&database.state.pool).await.unwrap();
+        .bind(project).execute(&database.pool).await.unwrap();
     assert_eq!(
         request(&database, project, None).await.status(),
         StatusCode::UNAUTHORIZED
@@ -74,7 +74,7 @@ async fn references_enforce_read_scope_project_scope_and_not_found() {
     assert!(body.contains("check repository access"));
     assert!(!body.contains("127.0.0.1"));
     let builds: i64 = sqlx::query_scalar("SELECT count(*) FROM builds")
-        .fetch_one(&database.state.pool)
+        .fetch_one(&database.pool)
         .await
         .unwrap();
     assert_eq!(builds, 0);
@@ -134,7 +134,7 @@ async fn repository_refs_probe_helper() {
                 .bind(credential)
                 .bind(entry["kind"].as_str().unwrap())
                 .bind(encrypted)
-                .execute(&database.state.pool)
+                .execute(&database.pool)
                 .await
                 .unwrap();
         }
@@ -144,7 +144,7 @@ async fn repository_refs_probe_helper() {
         .bind(project)
         .bind(entry["url"].as_str().unwrap())
         .bind(credential)
-        .execute(&database.state.pool)
+        .execute(&database.pool)
         .await
         .unwrap();
         let read_token = token(&database, "viewer", &[project], &["read"]).await;
@@ -170,7 +170,7 @@ async fn repository_refs_probe_helper() {
     }
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM builds")
-            .fetch_one(&database.state.pool)
+            .fetch_one(&database.pool)
             .await
             .unwrap(),
         0

@@ -12,7 +12,22 @@ use sqlx::{
 };
 use std::{str::FromStr, sync::Arc};
 use uuid::Uuid;
-async fn state() -> Runtime {
+struct TestRuntime {
+    runtime: Runtime,
+    pool: sqlx::PgPool,
+}
+impl std::ops::Deref for TestRuntime {
+    type Target = Runtime;
+    fn deref(&self) -> &Runtime {
+        &self.runtime
+    }
+}
+impl TestRuntime {
+    fn clone(&self) -> Runtime {
+        self.runtime.clone()
+    }
+}
+async fn state() -> TestRuntime {
     let url = std::env::var("ARTIFACTORY_TEST_DATABASE_URL")
         .expect("ARTIFACTORY_TEST_DATABASE_URL required");
     let admin = PgPoolOptions::new().connect(&url).await.unwrap();
@@ -30,13 +45,17 @@ async fn state() -> Runtime {
         .await
         .unwrap();
     sqlx::migrate!("./migrations").run(&pool).await.unwrap();
-    Runtime {
-        pool,
+    let runtime = Runtime {
+        store: artifactory_planner_runtime::store::RuntimeStore::new(
+            pool.clone(),
+            Arc::new([9; 32]),
+        ),
         key: Arc::new([9; 32]),
         control: Client::new("https://control.invalid".into(), "x".repeat(64)).unwrap(),
         model_http: artifactory_runtime_protocol::service::client().unwrap(),
         public_url: "https://runtime.invalid".into(),
-    }
+    };
+    TestRuntime { runtime, pool }
 }
 fn intent(run: Uuid) -> RunIntent {
     RunIntent {
@@ -60,7 +79,7 @@ fn intent(run: Uuid) -> RunIntent {
         },
     }
 }
-async fn owner(s: &Runtime, run: Uuid) -> Lease {
+async fn owner(s: &TestRuntime, run: Uuid) -> Lease {
     let execution = Execution {
         run_id: run,
         generation: 1,
@@ -234,7 +253,7 @@ async fn upstream() -> (String, Requests, tokio::task::JoinHandle<()>) {
     });
     (origin, requests, handle)
 }
-async fn fixture_run(s: &Runtime, origin: &str, api: &str) -> (Uuid, Lease) {
+async fn fixture_run(s: &TestRuntime, origin: &str, api: &str) -> (Uuid, Lease) {
     let run = Uuid::new_v4();
     let mut input = intent(run);
     input.model.api = api.into();

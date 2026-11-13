@@ -175,9 +175,8 @@ async fn durable_replay_ordering_nulls_columnstore_and_rollups() {
     use tower::ServiceExt;
     let router = query::router(
         Service {
-            write: pool.clone(),
-            read: pool.clone(),
-            business: pool.clone(),
+            store: store::TelemetryStore::new(pool.clone(), pool.clone()),
+            authorization: store::BusinessAuthorizationRepository::new(pool.clone()),
         },
         "x".repeat(32),
     );
@@ -296,9 +295,8 @@ async fn grpc_authorization(pool: &sqlx::PgPool, node: Uuid, attempt: Uuid) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let service = Service {
-        write: pool.clone(),
-        read: readonly.clone(),
-        business: readonly.clone(),
+        store: store::TelemetryStore::new(pool.clone(), readonly.clone()),
+        authorization: store::BusinessAuthorizationRepository::new(readonly.clone()),
     };
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
     let tls = ServerTlsConfig::new()
@@ -404,4 +402,86 @@ async fn grpc_authorization(pool: &sqlx::PgPool, node: Uuid, attempt: Uuid) {
     let _ = stop_tx.send(());
     task.await.unwrap();
     readonly.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires isolated TimescaleDB; reports telemetry store p95"]
+async fn telemetry_store_latency() {
+    let options: PgConnectOptions = std::env::var("ARTIFACTORY_TEST_DATABASE_URL")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut admin = PgConnection::connect_with(&options).await.unwrap();
+    let name = format!("perf_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE DATABASE {name}"))
+        .execute(&mut admin)
+        .await
+        .unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(12)
+        .connect_with(options.database(&name))
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    let store = store::TelemetryStore::new(pool.clone(), pool.clone());
+    let node = Uuid::new_v4();
+    let mut write = Vec::new();
+    let mut read = Vec::new();
+    let at = Utc::now() - Duration::minutes(10);
+    let range = query::Range {
+        from: at - Duration::seconds(1),
+        to: at + Duration::minutes(5),
+        resolution: query::Resolution::Raw,
+    };
+    for index in 0..288 {
+        let batch = Batch {
+            id: Uuid::new_v4(),
+            session_id: node,
+            sampled_at: at + Duration::seconds(index),
+            monotonic_ms: index as u64,
+            dropped_batches: 0,
+            omitted_processes: 0,
+            host: Some(HostSample {
+                cpu_percent: Some(50.0),
+                ..HostSample::default()
+            }),
+            processes: vec![],
+            inventory: None,
+        };
+        let bytes = serde_json::to_vec(&batch).unwrap();
+        let started = std::time::Instant::now();
+        store
+            .ingest(node, &batch, &bytes, Utc::now())
+            .await
+            .unwrap();
+        let write_us = started.elapsed().as_micros() as u64;
+        let started = std::time::Instant::now();
+        assert_eq!(
+            store
+                .history(node, &range)
+                .await
+                .unwrap_or_else(|_| panic!("history query failed"))
+                .samples
+                .len(),
+            index as usize + 1
+        );
+        let read_us = started.elapsed().as_micros() as u64;
+        if index >= 32 {
+            write.push(write_us);
+            read.push(read_us);
+        }
+    }
+    let p95 = |mut values: Vec<u64>| {
+        values.sort_unstable();
+        values[(values.len() * 95).div_ceil(100) - 1]
+    };
+    println!(
+        "PERF {}",
+        serde_json::json!({"telemetry_write_us":p95(write),"telemetry_read_us":p95(read),"samples":256})
+    );
+    pool.close().await;
+    sqlx::query(&format!("DROP DATABASE {name} WITH (FORCE)"))
+        .execute(&mut admin)
+        .await
+        .unwrap();
 }

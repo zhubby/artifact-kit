@@ -13,11 +13,9 @@ use artifactory_control::{
     storage::Storage,
 };
 use clap::{Parser, Subcommand};
-use sqlx::postgres::PgPoolOptions;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
-use uuid::Uuid;
 
 #[derive(Parser)]
 #[command(version)]
@@ -42,19 +40,11 @@ async fn main() -> Result<()> {
     let arguments = Arguments::parse();
     let settings = Settings::from_env()?;
     tokio::fs::create_dir_all(&settings.data_dir).await?;
-    let pool = PgPoolOptions::new()
-        .max_connections(20)
-        .connect(&settings.database_url)
-        .await?;
-    artifactory_database::require_timescale(&pool).await?;
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    let store = artifactory_control::store::ControlStore::connect(&settings.database_url).await?;
     if matches!(arguments.command, Some(Command::Migrate)) {
         return Ok(());
     }
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
-        .fetch_one(&pool)
-        .await?;
-    if count == 0 {
+    if store.users_empty().await? {
         let username =
             std::env::var("ARTIFACTORY_BOOTSTRAP_USERNAME").unwrap_or_else(|_| "admin".into());
         let password = std::env::var("ARTIFACTORY_BOOTSTRAP_PASSWORD")
@@ -64,12 +54,12 @@ async fn main() -> Result<()> {
             "invalid bootstrap username"
         );
         let hash = auth::password_hash(&password)?;
-        sqlx::query("INSERT INTO users(id,username,password_hash,role) VALUES($1,$2,$3,'admin') ON CONFLICT(username) DO NOTHING").bind(Uuid::new_v4()).bind(username).bind(hash).execute(&pool).await?;
+        store.bootstrap_admin(username, hash).await?;
     }
     let storage = Storage::new(&settings)?;
     storage.initialize().await?;
     let state = AppState {
-        pool,
+        store,
         settings: Arc::new(settings.clone()),
         storage: Arc::new(storage),
         connections: Arc::new(RwLock::new(HashMap::new())),

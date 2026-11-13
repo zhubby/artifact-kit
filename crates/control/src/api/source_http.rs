@@ -27,44 +27,23 @@ use uuid::Uuid;
 
 struct Download {
     _permit: tokio::sync::SemaphorePermit<'static>,
-    _lock: sqlx::Transaction<'static, sqlx::Postgres>,
-    pool: sqlx::PgPool,
-    repository: Uuid,
-    lfs: bool,
+    _lease: artifactory_source_core::store::SourceDownload,
     bytes: Arc<AtomicU64>,
-}
-impl Drop for Download {
-    fn drop(&mut self) {
-        let pool = self.pool.clone();
-        let id = self.repository;
-        let lfs = self.lfs;
-        let bytes = self.bytes.load(Ordering::Relaxed) as i64;
-        tokio::spawn(async move {
-            let _=sqlx::query("UPDATE source_repositories SET git_download_bytes=git_download_bytes+CASE WHEN $3 THEN 0 ELSE $2 END,lfs_download_bytes=lfs_download_bytes+CASE WHEN $3 THEN $2 ELSE 0 END,last_used_at=now() WHERE id=$1").bind(id).bind(bytes).bind(lfs).execute(&pool).await;
-        });
-    }
 }
 async fn download(state: &AppState, repository: Uuid, lfs: bool) -> Result<Download> {
     // Long downloads retain a DB lock against eviction. Leave pool capacity for
     // lease heartbeats, cancellation and scheduling even under parallel LFS.
     static TRANSFERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(6);
     let permit = TRANSFERS.acquire().await.map_err(anyhow::Error::from)?;
-    let key: String = sqlx::query_scalar("SELECT cache_key FROM source_repositories WHERE id=$1")
-        .bind(repository)
-        .fetch_one(&state.pool)
-        .await?;
-    let mut lock = state.pool.begin().await?;
-    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))")
-        .bind(key)
-        .execute(&mut *lock)
+    let lease = state
+        .store
+        .source
+        .download_repository(repository, lfs)
         .await?;
     Ok(Download {
         _permit: permit,
-        _lock: lock,
-        pool: state.pool.clone(),
-        repository,
-        lfs,
-        bytes: Arc::new(AtomicU64::new(0)),
+        bytes: lease.bytes.clone(),
+        _lease: lease,
     })
 }
 
@@ -100,8 +79,10 @@ async fn authorize(
     } else {
         return Err(ApiError::Unauthorized);
     };
-    let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM source_tokens t JOIN attempts a ON a.id=t.attempt_id JOIN nodes n ON n.id=a.node_id JOIN jobs j ON j.id=a.job_id JOIN builds b ON b.id=j.build_id JOIN source_snapshots s ON s.id=t.snapshot_id WHERE t.token_hash=$1 AND t.snapshot_id=$2 AND b.source_snapshot_id=s.id AND b.project_id=s.project_id AND t.expires_at>clock_timestamp() AND a.status IN ('leased','running') AND a.lease_expires_at>clock_timestamp() AND NOT b.cancel_requested AND NOT n.revoked AND n.certificate_expires_at>clock_timestamp())")
-        .bind(crypto::hash(&token)).bind(snapshot).fetch_one(&state.pool).await?;
+    let valid = state
+        .store
+        .authorize_source_download(crypto::hash(&token), snapshot)
+        .await?;
     if !valid {
         return Err(ApiError::Unauthorized);
     }
