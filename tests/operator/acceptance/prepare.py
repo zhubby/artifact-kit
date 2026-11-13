@@ -14,7 +14,7 @@ def run(args, cwd=ROOT, env=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--platform', default='linux/arm64', choices=['linux/arm64', 'linux/amd64'])
-    parser.add_argument('--registry', default='localhost:5001/artifact-kit')
+    parser.add_argument('--registry', default='localhost:5001/artifactory')
     parser.add_argument('--tag', default='rust-native')
     parser.add_argument('--rust-image', default='rust:1.95-bookworm')
     parser.add_argument('--base-image', default='debian:bookworm-slim')

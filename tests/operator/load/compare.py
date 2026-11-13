@@ -76,7 +76,7 @@ class Comparison:
             name = f"poll-load-{self.suffix}-{index}"
             token = self.a.api("/api/v1/ai-enrollment-tokens", {})["token"]
             secret = self.a.secret(name, {"ENROLLMENT_TOKEN": token})
-            workload = self.a.workload(name, "localhost:5001/artifact-kit/operator-pi:rust-native", [], env={"ARTIFACTORY_AI_CONFIG": "/tmp/worker.json", "ARTIFACTORY_AI_ENDPOINT": "control-plane:8443", "ARTIFACTORY_AI_CA_FILE": "/run/load-ca/ca.pem", "ARTIFACTORY_AI_SERVER_NAME": "control-plane", "ARTIFACTORY_AI_NAME": name, "NODE_EXTRA_CA_CERTS": "/run/load-ca/ca.pem"}, secret=name)
+            workload = self.a.workload(name, "localhost:5001/artifactory/operator-pi:rust-native", [], env={"ARTIFACTORY_AI_CONFIG": "/tmp/worker.json", "ARTIFACTORY_AI_ENDPOINT": "control-plane:8443", "ARTIFACTORY_AI_CA_FILE": "/run/load-ca/ca.pem", "ARTIFACTORY_AI_SERVER_NAME": "control-plane", "ARTIFACTORY_AI_NAME": name, "NODE_EXTRA_CA_CERTS": "/run/load-ca/ca.pem"}, secret=name)
             pod = workload["spec"]["template"]["spec"]
             pod["automountServiceAccountToken"] = False
             pod["containers"][0]["command"] = ["sh", "-ec", 'printf "%s" "$ENROLLMENT_TOKEN" | node dist/main.js enroll; unset ENROLLMENT_TOKEN; exec node dist/main.js']

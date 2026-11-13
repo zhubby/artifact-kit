@@ -1,4 +1,4 @@
-# Artifact Kit 设计基线
+# Artifactory 设计基线
 
 日期：2026-11-09。状态：用户已在设计对话及实施请求中确认。
 
@@ -27,7 +27,7 @@ Linux、macOS、Windows 是 Agent 宿主；Linux、macOS、Windows、Android、i
 
 ## 配置与构建
 
-仓库根目录使用版本化 artifact-kit.yaml。控制平面将引用解析为确切提交，保存配置快照及参数。
+仓库根目录使用版本化 `artifactory.yaml`。控制平面将引用解析为确切提交，保存配置快照及参数。
 Agent 拉取相同提交，逐目标执行有超时的 build/sign/verify 步骤。
 配置可声明目标宿主、架构、能力、标签、参数、制品规则、签名引用和发布规则。
 只允许 native 执行器，不接受未实现的容器能力，不接受未知配置字段。

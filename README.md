@@ -1,10 +1,10 @@
-# artifactory
+# Artifactory
 
 自助注册默认开启：访客注册后自动登录为全实例只读用户，可查看和下载全部项目的构建与产物。仅允许管理员分配账号时，设置 `ARTIFACTORY_REGISTRATION_ENABLED=false`；Helm 使用 `auth.registrationEnabled=false`。详情见 [用户自助注册](docs/operations.md#用户自助注册)。
 
 面向个人与内部可信团队的跨平台应用构建、签名与内部分发平台。
 
-项目于 2026-11-11 统一更名为 `artifactory`。GitHub 仓库地址与本地目录不变；命令、配置与环境变量使用产品名；设备端现为 Rust `artifactory-emissary`。更名说明见 [更名记录](docs/artifactory-rename-2026-11-11.md)，后续复审修复及实际部署见[本机 / Mac mini 验收](docs/local-macmini-acceptance-2026-11-11.md)；此前的设计和验收记录保留当时的名称与结果。
+项目于 2026-11-11 统一更名为 **Artifactory**，仓库为 [zhubby/artifactory](https://github.com/zhubby/artifactory)。命令、配置与环境变量使用 `artifactory` 标识；设备端现为 Rust `artifactory-emissary`。命名与迁移说明见 [更名记录](docs/artifactory-rename-2026-11-11.md)，后续复审修复及实际部署见[本机 / Mac mini 验收](docs/local-macmini-acceptance-2026-11-11.md)；历史设计和验收记录保留各自提交、运行结果与验收边界。
 
 **只读 Git 项目 → 固定源码快照 → Pi AI 执行计划 → 原生节点构建 → 签名 / 校验 → 私有制品 → 不可变 Release。**
 

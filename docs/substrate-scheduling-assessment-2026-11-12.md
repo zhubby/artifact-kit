@@ -4,9 +4,9 @@
 
 > **技术栈确认：** Operator 明确采用 Rust/kube-rs，Runtime/Source 服务也使用 Rust；设备 Artifactory Agent 的现有 Go 实现后续以兼容协议的 Rust 实现逐步替换。下文提及 Go Agent 是当前代码事实，不表示长期语言选型。
 
-评估日期：2026-11-12。范围：Artifact Kit 的 Pi 规划 Agent 调度，以及它与现有原生构建节点调度的关系。这是方案评估；文中的接口、配置和迁移均为建议，尚未实现或部署。
+评估日期：2026-11-12。范围：Artifactory 的 Pi 规划 Agent 调度，以及它与现有原生构建节点调度的关系。这是方案评估；文中的接口、配置和迁移均为建议，尚未实现或部署。
 
-**建议保留现有 `native` 后端为默认值，增加可选的 `substrate` 规划运行后端。第一阶段直接对接 Substrate，让它负责 Pi 实例的资源分配、沙箱和生命周期；Artifact Kit 继续负责业务排队、权限、调用预算、检查点、计划校验和构建结果。AX 可作为后续独立适配器，不作为启用 Substrate 的必选依赖。**
+**建议保留现有 `native` 后端为默认值，增加可选的 `substrate` 规划运行后端。第一阶段直接对接 Substrate，让它负责 Pi 实例的资源分配、沙箱和生命周期；Artifactory 继续负责业务排队、权限、调用预算、检查点、计划校验和构建结果。AX 可作为后续独立适配器，不作为启用 Substrate 的必选依赖。**
 
 这个方向可实施，但需要调整运行协议。当前 Agent worker 不能通过换一个部署镜像就获得 Actor 调度、透明休眠和安全故障切换。现有 macOS / Windows 构建节点及签名执行继续使用 Go Agent；它们对原生操作系统和本机凭据的要求应单独处理。
 
@@ -14,7 +14,7 @@
 
 | 对象 | 本次核验版本 | 已确认状态 |
 | --- | --- | --- |
-| Artifact Kit | 本地 HEAD `b43604021f9e435bb78c507fb6b0fac06d972d21`；同时阅读当前工作区相关文件 | Rust 控制平面、Node.js 24 Pi Worker、Go 原生构建 Agent |
+| Artifactory | 本地 HEAD `b43604021f9e435bb78c507fb6b0fac06d972d21`；同时阅读当前工作区相关文件 | Rust 控制平面、Node.js 24 Pi Worker、Go 原生构建 Agent |
 | Agent Substrate | [源码 `905e2a65c4fbe7fd822b73642a7612350815c316`](https://github.com/agent-substrate/substrate/tree/905e2a65c4fbe7fd822b73642a7612350815c316) | 已发布正式版 [v1.0.0](https://github.com/agent-substrate/substrate/releases/tag/v1.0.0)，README 承诺公共 API / CLI / 配置的兼容性 |
 | Google AX | [源码 `a72b8ca46cb54a6f9bd53c8bb349d3a2089e7735`](https://github.com/google/ax/tree/a72b8ca46cb54a6f9bd53c8bb349d3a2089e7735) | README 明示仍在密集开发，稳定版前可能大幅变更；资源 API 为 `ax.io/v1alpha1` |
 
@@ -38,7 +38,7 @@ Substrate 的核心模型是：ActorTemplate 定义工作负载，Actor 表示�
 - 文件或内存快照、恢复及 Worker 复用；默认 MEMORY 快照与模板和运行时版本存在兼容关系。
 - WorkerPool 由 Kubernetes 管理，支持配置副本数和 HPA；扩容策略仍需要根据业务排队与容量指标配置。
 
-它没有现成的 Artifact Kit 构建语义：不判断生成的构建计划是否有效、不管理本项目的签名授权，也不决定制品是否能够发布。
+它没有现成的 Artifactory 构建语义：不判断生成的构建计划是否有效、不管理本项目的签名授权，也不决定制品是否能够发布。
 
 Substrate 已有 API 身份认证和 OpenFGA 授权。但其安全文档仍把完整的配额、Actor 间授权等能力列为未来或进行中的工作，不能把运行时权限直接当作本项目的项目权限和模型预算。
 
@@ -53,7 +53,7 @@ AX 提供 Task、Workspace、Model、Gateway 资源、任务生命周期 API、C
 - AX 创建模板时显式使用 `SNAPSHOT_FIDELITY_VOLUMES`。恢复主要保留 `/workspace` 文件，重启进程，不能据此声称 Pi 的内存对话或正在进行的模型请求被恢复。
 - Runner 在子命令结束后继续存活；官方说明控制平面目前不读取该命令的退出状态。因此 Task Running / Ready 不能转换为规划成功或构建成功。
 - 自动识别空闲并休眠仍列在 AX Roadmap 中。不能将该目标当成已经可直接启用的功能。
-- `Task.spec.config` 限制为 16 KiB，完整启动配置约 31 KiB，且明文可读。现有最大约 500 KiB 的压缩对话检查点应留在 Artifact Kit，通过引用读取。
+- `Task.spec.config` 限制为 16 KiB，完整启动配置约 31 KiB，且明文可读。现有最大约 500 KiB 的压缩对话检查点应留在 Artifactory，通过引用读取。
 - AX 按任务名和启动配置生成专用 ActorTemplate。大批同质 Pi 任务可能产生较多模板，需评估创建、初始化和清理开销，不能假定自动复用一个 Pi golden template。
 
 ## 3. 与当前实现的对应关系
@@ -82,7 +82,7 @@ AX 提供 Task、Workspace、Model、Gateway 资源、任务生命周期 API、C
 | Linux 运行容量 | WorkerPool | 专用于 Pi 运行资源；与当前持有签名配置的原生 node pool 分开建模 |
 | AX Task | 可选运行资源 | 若以后使用 AX，作为运行实例的外部记录，不替代 Build / Job / Attempt |
 
-Artifact Kit 的 Agent worker 和 Substrate 的 Worker Pod 是不同概念。现有“一 Worker 同时一个规划”限制的是 Artifact Kit 注册身份和主循环；Substrate Worker 可以容纳多个相互隔离的 Actor。
+Artifactory 的 Agent worker 和 Substrate 的 Worker Pod 是不同概念。现有“一 Worker 同时一个规划”限制的是 Artifactory 注册身份和主循环；Substrate Worker 可以容纳多个相互隔离的 Actor。
 
 ## 4. 方案比较
 
@@ -98,7 +98,7 @@ Artifact Kit 的 Agent worker 和 Substrate 的 Worker Pod 是不同概念。现
 
 ```mermaid
 flowchart TD
-    B[Artifact Kit 构建与规划状态]
+    B[Artifactory 构建与规划状态]
     Q[规划后端选择与运行实例记录]
     N[native：现有 Agent worker]
     S[substrate：可靠派发适配器]
@@ -191,7 +191,7 @@ Substrate 支持 MEMORY 快照，但恢复可能受模板 / 运行时影响而�
 
 ## 8. 大规模收益与仍存在的瓶颈
 
-Substrate 对大量长期存在、经常等待外部事件的 Actor 很有价值。当前 Artifact Kit 的 Pi 规划则是有界运行：排队任务只占数据库记录，等待用户输入时子进程退出，本来就没有为每个逻辑 Agent 常驻一个容器。
+Substrate 对大量长期存在、经常等待外部事件的 Actor 很有价值。当前 Artifactory 的 Pi 规划则是有界运行：排队任务只占数据库记录，等待用户输入时子进程退出，本来就没有为每个逻辑 Agent 常驻一个容器。
 
 因此，第一阶段可预期的收益是统一的资源池、运行隔离、按需启动和运维能力。不能直接把上游“百万 Agent / 10 倍密度 / 亚秒恢复”等叙述换成本项目容量承诺。应分别测量注册 Actor 数、同时执行的 Pi 数、启动吞吐和每轮完成延迟。
 
@@ -200,7 +200,7 @@ Substrate 对大量长期存在、经常等待外部事件的 Actor 很有价值
 - **模型配额。** 当前服务端已按模型配置协调 RPM。假设每分钟额度 600 次、每轮平均 10 次调用，模型侧上限约为每分钟 60 轮；增加 Actor 不会提高这个上限。这是算例，不是实际账户配额。
 - **内存。** 假设每个活动 Actor 预留 512 MiB，1000 个同时活动实例就需约 500 GiB，再加运行时和预热容量。大量暂停实例与大量同时活动实例是不同的容量目标。
 - **源码解析。** 目前源码解析使用全局 advisory lock，且解析循环每次处理一个构建。短规划大量到达时，这可能先于 Pi 资源池成为瓶颈，需要基线测量后再调整。
-- **数据库和工具。** 控制平面的连接池、每次工具调用的事务、源码读取和日志访问仍由 Artifact Kit 承担。Substrate 只改变运行资源分配，不消除这些请求。
+- **数据库和工具。** 控制平面的连接池、每次工具调用的事务、源码读取和日志访问仍由 Artifactory 承担。Substrate 只改变运行资源分配，不消除这些请求。
 - **扩缩容。** WorkerPool 支持 HPA，但配额、最小预热容量、排队驱动指标、节点扩容和排空处理需要配置；AX 没有替本项目完成这些策略。
 - **原生环境。** Substrate 的 Linux gVisor / microVM 运行环境不能直接提供 macOS Xcode、Windows 原生工具和本机签名身份。Linux 构建若未来也接入，需要另行验证系统调用、依赖网络、缓存、设备及制品上传。
 

@@ -15,7 +15,7 @@ origin: docs/superpowers/specs/2026-11-12-kubernetes-agent-operator-design.md
 
 首期单元 1—7 已完成。2026-11-12 用户确认“只要验证流程即可”，本轮以完整业务与故障流程验证收口；500/1,000 活动实例列入后续容量验证。Rust Operator、Runtime/Source、Kubernetes Pi、控制平面接纳及现有 Go 设备构建已连通，最终流程 22 项检查与 kubelet 不可达时的取消清理复验通过，详见[本次验收记录](../acceptance/operator/2026-11-12.md)。同负载基线、冷启动网络隔离、独立数据服务恢复、100 活动及 10,000 排队已有实测证据。下文区分本轮结果与生产容量、灾备和其他平台的后续验证；单元 8 与 Rust 设备 Agent 重写不属于首期交付。
 
-架构依据为[设计文档](../superpowers/specs/2026-11-12-kubernetes-agent-operator-design.md)，上游依据为[Substrate / AX 评估](../substrate-scheduling-assessment-2026-11-12.md)。目标仓库为 artifact-kit；文件路径相对仓库根目录。实际采用 migration `0010_runtime_intents.sql`，各服务及 Operator 测试按职责合并至对应 package，具体路径以仓库现状为准。
+架构依据为[设计文档](../superpowers/specs/2026-11-12-kubernetes-agent-operator-design.md)，上游依据为[Substrate / AX 评估](../substrate-scheduling-assessment-2026-11-12.md)。目标仓库为 artifactory；文件路径相对仓库根目录。实际采用 migration `0010_runtime_intents.sql`，各服务及 Operator 测试按职责合并至对应 package，具体路径以仓库现状为准。
 
 ## 问题与决策
 

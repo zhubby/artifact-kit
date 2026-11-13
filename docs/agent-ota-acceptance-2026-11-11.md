@@ -43,7 +43,7 @@
 
 从 E 版本构建 `b665002a` 的控制平面持久化事件流读回 128 个日志块，包含 Xcode `BUILD SUCCEEDED`。三项下载为应用 ZIP、ZIP 校验文件和 `self-test.json`，均经私有 S3 签名地址获取。应用采用测试用 ad hoc 签名。
 
-下载的 `.app` 还通过 LaunchServices 实际启动，在本机显示 `Artifact Kit — macOS Build Test` 原生窗口。窗口截图中的构建 ID、提交、架构、Mac mini 主机和服务账户均与该构建一致；该图形界面运行检查独立于命令行自测。
+下载的 `.app` 还通过 LaunchServices 实际启动，在本机显示 `macOS Build Test` 原生窗口。窗口截图中的构建 ID、提交、架构、Mac mini 主机和服务账户均与该构建一致；该图形界面运行检查独立于命令行自测。
 
 上述窗口截图对应构建 `b665002a`。服务退出期限修复后，构建 `282b840e` 再次完成 Xcode、发布、三个私有下载的大小 / SHA-256 校验、签名校验及应用自测，另读回 135 个持久化日志块；修复后的服务运行完整链路保持可用。
 
@@ -51,7 +51,7 @@
 
 ## 自动验证与浏览器
 
-运行程序提交对应 CI：[platform-contracts / 42958769246](https://github.com/zhubby/artifact-kit/actions/runs/42958769246)，全部通过。安装器修复提交 `59d3e82053474d1deb3bd61a9b3704d3abe302ff` 对应 [platform-contracts / 42962434781](https://github.com/zhubby/artifact-kit/actions/runs/42962434781)，七项 Job 全部通过，包含五个平台的原生服务测试、Compose TLS 和 Linux 全链路。
+运行程序提交对应 CI：[platform-contracts / 42958769246](https://github.com/zhubby/artifactory/actions/runs/42958769246)，全部通过。安装器修复提交 `59d3e82053474d1deb3bd61a9b3704d3abe302ff` 对应 [platform-contracts / 42962434781](https://github.com/zhubby/artifactory/actions/runs/42962434781)，七项 Job 全部通过，包含五个平台的原生服务测试、Compose TLS 和 Linux 全链路。
 
 | 验证 | 结果 |
 | --- | --- |

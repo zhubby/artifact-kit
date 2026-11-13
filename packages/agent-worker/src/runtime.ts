@@ -160,7 +160,7 @@ export async function runTask(task: Task, rpc: Rpc, signal: AbortSignal): Promis
     initialState: { systemPrompt, model, tools, thinkingLevel: (task.model.parameters?.thinking_level || "off") as ThinkingLevel, ...(prior ? { messages: prior } : {}) },
     streamFn: (selected, context, options) => models.streamSimple(selected, context, { ...options, ...(task.proxied ? { maxRetries: 0, transport: "sse" as const, headers: { "x-artifactory-request-id": randomUUID() } } : {}), maxTokens: model.maxTokens, ...(task.model.parameters?.temperature === undefined ? {} : { temperature: task.model.parameters.temperature }) }),
     getApiKey: () => task.model.api_key,
-    identity: { attribution: { name: "artifactory", url: "https://github.com/zhubby/artifact-kit" } },
+    identity: { attribution: { name: "artifactory", url: "https://github.com/zhubby/artifactory" } },
     toolExecution: "sequential",
     beforeToolCall: async () => completed ? { block: true, reason: "planning already completed", terminate: true } : undefined,
     finishTurn: ({ message }) => completed ? { action: "end" } : message.stopReason === "error" || message.stopReason === "aborted" ? undefined : { action: "continue" },

@@ -54,7 +54,7 @@ scope: native-first-phase
 
 ```mermaid
 flowchart TB
-    C[Artifact Kit 业务控制平面]
+    C[Artifactory 业务控制平面]
     R[Runtime Gateway 运行协调与模型代理]
     K[Kubernetes 资源 API]
     O[Rust Agent Operator]
@@ -94,7 +94,7 @@ Source 为内部 RPC 与设备下载维护独立地址。Pi、元数据和证据
 | Source Service | 固定/恢复源码、Git/LFS、文件工具、确定性分析、缓存/存储、证据核验、读取保护 | 不接纳业务计划，不持有业务 master key 或签名密钥 |
 | Pi Runner | 调用现有 `runTask`，使用授权工具与模型代理，产生提案/问题/检查点 | 不持有业务数据库凭据、模型供应商主密钥或集群管理权限 |
 
-用户仍通过 Artifact Kit 创建、取消和查看 Build。后端选择是项目/运行池策略，提交时固定在 run intent 中；无需用户操作 CRD 才能完成构建。
+用户仍通过 Artifactory 创建、取消和查看 Build。后端选择是项目/运行池策略，提交时固定在 run intent 中；无需用户操作 CRD 才能完成构建。
 
 ### Rust 技术栈与项目边界
 
@@ -293,7 +293,7 @@ Runtime 按 pool/project 做准入，限制活动、provisioning 和排队总量
 
 ## 13. 依据
 
-- [原生平台总体设计](2026-11-09-artifact-kit-design.md)、[现有 AI Builds 计划](../plans/2026-11-11-ai-builds.md)、[AI Builds 文档](../../ai-builds.md)。
+- [原生平台总体设计](2026-11-09-artifactory-design.md)、[现有 AI Builds 计划](../plans/2026-11-11-ai-builds.md)、[AI Builds 文档](../../ai-builds.md)。
 - 本文第二节所列本地源码，以及 [builds.rs](../../../crates/control-plane/src/api/builds.rs)、[ai_management.rs](../../../crates/control-plane/src/api/ai_management.rs) 的取消、澄清和权限规则。
 - [Substrate / AX 评估与固定上游源码](../../substrate-scheduling-assessment-2026-11-12.md)。
 - [Kubernetes Operator pattern](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)：基于资源与控制循环管理应用。

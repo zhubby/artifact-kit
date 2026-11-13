@@ -48,7 +48,7 @@
 | S3 TLS 信任 | 实际 `Storage::initialize` 在独立子进程加载指定的 CA 信任文件，受信 CA 连接成功、无关 CA 和错误主机名均被拒绝；独立 Python HTTPS 客户端验证同一证书链 |
 | Go 检查 | `go vet ./...`、`go test -race ./... -count=1` 通过；不启用实时环境时协议联测会显式跳过 |
 | 服务启动失败回归 | 真实 `service-run` 子进程在未注册配置下报错后必须以非零状态退出；修复前进程存活并在 5 秒后触发测试超时，修复后通过 |
-| 原生服务生命周期 | [42756742531](https://github.com/zhubby/artifact-kit/actions/runs/42756742531) 在 `23ab4ac` 上的 Linux amd64、macOS arm64、Windows amd64 三个 native-agent 作业全部通过：真实服务管理器、专用账户、mTLS、重启 / 停止 / 卸载及私有配置权限；完整 Linux 流水线另行核验，不由服务结果推断 |
+| 原生服务生命周期 | [42756742531](https://github.com/zhubby/artifactory/actions/runs/42756742531) 在 `23ab4ac` 上的 Linux amd64、macOS arm64、Windows amd64 三个 native-agent 作业全部通过：真实服务管理器、专用账户、mTLS、重启 / 停止 / 卸载及私有配置权限；完整 Linux 流水线另行核验，不由服务结果推断 |
 | 验收启动回归 | 3 项真实子进程测试通过：提前退出立即报告状态与日志、就绪超时终止进程、健康检查成功后保留运行进程 |
 | 构建失败诊断回归 | 意外终态保留构建及 attempt 错误，并验证诊断不包含租约令牌；与启动及备份保护共 7 项 Python 回归 |
 | 备份保护回归 | 3 项通过：复制前拒绝目录内及根目录符号链接，备份缺失主密钥 / 数据库配置时不得继承当前进程秘密 |
@@ -63,7 +63,7 @@
 | 生产 tmpfs 回归 | 实际 Compose 解析与 Docker daemon 先复现未加引号的挂载被拆成两项并拒绝启动；修复后解析为一个挂载，真实非 root / read-only 容器核对 1777 并写入 `/tmp`；Python 回归现共 8 项 |
 | 完整 Compose / TLS | 产品源码 `1dae112` 的本机运行 `1e38068d0dea`：外层 23 项、实际流量 21 项通过，全部五服务、受信 HTTPS / mTLS、运行中 SSE、私有 S3、在途构建中重启及凭据持久化均已实跑 |
 | 日志缓冲真实故障 | 产品源码 `325dea7` 的本机运行 `4c9038b3043c`：外层 27 项、流量 30 项通过，真实 S3 暂停、1 MiB 缓冲耗尽、子进程终止、心跳继续、日志恢复及下一构建成功 |
-| 远端 CI | Linux / macOS / Windows 原生 Agent 检查通过；[诊断运行 42746144635](https://github.com/zhubby/artifact-kit/actions/runs/42746144635) 确认 Linux S3 配置权限错误，已本地复现并修复；完整流水线现包含 SSH 与冷恢复，最新结果见 [main Actions](https://github.com/zhubby/artifact-kit/actions/workflows/ci.yml?query=branch%3Amain) |
+| 远端 CI | Linux / macOS / Windows 原生 Agent 检查通过；[诊断运行 42746144635](https://github.com/zhubby/artifactory/actions/runs/42746144635) 确认 Linux S3 配置权限错误，已本地复现并修复；完整流水线现包含 SSH 与冷恢复，最新结果见 [main Actions](https://github.com/zhubby/artifactory/actions/workflows/ci.yml?query=branch%3Amain) |
 
 普通 `cargo test --all-targets` 会跳过需要数据库的 8 项测试；本次另外设置 `AK_TEST_DATABASE_URL` 并使用 `--include-ignored` 执行。测试为每次运行创建隔离 schema，不能以默认命令中的 ignored 项冒充数据库验收。
 
@@ -101,15 +101,15 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 
 独立管道复现保留于 `.local/native-service-workload/`：只关闭控制管道时原 Worker 以状态 1 退出且目录删除；同时关闭输出管道时被 SIGPIPE 终止（状态 -13），SIGTERM 则为 -15，两者均留下目录。Worker SIGTERM 的回归还实际观察到存活的后代。修复将独立 Unix Worker 的这些信号转为执行上下文取消，保证进程树终止和目录清理先完成；相同三个复现修复后均以状态 1 退出、无遗留目录。全部 Go vet / race 与五目标交叉构建通过。
 
-`TestNativeServiceLifecycle` 同时增加受控在途任务的真实服务重启 / 停止、OS 进程账户与归属、工作目录清理和后续任务成功检查。[42773543511](https://github.com/zhubby/artifact-kit/actions/runs/42773543511) 在 `2ae03c150a88db965d15c8889625e74ce1db8796` 上的 Linux amd64、macOS arm64、Windows amd64 三个原生作业全部通过：每类 VM 均实际清理两次在途 Worker / 步骤 / 后代及其工作目录，并成功执行两次后续任务，最终服务、账户及目录清理通过。该精确 SHA 的完整五作业 CI 也全部成功；原三类空闲服务结果仍按上节历史运行记录。固定 Git 测试程序不代表真实应用、实体机重启、SDK 或发行签名。
+`TestNativeServiceLifecycle` 同时增加受控在途任务的真实服务重启 / 停止、OS 进程账户与归属、工作目录清理和后续任务成功检查。[42773543511](https://github.com/zhubby/artifactory/actions/runs/42773543511) 在 `2ae03c150a88db965d15c8889625e74ce1db8796` 上的 Linux amd64、macOS arm64、Windows amd64 三个原生作业全部通过：每类 VM 均实际清理两次在途 Worker / 步骤 / 后代及其工作目录，并成功执行两次后续任务，最终服务、账户及目录清理通过。该精确 SHA 的完整五作业 CI 也全部成功；原三类空闲服务结果仍按上节历史运行记录。固定 Git 测试程序不代表真实应用、实体机重启、SDK 或发行签名。
 
-后续 [42786554877](https://github.com/zhubby/artifact-kit/actions/runs/42786554877) 的 macOS arm64 服务作业暴露验收观察器的消息归属错误：前一成功任务的完成事件在确认到达 Agent 前重复传递，等待下一任务时被误读。两项前台 Agent 回归明确插入已完成任务的重复通知，修复前分别误判当前进程树结束和下一任务失败；按 attempt ID 筛选后两项通过，仍核对当前任务实际运行、进程树终止和目录清理。等待完成结果使用固定总超时，重复消息不延长等待；该失败运行保留为失败，最终结果以最新提交的完整 CI 为准。
+后续 [42786554877](https://github.com/zhubby/artifactory/actions/runs/42786554877) 的 macOS arm64 服务作业暴露验收观察器的消息归属错误：前一成功任务的完成事件在确认到达 Agent 前重复传递，等待下一任务时被误读。两项前台 Agent 回归明确插入已完成任务的重复通知，修复前分别误判当前进程树结束和下一任务失败；按 attempt ID 筛选后两项通过，仍核对当前任务实际运行、进程树终止和目录清理。等待完成结果使用固定总超时，重复消息不延长等待；该失败运行保留为失败，最终结果以最新提交的完整 CI 为准。
 
 ### 五种宿主系统与架构的原生 CI
 
 原生矩阵增加 `ubuntu-24.04-arm`（Linux arm64）与 `macos-15-intel`（macOS amd64），补齐五个 Agent 二进制目标的原生运行覆盖。标签来自 [GitHub 官方 runner 列表](https://github.com/actions/runner-images#available-images)。五种组合均执行 Go vet / race，以及显式启用的专用账户服务安装、在途任务重启 / 停止、进程树与工作目录清理、后续任务和卸载验收。
 
-服务测试在任何系统变更前核对 CI 预期平台、测试进程实际 `runtime.GOOS/GOARCH` 与 `RUNNER_OS/RUNNER_ARCH`，记录镜像版本；真实 Agent 的 mTLS hello 另行核对相同 OS / 架构。预期平台缺失或不匹配立即失败，原有 GitHub 托管临时 VM 限制继续生效。[42777333982](https://github.com/zhubby/artifact-kit/actions/runs/42777333982) 在 `fe2f0932e6cdb5c98de15513665f6139bea66914` 上的五类原生作业全部通过，每类均实际核对两次在途进程树 / 工作目录清理及两次后续任务成功；完整七作业 CI 也全部成功。原生 CI 不代替实体机重启、真实应用工具链或发行签名验收。
+服务测试在任何系统变更前核对 CI 预期平台、测试进程实际 `runtime.GOOS/GOARCH` 与 `RUNNER_OS/RUNNER_ARCH`，记录镜像版本；真实 Agent 的 mTLS hello 另行核对相同 OS / 架构。预期平台缺失或不匹配立即失败，原有 GitHub 托管临时 VM 限制继续生效。[42777333982](https://github.com/zhubby/artifactory/actions/runs/42777333982) 在 `fe2f0932e6cdb5c98de15513665f6139bea66914` 上的五类原生作业全部通过，每类均实际核对两次在途进程树 / 工作目录清理及两次后续任务成功；完整七作业 CI 也全部成功。原生 CI 不代替实体机重启、真实应用工具链或发行签名验收。
 
 ### 完整 Compose / TLS 隔离联测
 
@@ -140,7 +140,7 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 
 远端 `42766169439` 的 Compose 运行 `5288d46f5b1d` 在原有 21 项流量检查通过后，遇到故障 fixture 的就绪检查竞态：Worker 已开始执行，而构建总状态由调度器下一轮按秒汇总。原检查立即读取总状态，可能仍为 queued；可控复现使用“子进程标记已就绪、API 先 queued 后 running”的时序，修复前失败，改为复用 running 等待及意外终态检查后通过。随后本机运行 `39256b4483b3` 的 25 项外围与 30 项流量检查再次通过；25 项包含两个现有开发容器保留检查，该轮重新构建产品镜像。原远端失败及清理证据保留，新增修正的远端结果以对应提交 Actions 为准。
 
-就绪修正提交 `39118c7` 的远端 [42767804429](https://github.com/zhubby/artifact-kit/actions/runs/42767804429) 已 completed / success，五个作业全部通过。Compose 运行 `6b0136f0b6c4` 的 23 项外围、30 项真实流量检查通过；实际缓冲 1,027,819 字节，小于 1 MiB，24 个缓存块恢复后与 SSE / PostgreSQL 一致，后续构建成功且清理无错误，源码与执行脚本摘要已核对。
+就绪修正提交 `39118c7` 的远端 [42767804429](https://github.com/zhubby/artifactory/actions/runs/42767804429) 已 completed / success，五个作业全部通过。Compose 运行 `6b0136f0b6c4` 的 23 项外围、30 项真实流量检查通过；实际缓冲 1,027,819 字节，小于 1 MiB，24 个缓存块恢复后与 SSE / PostgreSQL 一致，后续构建成功且清理无错误，源码与执行脚本摘要已核对。
 
 ### 跨语言协议联测
 
@@ -166,7 +166,7 @@ TLS 回归需要 `python3` 和支持 `req -addext` 的 OpenSSL。修复前，同
 
 协议探针没有真实 Worker 响应取消。完成授权断言后，清理通过 API 取消本次构建，仅将本次仍活跃的 attempt 租约设为过期，再等待真实调度器将该构建及 job 终结。`42786554877` 的协议、浏览器与 SSH 通过后，冷恢复预检发现旧清理仍留下活跃记录；新增清理终态断言也已独立复现此问题。后续修正保持冷恢复的无活跃任务要求，并保留原失败记录。
 
-原始红 / 绿日志、源码及二进制摘要保存在 `.local/lease-node-fencing/`。首次新测试的 psql 连接参数错误另行保留，未算作产品竞态复现；修复前原有 35 项本机端到端验收通过。这里调整的是临时节点的数据库授权期限，没有将 TLS 证书实际老化，也没有替代真实 Worker / 实体宿主故障验收。CI 同时保留 `.local/protocol-live.log`，本次提交的远端结果按精确 SHA 的 [Actions](https://github.com/zhubby/artifact-kit/actions/workflows/ci.yml?query=branch%3Amain) 核验。
+原始红 / 绿日志、源码及二进制摘要保存在 `.local/lease-node-fencing/`。首次新测试的 psql 连接参数错误另行保留，未算作产品竞态复现；修复前原有 35 项本机端到端验收通过。这里调整的是临时节点的数据库授权期限，没有将 TLS 证书实际老化，也没有替代真实 Worker / 实体宿主故障验收。CI 同时保留 `.local/protocol-live.log`，本次提交的远端结果按精确 SHA 的 [Actions](https://github.com/zhubby/artifactory/actions/workflows/ci.yml?query=branch%3Amain) 核验。
 
 ### 控制事件等待锁期间的取消
 
@@ -255,13 +255,13 @@ Linux CI 的 S3 启动问题也有真实红 / 绿验证：0600 配置由宿主 U
 - 三类服务安装 / 卸载 / 手动排空升级命令已经实现并记录，但本次没有在宿主安装系统服务或修改开机启动。
 - Linux 容器运行和 Agent 交叉编译都不能代替用户要求的三类实体机验收。
 
-最后一轮容器证据：`.local/container-smoke/314d392904/evidence.json`，7 项通过，Linux 7.2.12-orbstack x86_64，非 root UID 501。该轮控制平面镜像为 `sha256:9857943b2dc629d0a2aabee1862747508a9ab1bc37d34b8a1cc1f96117e82c83`；最终前端镜像为 `sha256:f52c3f640b4a39628f4fa3b33f4dbeab32f9d2340d300af8bcc8caf40233c4ce`。本机镜像标签分别是 `artifact-kit-control:local-acceptance` 和 `artifact-kit-web:local-acceptance`，未发布到镜像仓库。
+最后一轮容器证据：`.local/container-smoke/314d392904/evidence.json`，7 项通过，Linux 7.2.12-orbstack x86_64，非 root UID 501。该轮控制平面镜像为 `sha256:9857943b2dc629d0a2aabee1862747508a9ab1bc37d34b8a1cc1f96117e82c83`；最终前端镜像为 `sha256:f52c3f640b4a39628f4fa3b33f4dbeab32f9d2340d300af8bcc8caf40233c4ce`。两镜像仅用于本机验收，未发布到镜像仓库。
 
 镜像下载存在本地网络限制，本次仅通过构建输入替换使用镜像源并传入本地网络代理，没有改写提交的默认基础镜像或全局 Docker 配置。生产应自行确认镜像来源、固定 digest、受信证书和服务账户权限。
 
 ### 2026-11-10：本机 kind / Helm
 
-已在已有 `kind-substrate-orbstack` 集群的独立 `artifact-kit` 命名空间安装同名 Helm release。节点为 Kubernetes v1.37.0 / Linux arm64；control-plane、PostgreSQL、SeaweedFS 和包含 Next.js / Caddy 的 web Deployment 全部就绪，三个 `standard` PVC 已绑定。控制台为 `http://192.168.97.2:31080`，私有对象存储签名地址为 `http://192.168.97.2:31333`，gRPC TLS 为 `192.168.97.2:31443`；这些是此次本机快照的节点地址。
+已在已有 `kind-substrate-orbstack` 集群的独立命名空间安装专用 Helm release。节点为 Kubernetes v1.37.0 / Linux arm64；control-plane、PostgreSQL、SeaweedFS 和包含 Next.js / Caddy 的 web Deployment 全部就绪，三个 `standard` PVC 已绑定。控制台为 `http://192.168.97.2:31080`，私有对象存储签名地址为 `http://192.168.97.2:31333`，gRPC TLS 为 `192.168.97.2:31443`；这些是此次本机快照的节点地址。
 
 本轮 control-plane / web 镜像的应用源码基线为 `48b9e72`，均实际构建为 `linux/arm64` 并推入已有本地 registry。control-plane 镜像 ID 为 `sha256:260c821fcc7ba32f86a83e15fbb647b8f509823b2ce1910a03a2b163421f894c`，web 为 `sha256:d63905990f4f0b1e1a2b4a42d44f64180ab17acc65786207a7776ad329103746`。本机默认 Docker 镜像代理认证失败，构建输入使用显式镜像源、HTTPS 软件源及按 Cargo.lock 校验的公开依赖缓存；实际输入、摘要、平台与构建日志保留在 `.local/helm/`，默认 Dockerfile 和全局配置保持原样。
 

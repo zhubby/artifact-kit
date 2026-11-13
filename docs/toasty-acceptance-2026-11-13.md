@@ -19,7 +19,7 @@
 | Operator | 专属 kind 命名空间 `artifact-operator-toasty-stream-20261113`：69 项检查通过，覆盖四库隔离、真实 Pi 预算与纠错、Source/PVC 恢复、领导者替换、Pod 重启、取消与准入暂停；独立 Telemetry 及 macOS arm64 主机原生构建验收通过 |
 | 新版本备份恢复 | `20261113-173048-recovery`：四库、TimescaleDB 列存/聚合、22 个 S3 对象、密钥和路由恢复通过；恢复后重新完成真实构建、授权和恢复流程，原数据 Pod 保留 |
 
-最终 Operator 镜像为 `localhost:5001/artifact-kit/operator:toasty-20261113-03`，源码标签为上述最终服务提交，镜像 ID 为 `sha256:d408b672923964ff3fb783fee54bfd15d9040396adf1414792588b4c568f3238`，registry manifest 摘要为 `sha256:bfe9789ddab421169522199c61ced80ddd3641b41a48774576c645ed8fb48903`。主机原生构建证据为 `20261113-172803-native`；临时 Agent 身份已吊销、临时路由已恢复。
+最终 Operator 的构建标签为 `toasty-20261113-03`，源码标签为上述最终服务提交，镜像 ID 为 `sha256:d408b672923964ff3fb783fee54bfd15d9040396adf1414792588b4c568f3238`，registry manifest 摘要为 `sha256:bfe9789ddab421169522199c61ced80ddd3641b41a48774576c645ed8fb48903`。主机原生构建证据为 `20261113-172803-native`；临时 Agent 身份已吊销、临时路由已恢复。
 
 baseline 对照计数（完整结果保存在私有 `.local/schema-parity.json`）：
 
