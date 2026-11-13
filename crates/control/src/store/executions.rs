@@ -1,9 +1,11 @@
 //! Node identity, execution leases, events and upload persistence.
 use super::ControlStore;
 use crate::{crypto, pki};
+use artifactory_database::{params, sql};
 use chrono::{Duration as ChronoDuration, Utc};
 use serde_json::Value;
-use sqlx::Row;
+use toasty::stmt::Type;
+
 use tonic::Status;
 use uuid::Uuid;
 fn internal(error: impl std::fmt::Display) -> Status {
@@ -11,13 +13,12 @@ fn internal(error: impl std::fmt::Display) -> Status {
 }
 const VALID_ATTEMPT_QUERY: &str = "SELECT EXISTS(SELECT 1 FROM attempts a JOIN nodes n ON n.id=a.node_id JOIN jobs j ON j.id=a.job_id JOIN builds b ON b.id=j.build_id WHERE a.id=$1 AND a.node_id=$2 AND a.lease_token=$3 AND a.status='running' AND a.lease_expires_at>clock_timestamp() AND NOT n.revoked AND n.certificate_expires_at>clock_timestamp() AND ($4 OR NOT b.cancel_requested))";
 
-async fn valid_node<'e>(
-    executor: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+async fn valid_node(
+    executor: &mut dyn toasty::Executor,
     node: Uuid,
     session: Uuid,
 ) -> Result<(), Status> {
-    let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM nodes WHERE id=$1 AND active_session=$2 AND NOT revoked AND certificate_expires_at>clock_timestamp())")
-        .bind(node).bind(session).fetch_one(executor).await.map_err(internal)?;
+    let valid:bool=sql::scalar(executor, "SELECT EXISTS(SELECT 1 FROM nodes WHERE id=$1 AND active_session=$2 AND NOT revoked AND certificate_expires_at>clock_timestamp())", params![node, session]).await.map_err(internal)?;
     if valid {
         Ok(())
     } else {
@@ -28,22 +29,24 @@ async fn valid_node<'e>(
 }
 
 async fn lock_authorized_node(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    transaction: &mut toasty::db::Transaction<'_>,
     node: Uuid,
     session: Uuid,
 ) -> Result<(), Status> {
     // Acquire this after the attempt lock, then validate with a fresh clock and
     // snapshot. Keep revocation/session replacement serialized with the write.
-    sqlx::query("SELECT id FROM nodes WHERE id=$1 FOR SHARE")
-        .bind(node)
-        .execute(&mut **transaction)
-        .await
-        .map_err(internal)?;
-    valid_node(&mut **transaction, node, session).await
+    sql::execute(
+        transaction,
+        "SELECT id FROM nodes WHERE id=$1 FOR SHARE",
+        params![node],
+    )
+    .await
+    .map_err(internal)?;
+    valid_node(transaction, node, session).await
 }
 
-async fn valid_attempt<'e>(
-    executor: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+async fn valid_attempt(
+    executor: &mut dyn toasty::Executor,
     node: Uuid,
     attempt: &str,
     token: &str,
@@ -51,14 +54,13 @@ async fn valid_attempt<'e>(
 ) -> Result<Uuid, Status> {
     let attempt =
         Uuid::parse_str(attempt).map_err(|_| Status::invalid_argument("invalid attempt ID"))?;
-    let valid: bool = sqlx::query_scalar(VALID_ATTEMPT_QUERY)
-        .bind(attempt)
-        .bind(node)
-        .bind(token)
-        .bind(allow_canceled)
-        .fetch_one(executor)
-        .await
-        .map_err(internal)?;
+    let valid: bool = sql::scalar(
+        executor,
+        VALID_ATTEMPT_QUERY,
+        params![attempt, node, token, allow_canceled],
+    )
+    .await
+    .map_err(internal)?;
     if valid {
         Ok(attempt)
     } else {
@@ -69,24 +71,28 @@ async fn valid_attempt<'e>(
 }
 
 async fn lock_artifact_attempt(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    transaction: &mut toasty::db::Transaction<'_>,
     node: Uuid,
     attempt: Uuid,
     token: &str,
 ) -> Result<(), Status> {
     // Shared locks coexist with insertion's foreign-key KEY SHARE lock. Check
     // again after waiting; hold authorization stable through the short commit.
-    sqlx::query("SELECT id FROM attempts WHERE id=$1 FOR SHARE")
-        .bind(attempt)
-        .execute(&mut **transaction)
-        .await
-        .map_err(internal)?;
-    sqlx::query("SELECT id FROM nodes WHERE id=$1 FOR SHARE")
-        .bind(node)
-        .execute(&mut **transaction)
-        .await
-        .map_err(internal)?;
-    valid_attempt(&mut **transaction, node, &attempt.to_string(), token, false).await?;
+    sql::execute(
+        transaction,
+        "SELECT id FROM attempts WHERE id=$1 FOR SHARE",
+        params![attempt],
+    )
+    .await
+    .map_err(internal)?;
+    sql::execute(
+        transaction,
+        "SELECT id FROM nodes WHERE id=$1 FOR SHARE",
+        params![node],
+    )
+    .await
+    .map_err(internal)?;
+    valid_attempt(transaction, node, &attempt.to_string(), token, false).await?;
     Ok(())
 }
 
@@ -144,8 +150,7 @@ pub(crate) enum EventReceipt {
 
 impl ControlStore {
     pub(crate) async fn node_identity(&self, hash: String) -> Result<Uuid, Status> {
-        sqlx::query_scalar("SELECT id FROM nodes WHERE certificate_hash=$1 AND NOT revoked AND certificate_expires_at>now()")
-        .bind(hash).fetch_optional(&self.pool).await.map_err(internal)?
+        sql::optional_scalar(&mut self.pool.clone(), "SELECT id FROM nodes WHERE certificate_hash=$1 AND NOT revoked AND certificate_expires_at>now()", params![hash]).await.map_err(internal)?
         .ok_or_else(|| Status::unauthenticated("node certificate revoked, expired or unknown"))
     }
 
@@ -154,7 +159,7 @@ impl ControlStore {
         node: Uuid,
         session: Uuid,
     ) -> Result<(), Status> {
-        valid_node(&self.pool, node, session).await
+        valid_node(&mut self.pool.clone(), node, session).await
     }
 
     pub(crate) async fn validate_attempt(
@@ -164,7 +169,7 @@ impl ControlStore {
         token: &str,
         canceled: bool,
     ) -> Result<Uuid, Status> {
-        valid_attempt(&self.pool, node, attempt, token, canceled).await
+        valid_attempt(&mut self.pool.clone(), node, attempt, token, canceled).await
     }
 
     pub(crate) async fn enroll_node<F, Fut>(
@@ -176,31 +181,45 @@ impl ControlStore {
         F: FnOnce(Uuid) -> Fut,
         Fut: std::future::Future<Output = Result<String, Status>>,
     {
-        let mut transaction = self.pool.begin().await.map_err(internal)?;
-        let token=sqlx::query("SELECT id,pool_id FROM enrollment_tokens WHERE token_hash=$1 AND used_at IS NULL AND expires_at>now() FOR UPDATE")
-            .bind(crypto::hash(input.token)).fetch_optional(&mut *transaction).await.map_err(internal)?
+        let mut transaction_db = self.pool.clone();
+        let mut transaction = transaction_db.transaction().await.map_err(internal)?;
+        let token=sql::optional_record(&mut transaction, "SELECT id,pool_id FROM enrollment_tokens WHERE token_hash=$1 AND used_at IS NULL AND expires_at>now() FOR UPDATE", params![crypto::hash(input.token)], &[("id", Type::Uuid),("pool_id", Type::Uuid)]).await.map_err(internal)?
             .ok_or_else(|| Status::unauthenticated("invalid or expired enrollment token"))?;
         let id = Uuid::new_v4();
         let certificate = issue(id).await?;
         let hash = pki::certificate_hash(&certificate).map_err(internal)?;
-        sqlx::query("INSERT INTO nodes(id,name,os,arch,pool_id,certificate_hash,certificate_expires_at) VALUES($1,$2,$3,$4,$5,$6,$7)")
-            .bind(id).bind(input.name).bind(input.os).bind(input.arch).bind(token.get::<Uuid,_>("pool_id")).bind(hash).bind(Utc::now()+ChronoDuration::days(30)).execute(&mut *transaction).await.map_err(internal)?;
-        sqlx::query("UPDATE enrollment_tokens SET used_at=now() WHERE id=$1")
-            .bind(token.get::<Uuid, _>("id"))
-            .execute(&mut *transaction)
+        super::models::Node::create()
+            .id(id)
+            .name(input.name)
+            .os(input.os)
+            .arch(input.arch)
+            .pool_id(token.decode::<Uuid>("pool_id").map_err(internal)?)
+            .certificate_hash(hash)
+            .certificate_expires_at(
+                sql::timestamp(Utc::now() + ChronoDuration::days(30)).map_err(internal)?,
+            )
+            .exec(&mut transaction)
             .await
             .map_err(internal)?;
+        sql::execute(
+            &mut transaction,
+            "UPDATE enrollment_tokens SET used_at=now() WHERE id=$1",
+            params![token.decode::<Uuid>("id").map_err(internal)?],
+        )
+        .await
+        .map_err(internal)?;
         transaction.commit().await.map_err(internal)?;
         Ok(EnrolledNode { id, certificate })
     }
 
     pub(crate) async fn connect_node(&self, node: Uuid, session: Uuid) -> Result<(), Status> {
-        sqlx::query("UPDATE nodes SET active_session=$2,last_seen=now() WHERE id=$1")
-            .bind(node)
-            .bind(session)
-            .execute(&self.pool)
-            .await
-            .map_err(internal)?;
+        sql::execute(
+            &mut self.pool.clone(),
+            "UPDATE nodes SET active_session=$2,last_seen=now() WHERE id=$1",
+            params![node, session],
+        )
+        .await
+        .map_err(internal)?;
         Ok(())
     }
 
@@ -213,31 +232,32 @@ impl ControlStore {
         let LogCommit {
             key, hash, size, ..
         } = input;
-        let mut transaction = self.pool.begin().await.map_err(internal)?;
-        sqlx::query("SELECT id FROM attempts WHERE id=$1 FOR UPDATE")
-            .bind(attempt)
-            .execute(&mut *transaction)
-            .await
-            .map_err(internal)?;
-        let valid: bool = sqlx::query_scalar(VALID_ATTEMPT_QUERY)
-            .bind(attempt)
-            .bind(node)
-            .bind(input.token)
-            .bind(true)
-            .fetch_one(&mut *transaction)
-            .await
-            .map_err(internal)?;
+        let mut transaction_db = self.pool.clone();
+        let mut transaction = transaction_db.transaction().await.map_err(internal)?;
+        sql::execute(
+            &mut transaction,
+            "SELECT id FROM attempts WHERE id=$1 FOR UPDATE",
+            params![attempt],
+        )
+        .await
+        .map_err(internal)?;
+        let valid: bool = sql::scalar(
+            &mut transaction,
+            VALID_ATTEMPT_QUERY,
+            params![attempt, node, input.token, true],
+        )
+        .await
+        .map_err(internal)?;
         if !valid {
             return Err(Status::failed_precondition(
                 "execution lease is no longer valid",
             ));
         }
-        if let Some(existing) = sqlx::query_scalar::<_, String>(
+        if let Some(existing) = sql::optional_scalar::<String>(
+            &mut transaction,
             "SELECT sha256 FROM log_chunks WHERE attempt_id=$1 AND sequence=$2",
+            params![attempt, input.sequence as i64],
         )
-        .bind(attempt)
-        .bind(input.sequence as i64)
-        .fetch_optional(&mut *transaction)
         .await
         .map_err(internal)?
         {
@@ -245,11 +265,11 @@ impl ControlStore {
                 return Err(Status::already_exists("log sequence content mismatch"));
             }
         } else {
-            let previous: i64 = sqlx::query_scalar(
+            let previous: i64 = sql::scalar(
+                &mut transaction,
                 "SELECT coalesce(max(sequence),0) FROM log_chunks WHERE attempt_id=$1",
+                params![attempt],
             )
-            .bind(attempt)
-            .fetch_one(&mut *transaction)
             .await
             .map_err(internal)?;
             if input.sequence != previous as u64 + 1 {
@@ -258,8 +278,16 @@ impl ControlStore {
                     previous + 1
                 )));
             }
-            sqlx::query("INSERT INTO log_chunks(attempt_id,sequence,step,object_key,sha256,size) VALUES($1,$2,$3,$4,$5,$6)")
-                    .bind(attempt).bind(input.sequence as i64).bind(input.step).bind(key).bind(hash).bind(size).execute(&mut *transaction).await.map_err(internal)?;
+            super::models::LogChunk::create()
+                .attempt_id(attempt)
+                .sequence(input.sequence as i64)
+                .step(input.step)
+                .object_key(key)
+                .sha256(hash)
+                .size(size)
+                .exec(&mut transaction)
+                .await
+                .map_err(internal)?;
         }
         transaction.commit().await.map_err(internal)?;
         Ok(())
@@ -273,12 +301,12 @@ impl ControlStore {
     ) -> Result<PreparedUpload, Status> {
         let id = Uuid::new_v4();
         let key = format!("uploads/{id}");
-        let mut transaction = self.pool.begin().await.map_err(internal)?;
-        sqlx::query("INSERT INTO uploads(id,attempt_id,path,object_key,expected_size,expected_sha256,expires_at) VALUES($1,$2,$3,$4,$5,$6,now()+interval '15 minutes') ON CONFLICT(attempt_id,path) DO NOTHING")
-            .bind(id).bind(attempt).bind(input.path).bind(key).bind(input.size as i64).bind(input.sha256).execute(&mut *transaction).await.map_err(internal)?;
-        let row=sqlx::query("SELECT u.*,EXISTS(SELECT 1 FROM artifacts a WHERE a.id=u.id) AS completed FROM uploads u WHERE attempt_id=$1 AND path=$2").bind(attempt).bind(input.path).fetch_one(&mut *transaction).await.map_err(internal)?;
-        if row.get::<i64, _>("expected_size") != input.size as i64
-            || row.get::<String, _>("expected_sha256") != input.sha256
+        let mut transaction_db = self.pool.clone();
+        let mut transaction = transaction_db.transaction().await.map_err(internal)?;
+        sql::execute(&mut transaction, "INSERT INTO uploads(id,attempt_id,path,object_key,expected_size,expected_sha256,expires_at) VALUES($1,$2,$3,$4,$5,$6,now()+interval '15 minutes') ON CONFLICT(attempt_id,path) DO NOTHING", params![id, attempt, input.path, key, input.size as i64, input.sha256]).await.map_err(internal)?;
+        let row=sql::record(&mut transaction, "SELECT u.*,EXISTS(SELECT 1 FROM artifacts a WHERE a.id=u.id) AS completed FROM uploads u WHERE attempt_id=$1 AND path=$2", params![attempt, input.path], &[("id", Type::Uuid),("attempt_id", Type::Uuid),("path", Type::String),("object_key", Type::String),("expected_size", Type::I64),("expected_sha256", Type::String),("expires_at", Type::Timestamp),("completed", Type::Bool)]).await.map_err(internal)?;
+        if row.decode::<i64>("expected_size").map_err(internal)? != input.size as i64
+            || row.decode::<String>("expected_sha256").map_err(internal)? != input.sha256
         {
             return Err(Status::already_exists(
                 "artifact path already declared with different content",
@@ -287,9 +315,9 @@ impl ControlStore {
         lock_artifact_attempt(&mut transaction, node, attempt, input.lease_token).await?;
         transaction.commit().await.map_err(internal)?;
         Ok(PreparedUpload {
-            id: row.get("id"),
-            object_key: row.get("object_key"),
-            completed: row.get("completed"),
+            id: row.decode("id").map_err(internal)?,
+            object_key: row.decode("object_key").map_err(internal)?,
+            completed: row.decode("completed").map_err(internal)?,
         })
     }
 
@@ -305,26 +333,39 @@ impl ControlStore {
         F: FnOnce(UploadVerification) -> Fut,
         Fut: std::future::Future<Output = Result<(), Status>>,
     {
-        let mut transaction = self.pool.begin().await.map_err(internal)?;
-        let row = sqlx::query("SELECT * FROM uploads WHERE id=$1 AND attempt_id=$2 FOR UPDATE")
-            .bind(id)
-            .bind(attempt)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(internal)?
-            .ok_or_else(|| Status::not_found("upload not found"))?;
-        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM artifacts WHERE id=$1)")
-            .bind(id)
-            .fetch_one(&mut *transaction)
-            .await
-            .map_err(internal)?;
+        let mut transaction_db = self.pool.clone();
+        let mut transaction = transaction_db.transaction().await.map_err(internal)?;
+        let row = sql::optional_record(
+            &mut transaction,
+            "SELECT * FROM uploads WHERE id=$1 AND attempt_id=$2 FOR UPDATE",
+            params![id, attempt],
+            &[
+                ("id", Type::Uuid),
+                ("attempt_id", Type::Uuid),
+                ("path", Type::String),
+                ("object_key", Type::String),
+                ("expected_size", Type::I64),
+                ("expected_sha256", Type::String),
+                ("expires_at", Type::Timestamp),
+            ],
+        )
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| Status::not_found("upload not found"))?;
+        let exists: bool = sql::scalar(
+            &mut transaction,
+            "SELECT EXISTS(SELECT 1 FROM artifacts WHERE id=$1)",
+            params![id],
+        )
+        .await
+        .map_err(internal)?;
         let final_key = format!("artifacts/{id}");
         if !exists {
             promote(UploadVerification {
-                object_key: row.get("object_key"),
+                object_key: row.decode("object_key").map_err(internal)?,
                 final_key: final_key.clone(),
-                expected_size: row.get("expected_size"),
-                expected_sha256: row.get("expected_sha256"),
+                expected_size: row.decode("expected_size").map_err(internal)?,
+                expected_sha256: row.decode("expected_sha256").map_err(internal)?,
             })
             .await?;
         }
@@ -332,15 +373,23 @@ impl ControlStore {
         // so a slow S3 request does not block heartbeat renewal.
         lock_artifact_attempt(&mut transaction, node, attempt, token).await?;
         if !exists {
-            sqlx::query("INSERT INTO artifacts(id,attempt_id,path,object_key,size,sha256) VALUES($1,$2,$3,$4,$5,$6)")
-                .bind(id).bind(attempt).bind(row.get::<String,_>("path")).bind(final_key).bind(row.get::<i64,_>("expected_size")).bind(row.get::<String,_>("expected_sha256")).execute(&mut *transaction).await.map_err(internal)?;
+            super::models::Artifact::create()
+                .id(id)
+                .attempt_id(attempt)
+                .path(row.decode::<String>("path").map_err(internal)?)
+                .object_key(final_key)
+                .size(row.decode::<i64>("expected_size").map_err(internal)?)
+                .sha256(row.decode::<String>("expected_sha256").map_err(internal)?)
+                .exec(&mut transaction)
+                .await
+                .map_err(internal)?;
         }
         transaction.commit().await.map_err(internal)?;
         Ok(CompletedArtifact {
             id,
-            path: row.get("path"),
-            sha256: row.get("expected_sha256"),
-            size: row.get::<i64, _>("expected_size") as u64,
+            path: row.decode("path").map_err(internal)?,
+            sha256: row.decode("expected_sha256").map_err(internal)?,
+            size: row.decode::<i64>("expected_size").map_err(internal)? as u64,
         })
     }
 
@@ -351,8 +400,7 @@ impl ControlStore {
         capabilities: Value,
         diagnostics: Value,
     ) -> Result<(), Status> {
-        sqlx::query("UPDATE nodes SET last_seen=now(),capabilities=$3,diagnostics=$4 WHERE id=$1 AND active_session=$2")
-        .bind(node).bind(session).bind(capabilities).bind(diagnostics).execute(&self.pool).await.map_err(internal)?;
+        sql::execute(&mut self.pool.clone(), "UPDATE nodes SET last_seen=now(),capabilities=$3,diagnostics=$4 WHERE id=$1 AND active_session=$2", params![node, session, capabilities, diagnostics]).await.map_err(internal)?;
         Ok(())
     }
 
@@ -363,16 +411,17 @@ impl ControlStore {
         id: Uuid,
         token: &str,
     ) -> Result<bool, Status> {
-        let mut transaction = self.pool.begin().await.map_err(internal)?;
-        sqlx::query("SELECT id FROM attempts WHERE id=$1 AND node_id=$2 FOR UPDATE")
-            .bind(id)
-            .bind(node)
-            .execute(&mut *transaction)
-            .await
-            .map_err(internal)?;
+        let mut transaction_db = self.pool.clone();
+        let mut transaction = transaction_db.transaction().await.map_err(internal)?;
+        sql::execute(
+            &mut transaction,
+            "SELECT id FROM attempts WHERE id=$1 AND node_id=$2 FOR UPDATE",
+            params![id, node],
+        )
+        .await
+        .map_err(internal)?;
         lock_authorized_node(&mut transaction, node, session).await?;
-        let row=sqlx::query("UPDATE attempts a SET lease_expires_at=clock_timestamp()+interval '90 seconds' FROM jobs j,builds b,nodes n WHERE a.id=$1 AND a.node_id=$2 AND a.lease_token=$3 AND a.status IN ('leased','running') AND a.lease_expires_at>clock_timestamp() AND j.id=a.job_id AND b.id=j.build_id AND NOT b.cancel_requested AND n.id=a.node_id AND n.active_session=$4 AND NOT n.revoked AND n.certificate_expires_at>clock_timestamp() RETURNING a.status")
-                .bind(id).bind(node).bind(token).bind(session).fetch_optional(&mut *transaction).await.map_err(internal)?;
+        let row=sql::optional_record(&mut transaction, "UPDATE attempts a SET lease_expires_at=clock_timestamp()+interval '90 seconds' FROM jobs j,builds b,nodes n WHERE a.id=$1 AND a.node_id=$2 AND a.lease_token=$3 AND a.status IN ('leased','running') AND a.lease_expires_at>clock_timestamp() AND j.id=a.job_id AND b.id=j.build_id AND NOT b.cancel_requested AND n.id=a.node_id AND n.active_session=$4 AND NOT n.revoked AND n.certificate_expires_at>clock_timestamp() RETURNING a.status", params![id, node, token, session], &[("status", Type::String)]).await.map_err(internal)?;
         transaction.commit().await.map_err(internal)?;
         Ok(row.is_some())
     }
@@ -384,36 +433,37 @@ impl ControlStore {
         id: Uuid,
         event: ExecutionEvent<'_>,
     ) -> Result<EventReceipt, Status> {
-        let mut transaction = self.pool.begin().await.map_err(internal)?;
-        let row=sqlx::query("SELECT a.*,j.target_config FROM attempts a JOIN jobs j ON j.id=a.job_id WHERE a.id=$1 AND a.node_id=$2 AND a.lease_token=$3 AND a.lease_expires_at>now() FOR UPDATE OF a,j")
-        .bind(id).bind(node).bind(event.lease_token).fetch_optional(&mut *transaction).await.map_err(internal)?
+        let mut transaction_db = self.pool.clone();
+        let mut transaction = transaction_db.transaction().await.map_err(internal)?;
+        let row=sql::optional_record(&mut transaction, "SELECT a.*,j.target_config FROM attempts a JOIN jobs j ON j.id=a.job_id WHERE a.id=$1 AND a.node_id=$2 AND a.lease_token=$3 AND a.lease_expires_at>now() FOR UPDATE OF a,j", params![id, node, event.lease_token], &[("id", Type::Uuid),("job_id", Type::Uuid),("node_id", Type::Uuid),("lease_token", Type::String),("lease_expires_at", Type::Timestamp),("status", Type::String),("command_id", Type::Uuid),("last_sequence", Type::I64),("error", Type::String),("started_at", Type::Timestamp),("finished_at", Type::Timestamp),("created_at", Type::Timestamp),("plan_revision_id", Type::Uuid),("source_snapshot_id", Type::Uuid),("failure_kind", Type::String),("target_config", Type::String)]).await.map_err(internal)?
         .ok_or_else(|| Status::failed_precondition("attempt lease expired or unknown"))?;
         lock_authorized_node(&mut transaction, node, session).await?;
         // Cancellation can commit while either row lock waits. Read it with the
         // current lease clock after both waits, rather than using the old snapshot.
-        let current = sqlx::query("SELECT a.lease_expires_at>clock_timestamp() AS lease_valid,b.cancel_requested FROM attempts a JOIN jobs j ON j.id=a.job_id JOIN builds b ON b.id=j.build_id WHERE a.id=$1")
-        .bind(id).fetch_one(&mut *transaction).await.map_err(internal)?;
-        if !current.get::<bool, _>("lease_valid") {
+        let current = sql::record(&mut transaction, "SELECT a.lease_expires_at>clock_timestamp() AS lease_valid,b.cancel_requested FROM attempts a JOIN jobs j ON j.id=a.job_id JOIN builds b ON b.id=j.build_id WHERE a.id=$1", params![id], &[("lease_valid", Type::Bool),("cancel_requested", Type::Bool)]).await.map_err(internal)?;
+        if !current.decode::<bool>("lease_valid").map_err(internal)? {
             return Err(Status::failed_precondition(
                 "attempt lease expired while waiting for its lock",
             ));
         }
-        let canceled: bool = current.get("cancel_requested");
-        let status: String = row.get("status");
+        let canceled: bool = current.decode("cancel_requested").map_err(internal)?;
+        let status: String = row.decode("status").map_err(internal)?;
         if event.kind == "accept" {
             if !["leased", "running"].contains(&status.as_str()) || canceled {
                 return Err(Status::failed_precondition("attempt cannot start"));
             }
-            sqlx::query("UPDATE attempts SET status='running',started_at=coalesce(started_at,now()),lease_expires_at=now()+interval '90 seconds' WHERE id=$1").bind(id).execute(&mut *transaction).await.map_err(internal)?;
-            sqlx::query("UPDATE jobs SET status='running' WHERE id=$1")
-                .bind(row.get::<Uuid, _>("job_id"))
-                .execute(&mut *transaction)
-                .await
-                .map_err(internal)?;
+            sql::execute(&mut transaction, "UPDATE attempts SET status='running',started_at=coalesce(started_at,now()),lease_expires_at=now()+interval '90 seconds' WHERE id=$1", params![id]).await.map_err(internal)?;
+            sql::execute(
+                &mut transaction,
+                "UPDATE jobs SET status='running' WHERE id=$1",
+                params![row.decode::<Uuid>("job_id").map_err(internal)?],
+            )
+            .await
+            .map_err(internal)?;
             transaction.commit().await.map_err(internal)?;
             return Ok(EventReceipt::Start);
         }
-        let previous: i64 = row.get("last_sequence");
+        let previous: i64 = row.decode("last_sequence").map_err(internal)?;
         if event.sequence <= previous as u64 {
             return Ok(EventReceipt::Ack(previous as u64));
         }
@@ -425,7 +475,8 @@ impl ControlStore {
         let payload: Value = serde_json::from_str(event.payload_json)
             .map_err(|_| Status::invalid_argument("invalid event payload"))?;
         let target: crate::recipe::Target =
-            serde_json::from_value(row.get("target_config")).map_err(internal)?;
+            serde_json::from_value(row.decode("target_config").map_err(internal)?)
+                .map_err(internal)?;
         match event.kind {
             "source_cache" => {
                 if payload.get("hit").and_then(Value::as_bool).is_none()
@@ -437,9 +488,8 @@ impl ControlStore {
                 {
                     return Err(Status::invalid_argument("invalid source cache event"));
                 }
-                let updated=sqlx::query("UPDATE source_repositories r SET emissary_cache_hits=emissary_cache_hits+CASE WHEN $2 THEN 1 ELSE 0 END,emissary_cache_misses=emissary_cache_misses+CASE WHEN $2 THEN 0 ELSE 1 END WHERE r.id IN (SELECT (entry->>'repository_id')::uuid FROM source_snapshots s CROSS JOIN LATERAL jsonb_array_elements(s.manifest->'repositories') entry JOIN attempts a ON a.source_snapshot_id=s.id WHERE a.id=$1 AND entry->>'path'=$3 AND entry->>'commit'=$4)")
-                .bind(id).bind(payload["hit"].as_bool().unwrap()).bind(payload["path"].as_str().unwrap()).bind(payload["commit"].as_str().unwrap()).execute(&mut *transaction).await.map_err(internal)?;
-                if updated.rows_affected() != 1 {
+                let updated=sql::execute(&mut transaction, "UPDATE source_repositories r SET emissary_cache_hits=emissary_cache_hits+CASE WHEN $2 THEN 1 ELSE 0 END,emissary_cache_misses=emissary_cache_misses+CASE WHEN $2 THEN 0 ELSE 1 END WHERE r.id IN (SELECT (entry->>'repository_id')::uuid FROM source_snapshots s CROSS JOIN LATERAL jsonb_array_elements(s.manifest->'repositories') entry JOIN attempts a ON a.source_snapshot_id=s.id WHERE a.id=$1 AND entry->>'path'=$3 AND entry->>'commit'=$4)", params![id, payload["hit"].as_bool().unwrap(), payload["path"].as_str().unwrap(), payload["commit"].as_str().unwrap()]).await.map_err(internal)?;
+                if updated != 1 {
                     return Err(Status::invalid_argument(
                         "source cache event does not match attempt snapshot",
                     ));
@@ -455,18 +505,25 @@ impl ControlStore {
                     .steps
                     .get(index)
                     .ok_or_else(|| Status::invalid_argument("unknown step"))?;
-                let complete: i64 = sqlx::query_scalar(
+                let complete: i64 = sql::scalar(
+                    &mut transaction,
                     "SELECT count(*) FROM step_runs WHERE attempt_id=$1 AND status='succeeded'",
+                    params![id],
                 )
-                .bind(id)
-                .fetch_one(&mut *transaction)
                 .await
                 .map_err(internal)?;
                 if complete != index as i64 {
                     return Err(Status::failed_precondition("previous steps not complete"));
                 }
-                sqlx::query("INSERT INTO step_runs(attempt_id,step_index,name,phase,status) VALUES($1,$2,$3,$4,'running')")
-                .bind(id).bind(index as i32).bind(&step.name).bind(&step.phase).execute(&mut *transaction).await.map_err(internal)?;
+                super::models::StepRun::create()
+                    .attempt_id(id)
+                    .step_index(index as i32)
+                    .name(&step.name)
+                    .phase(&step.phase)
+                    .status("running")
+                    .exec(&mut transaction)
+                    .await
+                    .map_err(internal)?;
             }
             "step_finished" => {
                 let index = payload
@@ -477,9 +534,8 @@ impl ControlStore {
                     .get("exit_code")
                     .and_then(Value::as_i64)
                     .unwrap_or(-1);
-                let changed=sqlx::query("UPDATE step_runs SET status=$3,exit_code=$4,finished_at=now() WHERE attempt_id=$1 AND step_index=$2 AND status='running'")
-                .bind(id).bind(index as i32).bind(if exit==0 {"succeeded"} else {"failed"}).bind(exit as i32).execute(&mut *transaction).await.map_err(internal)?;
-                if changed.rows_affected() != 1 {
+                let changed=sql::execute(&mut transaction, "UPDATE step_runs SET status=$3,exit_code=$4,finished_at=now() WHERE attempt_id=$1 AND step_index=$2 AND status='running'", params![id, index as i32, if exit==0 {"succeeded"} else {"failed"}, exit as i32]).await.map_err(internal)?;
+                if changed != 1 {
                     return Err(Status::failed_precondition("step not running"));
                 }
             }
@@ -493,19 +549,20 @@ impl ControlStore {
                 }
                 let final_status = if canceled { "canceled" } else { requested };
                 if final_status == "succeeded" {
-                    let complete: i64 = sqlx::query_scalar(
+                    let complete: i64 = sql::scalar(
+                        &mut transaction,
                         "SELECT count(*) FROM step_runs WHERE attempt_id=$1 AND status='succeeded'",
+                        params![id],
                     )
-                    .bind(id)
-                    .fetch_one(&mut *transaction)
                     .await
                     .map_err(internal)?;
-                    let artifacts: i64 =
-                        sqlx::query_scalar("SELECT count(*) FROM artifacts WHERE attempt_id=$1")
-                            .bind(id)
-                            .fetch_one(&mut *transaction)
-                            .await
-                            .map_err(internal)?;
+                    let artifacts: i64 = sql::scalar(
+                        &mut transaction,
+                        "SELECT count(*) FROM artifacts WHERE attempt_id=$1",
+                        params![id],
+                    )
+                    .await
+                    .map_err(internal)?;
                     if complete != target.steps.len() as i64 || artifacts == 0 {
                         return Err(Status::failed_precondition(
                             "steps or verified artifacts missing",
@@ -528,39 +585,37 @@ impl ControlStore {
                 {
                     return Err(Status::invalid_argument("invalid failure kind"));
                 }
-                sqlx::query("UPDATE attempts SET status=$2,error=$3,failure_kind=$4,finished_at=now() WHERE id=$1")
-                .bind(id)
-                .bind(final_status)
-                .bind(error)
-                .bind(failure)
-                .execute(&mut *transaction)
+                sql::execute(&mut transaction, "UPDATE attempts SET status=$2,error=$3,failure_kind=$4,finished_at=now() WHERE id=$1", params![id, final_status, error, failure])
                 .await
                 .map_err(internal)?;
-                sqlx::query("UPDATE jobs SET status=$2 WHERE id=$1")
-                    .bind(row.get::<Uuid, _>("job_id"))
-                    .bind(final_status)
-                    .execute(&mut *transaction)
-                    .await
-                    .map_err(internal)?;
+                sql::execute(
+                    &mut transaction,
+                    "UPDATE jobs SET status=$2 WHERE id=$1",
+                    params![
+                        row.decode::<Uuid>("job_id").map_err(internal)?,
+                        final_status
+                    ],
+                )
+                .await
+                .map_err(internal)?;
             }
             _ => return Err(Status::invalid_argument("unknown task event")),
         }
-        sqlx::query(
-            "INSERT INTO attempt_events(attempt_id,sequence,kind,payload) VALUES($1,$2,$3,$4)",
-        )
-        .bind(id)
-        .bind(event.sequence as i64)
-        .bind(event.kind)
-        .bind(payload)
-        .execute(&mut *transaction)
-        .await
-        .map_err(internal)?;
-        sqlx::query("UPDATE attempts SET last_sequence=$2 WHERE id=$1")
-            .bind(id)
-            .bind(event.sequence as i64)
-            .execute(&mut *transaction)
+        super::models::AttemptEvent::create()
+            .attempt_id(id)
+            .sequence(event.sequence as i64)
+            .kind(event.kind)
+            .payload(toasty::Json((payload).clone()))
+            .exec(&mut transaction)
             .await
             .map_err(internal)?;
+        sql::execute(
+            &mut transaction,
+            "UPDATE attempts SET last_sequence=$2 WHERE id=$1",
+            params![id, event.sequence as i64],
+        )
+        .await
+        .map_err(internal)?;
         transaction.commit().await.map_err(internal)?;
         Ok(EventReceipt::Ack(event.sequence))
     }

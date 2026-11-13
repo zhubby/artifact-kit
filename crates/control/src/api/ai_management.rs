@@ -1,3 +1,4 @@
+use crate::store::dto;
 pub use crate::store::{ProfileInput, WorkerUpdate};
 use crate::{
     auth::Auth,
@@ -79,12 +80,18 @@ fn validate(state: &AppState, input: &ProfileInput) -> Result<()> {
     Ok(())
 }
 
-pub async fn profiles(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
+pub async fn profiles(
+    State(state): State<AppState>,
+    auth: Auth,
+) -> Result<Json<Vec<dto::ModelProfile>>> {
     auth.session_role("admin")?;
     Ok(Json(state.store.model_profiles().await?))
 }
 
-pub async fn model_options(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
+pub async fn model_options(
+    State(state): State<AppState>,
+    auth: Auth,
+) -> Result<Json<Vec<dto::ModelOption>>> {
     auth.session_role("operator")?;
     Ok(Json(state.store.model_options().await?))
 }
@@ -138,7 +145,10 @@ pub async fn delete_profile(
     Ok(Json(json!({"ok":true})))
 }
 
-pub async fn workers(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
+pub async fn workers(
+    State(state): State<AppState>,
+    auth: Auth,
+) -> Result<Json<Vec<dto::WorkerSummary>>> {
     auth.session_role("admin")?;
     Ok(Json(state.store.workers().await?))
 }
@@ -174,7 +184,10 @@ pub async fn enrollment(State(state): State<AppState>, auth: Auth) -> Result<Jso
         .await?;
     Ok(Json(json!({"id":id,"token":token,"expires_in":900})))
 }
-pub async fn source_metrics(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
+pub async fn source_metrics(
+    State(state): State<AppState>,
+    auth: Auth,
+) -> Result<Json<Vec<dto::SourceRepositorySummary>>> {
     auth.session_role("admin")?;
     Ok(Json(state.store.source_metrics().await?))
 }
@@ -200,6 +213,6 @@ pub async fn plans(
     State(state): State<AppState>,
     auth: Auth,
     Path(id): Path<Uuid>,
-) -> Result<Json<Value>> {
+) -> Result<Json<dto::BuildPlans>> {
     Ok(Json(state.store.plans(id, &auth).await?))
 }

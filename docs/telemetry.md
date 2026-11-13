@@ -1,6 +1,6 @@
 # Emissary 时序观测
 
-所有后端使用 TimescaleDB 2.32+。默认镜像为 `timescale/timescaledb:2.32.0-pg17`，继续使用 SQLx PostgreSQL 驱动。Control、Runtime、Source 的状态表保持普通关系表；遥测使用独立逻辑数据库、写池、查询池和 Rust 服务。
+所有后端使用 TimescaleDB 2.32+。默认镜像为 `timescale/timescaledb:2.32.0-pg17`，数据库访问统一由 store 层通过 Toasty 0.11 执行；连接恢复补丁及来源记录位于 `vendor/toasty/PATCH.md`。Control、Runtime、Source 的状态表保持普通关系表；遥测使用独立逻辑数据库、写池、查询池和 Rust 服务。
 
 ```mermaid
 flowchart LR

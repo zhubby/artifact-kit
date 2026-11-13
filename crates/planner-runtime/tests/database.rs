@@ -1,3 +1,5 @@
+use artifactory_database::{PoolSettings, connect, with_options};
+use artifactory_database::{params, sql};
 use artifactory_planner_runtime::{
     lifecycle::Lifecycle,
     server::{self, Runtime},
@@ -6,15 +8,12 @@ use artifactory_runtime_protocol::{
     Execution, Lease, ModelConfiguration, RunIntent, crypto, service::Client,
 };
 use serde_json::{Value, json};
-use sqlx::{
-    Row,
-    postgres::{PgConnectOptions, PgPoolOptions},
-};
-use std::{str::FromStr, sync::Arc};
+use std::sync::Arc;
+use toasty::stmt::Type;
 use uuid::Uuid;
 struct TestRuntime {
     runtime: Runtime,
-    pool: sqlx::PgPool,
+    pool: toasty::Db,
 }
 impl std::ops::Deref for TestRuntime {
     type Target = Runtime;
@@ -30,21 +29,28 @@ impl TestRuntime {
 async fn state() -> TestRuntime {
     let url = std::env::var("ARTIFACTORY_TEST_DATABASE_URL")
         .expect("ARTIFACTORY_TEST_DATABASE_URL required");
-    let admin = PgPoolOptions::new().connect(&url).await.unwrap();
+    let admin = connect(&url, Default::default(), PoolSettings::new(2))
+        .await
+        .unwrap();
     let schema = format!("rt_{}", Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
-        .execute(&admin)
+    sql::execute(
+        &mut admin.clone(),
+        &format!("CREATE SCHEMA {schema}"),
+        params![],
+    )
+    .await
+    .unwrap();
+    let scoped = with_options(&url, &[("search_path", &schema)]).unwrap();
+    let pool = connect(
+        &scoped,
+        artifactory_planner_runtime::store::models(),
+        PoolSettings::new(12),
+    )
+    .await
+    .unwrap();
+    artifactory_database::migrate(&pool, &artifactory_planner_runtime::store::MIGRATIONS)
         .await
         .unwrap();
-    let options = PgConnectOptions::from_str(&url)
-        .unwrap()
-        .options([("search_path", schema.as_str())]);
-    let pool = PgPoolOptions::new()
-        .max_connections(12)
-        .connect_with(options)
-        .await
-        .unwrap();
-    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
     let runtime = Runtime {
         store: artifactory_planner_runtime::store::RuntimeStore::new(
             pool.clone(),
@@ -92,13 +98,17 @@ async fn owner(s: &TestRuntime, run: Uuid) -> Lease {
     life.acquire(1, "pod-a", chrono::Utc::now().timestamp_millis(), 600000)
         .unwrap();
     let token = crypto::token();
-    sqlx::query("UPDATE runtime_runs SET status='running',lifecycle=$2,grant_hash=$3 WHERE id=$1")
-        .bind(run)
-        .bind(serde_json::to_value(life).unwrap())
-        .bind(crypto::hash(&token))
-        .execute(&s.pool)
-        .await
-        .unwrap();
+    sql::execute(
+        &mut s.pool.clone(),
+        "UPDATE runtime_runs SET status='running',lifecycle=$2,grant_hash=$3 WHERE id=$1",
+        params![
+            run,
+            serde_json::to_value(life).unwrap(),
+            crypto::hash(&token)
+        ],
+    )
+    .await
+    .unwrap();
     Lease {
         run_id: run,
         generation: 1,
@@ -118,12 +128,13 @@ async fn intents_are_idempotent_conflicting_payloads_fail_and_cancel_before_crea
     let mut other = value.clone();
     other["pool"] = json!("other");
     assert!(server::put_intent(&s, other).await.is_err());
-    let ciphertext: String =
-        sqlx::query_scalar("SELECT intent_ciphertext FROM runtime_runs WHERE id=$1")
-            .bind(run)
-            .fetch_one(&s.pool)
-            .await
-            .unwrap();
+    let ciphertext: String = sql::scalar(
+        &mut s.pool.clone(),
+        "SELECT intent_ciphertext FROM runtime_runs WHERE id=$1",
+        params![run],
+    )
+    .await
+    .unwrap();
     assert!(!ciphertext.contains("private-provider-key"));
     let canceled = Uuid::new_v4();
     server::put_intent(&s, json!({"run_id":canceled,"version":2,"canceled":true}))
@@ -173,12 +184,13 @@ async fn duplicate_pod_and_old_generation_cannot_report_or_submit_and_proposal_s
     let mut conflict = value;
     conflict["arguments"] = json!({});
     assert!(server::tool_call(&s, conflict).await.is_err());
-    let proposals: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM runtime_proposals WHERE run_id=$1")
-            .bind(run)
-            .fetch_one(&s.pool)
-            .await
-            .unwrap();
+    let proposals: i64 = sql::scalar(
+        &mut s.pool.clone(),
+        "SELECT count(*) FROM runtime_proposals WHERE run_id=$1",
+        params![run],
+    )
+    .await
+    .unwrap();
     assert_eq!(proposals, 1);
     let mut stale = lease.clone();
     stale.uid = "pod-b".into();
@@ -204,12 +216,19 @@ async fn replayed_and_out_of_order_checkpoints_do_not_overwrite_newer_state() {
     server::report_event(&s, event.clone()).await.unwrap();
     server::report_event(&s, event).await.unwrap();
     server::report_event(&s,json!({"lease":lease,"event_id":Uuid::new_v4(),"sequence":1,"kind":"checkpoint","payload":{"messages":"old"}})).await.unwrap();
-    let row = sqlx::query("SELECT checkpoint FROM runtime_runs WHERE id=$1")
-        .bind(run)
-        .fetch_one(&s.pool)
-        .await
-        .unwrap();
-    assert_eq!(row.get::<Value, _>("checkpoint")["messages"], "newer");
+    let row = sql::record(
+        &mut s.pool.clone(),
+        "SELECT checkpoint FROM runtime_runs WHERE id=$1",
+        params![run],
+        &[("checkpoint", Type::String)],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        row.decode::<Value>("checkpoint")
+            .expect("database projection")["messages"],
+        "newer"
+    );
 }
 
 type Requests = Arc<std::sync::Mutex<Vec<(String, String, Value)>>>;
@@ -262,12 +281,16 @@ async fn fixture_run(s: &TestRuntime, origin: &str, api: &str) -> (Uuid, Lease) 
         .unwrap();
     // Only the test upstream is plaintext; production endpoint validation remains enabled.
     input.model.base_url = format!("{origin}/v1");
-    sqlx::query("UPDATE runtime_runs SET intent_ciphertext=$2 WHERE id=$1")
-        .bind(run)
-        .bind(crypto::seal(&s.key, &serde_json::to_vec(&input).unwrap()).unwrap())
-        .execute(&s.pool)
-        .await
-        .unwrap();
+    sql::execute(
+        &mut s.pool.clone(),
+        "UPDATE runtime_runs SET intent_ciphertext=$2 WHERE id=$1",
+        params![
+            run,
+            crypto::seal(&s.key, &serde_json::to_vec(&input).unwrap()).unwrap()
+        ],
+    )
+    .await
+    .unwrap();
     (run, owner(s, run).await)
 }
 fn model_request(lease: &Lease, request_id: Uuid) -> axum::extract::Request {
@@ -410,8 +433,7 @@ async fn ten_thousand_queued_runs_admit_only_pool_capacity_even_with_concurrent_
         project_ids.push(input.project_id);
         encrypted.push(crypto::seal(&s.key, &serde_json::to_vec(&input).unwrap()).unwrap());
     }
-    sqlx::query("INSERT INTO runtime_runs(id,version,intent_hash,intent_ciphertext,project_id,pool,snapshot_id,snapshot_digest,lifecycle,status) SELECT id,1,'fixture',ciphertext,project,'default',$4,$5,$6,'queued' FROM unnest($1::uuid[],$2::text[],$3::uuid[]) AS t(id,ciphertext,project)")
-        .bind(&ids).bind(&encrypted).bind(&project_ids).bind(model.unwrap()).bind("a".repeat(64)).bind(serde_json::to_value(Lifecycle::new(2)).unwrap()).execute(&s.pool).await.unwrap();
+    sql::execute(&mut s.pool.clone(), "INSERT INTO runtime_runs(id,version,intent_hash,intent_ciphertext,project_id,pool,snapshot_id,snapshot_digest,lifecycle,status) SELECT id,1,'fixture',ciphertext,project,'default',$4,$5,$6,'queued' FROM unnest($1::uuid[],$2::text[],$3::uuid[]) AS t(id,ciphertext,project)", params![&ids, &encrypted, &project_ids, model.unwrap(), "a".repeat(64), serde_json::to_value(Lifecycle::new(2)).unwrap()]).await.unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/v1/queue", listener.local_addr().unwrap());
     let app = server::router(s.clone(), "x".repeat(64));
@@ -438,15 +460,17 @@ async fn ten_thousand_queued_runs_admit_only_pool_capacity_even_with_concurrent_
             assert!(value["runs"].as_array().unwrap().len() <= 8);
         }
     }
-    let active: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM runtime_runs WHERE status='provisioning'")
-            .fetch_one(&s.pool)
-            .await
-            .unwrap();
+    let active: i64 = sql::scalar(
+        &mut s.pool.clone(),
+        "SELECT count(*) FROM runtime_runs WHERE status='provisioning'",
+        params![],
+    )
+    .await
+    .unwrap();
     assert_eq!(active, 8);
-    let highest:i64=sqlx::query_scalar("SELECT max(n)::bigint FROM (SELECT count(*) n FROM runtime_runs WHERE status='provisioning' GROUP BY project_id) c").fetch_one(&s.pool).await.unwrap();
+    let highest:i64=sql::scalar(&mut s.pool.clone(), "SELECT max(n)::bigint FROM (SELECT count(*) n FROM runtime_runs WHERE status='provisioning' GROUP BY project_id) c", params![]).await.unwrap();
     assert_eq!(highest, 2);
-    let untouched:i64=sqlx::query_scalar("SELECT count(*) FROM runtime_runs WHERE status='queued' AND (lifecycle->>'deadline_ms') IS NULL AND (lifecycle->>'calls')::int=0").fetch_one(&s.pool).await.unwrap();
+    let untouched:i64=sql::scalar(&mut s.pool.clone(), "SELECT count(*) FROM runtime_runs WHERE status='queued' AND (lifecycle->>'deadline_ms') IS NULL AND (lifecycle->>'calls')::int=0", params![]).await.unwrap();
     assert_eq!(untouched, 9_992);
     task.abort();
 }
@@ -508,22 +532,27 @@ async fn profile_rate_reservations_are_shared_across_different_runs() {
     let mut runs = Vec::new();
     for _ in 0..3 {
         let (run, lease) = fixture_run(&s, &origin, "openai-completions").await;
-        let ciphertext: String =
-            sqlx::query_scalar("SELECT intent_ciphertext FROM runtime_runs WHERE id=$1")
-                .bind(run)
-                .fetch_one(&s.pool)
-                .await
-                .unwrap();
+        let ciphertext: String = sql::scalar(
+            &mut s.pool.clone(),
+            "SELECT intent_ciphertext FROM runtime_runs WHERE id=$1",
+            params![run],
+        )
+        .await
+        .unwrap();
         let mut cfg: RunIntent =
             serde_json::from_slice(&crypto::open(&s.key, &ciphertext).unwrap()).unwrap();
         cfg.model.id = profile;
         cfg.model.parameters = json!({"requests_per_minute":600});
-        sqlx::query("UPDATE runtime_runs SET intent_ciphertext=$2 WHERE id=$1")
-            .bind(run)
-            .bind(crypto::seal(&s.key, &serde_json::to_vec(&cfg).unwrap()).unwrap())
-            .execute(&s.pool)
-            .await
-            .unwrap();
+        sql::execute(
+            &mut s.pool.clone(),
+            "UPDATE runtime_runs SET intent_ciphertext=$2 WHERE id=$1",
+            params![
+                run,
+                crypto::seal(&s.key, &serde_json::to_vec(&cfg).unwrap()).unwrap()
+            ],
+        )
+        .await
+        .unwrap();
         runs.push((run, lease));
     }
     let began = std::time::Instant::now();

@@ -1,3 +1,4 @@
+use crate::store::dto;
 pub use crate::store::{NewToken, NodeUpdate};
 use crate::{
     auth::{self, Auth},
@@ -14,13 +15,16 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-pub async fn overview(State(state): State<AppState>, auth: Auth) -> Result<Json<Value>> {
+pub async fn overview(State(state): State<AppState>, auth: Auth) -> Result<Json<dto::Overview>> {
     auth.session_role("viewer")?;
-    let value: Value = state.store.overview().await?;
+    let value = state.store.overview().await?;
     Ok(Json(value))
 }
 
-pub async fn users(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
+pub async fn users(
+    State(state): State<AppState>,
+    auth: Auth,
+) -> Result<Json<Vec<dto::UserSummary>>> {
     auth.session_role("admin")?;
     Ok(Json(state.store.users().await?))
 }
@@ -58,7 +62,10 @@ pub async fn create_user(
     Ok(Json(json!({"id":id})))
 }
 
-pub async fn tokens(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
+pub async fn tokens(
+    State(state): State<AppState>,
+    auth: Auth,
+) -> Result<Json<Vec<dto::TokenSummary>>> {
     auth.session_role("viewer")?;
     Ok(Json(state.store.tokens(auth.user_id).await?))
 }
@@ -115,7 +122,10 @@ pub async fn revoke_token(
     Ok(Json(json!({"ok":true})))
 }
 
-pub async fn pools(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
+pub async fn pools(
+    State(state): State<AppState>,
+    auth: Auth,
+) -> Result<Json<Vec<dto::PoolSummary>>> {
     auth.session_role("viewer")?;
     Ok(Json(state.store.pools().await?))
 }
@@ -172,7 +182,10 @@ pub async fn enrollment_token(
     Ok(Json(json!({"id":id,"token":token,"expires_seconds":900})))
 }
 
-pub async fn nodes(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
+pub async fn nodes(
+    State(state): State<AppState>,
+    auth: Auth,
+) -> Result<Json<Vec<dto::NodeSummary>>> {
     auth.session_role("viewer")?;
     Ok(Json(state.store.nodes().await?))
 }
@@ -203,7 +216,10 @@ pub async fn update_node(
     Ok(Json(json!({"ok":true})))
 }
 
-pub async fn credentials(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
+pub async fn credentials(
+    State(state): State<AppState>,
+    auth: Auth,
+) -> Result<Json<Vec<dto::CredentialSummary>>> {
     auth.session_role("admin")?;
     Ok(Json(state.store.credentials().await?))
 }
@@ -259,7 +275,10 @@ pub async fn create_credential(
     Ok(Json(json!({"id":id})))
 }
 
-pub async fn audit(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
+pub async fn audit(
+    State(state): State<AppState>,
+    auth: Auth,
+) -> Result<Json<Vec<dto::AuditEvent>>> {
     auth.session_role("admin")?;
     Ok(Json(state.store.audit_events().await?))
 }

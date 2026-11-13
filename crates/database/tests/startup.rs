@@ -1,33 +1,35 @@
-use sqlx::{
-    Connection, PgConnection,
-    postgres::{PgConnectOptions, PgPoolOptions},
-};
+use artifactory_database::{PoolSettings, connect, with_database};
+use artifactory_database::{params, sql};
 use uuid::Uuid;
 
 #[tokio::test]
 #[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL on an isolated TimescaleDB administrator database"]
 async fn application_role_checks_extension_without_administrator_settings() {
-    let options: PgConnectOptions = std::env::var("ARTIFACTORY_TEST_DATABASE_URL")
-        .expect("test database URL")
-        .parse()
-        .unwrap();
-    let mut admin = PgConnection::connect_with(&options).await.unwrap();
-    let name = format!("startup_test_{}", Uuid::new_v4().simple());
-    let password = Uuid::new_v4().simple().to_string();
-    sqlx::query(&format!("CREATE ROLE {name} LOGIN PASSWORD '{password}'"))
-        .execute(&mut admin)
+    let url = std::env::var("ARTIFACTORY_TEST_DATABASE_URL").expect("test database URL");
+    let mut admin = connect(&url, Default::default(), PoolSettings::new(2))
         .await
         .unwrap();
-    sqlx::query(&format!(
-        "CREATE DATABASE {name} TEMPLATE template0 OWNER {name}"
-    ))
-    .execute(&mut admin)
+    let name = format!("startup_test_{}", Uuid::new_v4().simple());
+    let password = Uuid::new_v4().simple().to_string();
+    sql::execute(
+        &mut admin,
+        &format!("CREATE ROLE {name} LOGIN PASSWORD '{password}'"),
+        params![],
+    )
     .await
     .unwrap();
-    let database = options.database(&name);
-    let pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect_with(database.clone().username(&name).password(&password))
+    sql::execute(
+        &mut admin,
+        &format!("CREATE DATABASE {name} TEMPLATE template0 OWNER {name}"),
+        params![],
+    )
+    .await
+    .unwrap();
+    let database = with_database(&url, &name).unwrap();
+    let mut identity = url::Url::parse(&database).unwrap();
+    identity.set_username(&name).unwrap();
+    identity.set_password(Some(&password)).unwrap();
+    let pool = connect(identity.as_str(), Default::default(), PoolSettings::new(1))
         .await
         .unwrap();
     assert!(
@@ -35,29 +37,35 @@ async fn application_role_checks_extension_without_administrator_settings() {
             .await
             .is_err()
     );
-    let mut provisioner = PgConnection::connect_with(&database).await.unwrap();
-    sqlx::query("CREATE EXTENSION timescaledb")
-        .execute(&mut provisioner)
+    let mut provisioner = connect(&database, Default::default(), PoolSettings::new(1))
         .await
         .unwrap();
-    provisioner.close().await.unwrap();
+    sql::execute(&mut provisioner, "CREATE EXTENSION timescaledb", params![])
+        .await
+        .unwrap();
+    drop(provisioner);
     assert!(
-        sqlx::query("SHOW shared_preload_libraries")
-            .execute(&pool)
-            .await
-            .is_err(),
+        sql::execute(
+            &mut pool.clone(),
+            "SHOW shared_preload_libraries",
+            params![]
+        )
+        .await
+        .is_err(),
         "the application role must not need privileged configuration access"
     );
     artifactory_database::require_timescale(&pool)
         .await
         .unwrap();
-    pool.close().await;
-    sqlx::query(&format!("DROP DATABASE {name}"))
-        .execute(&mut admin)
-        .await
-        .unwrap();
-    sqlx::query(&format!("DROP ROLE {name}"))
-        .execute(&mut admin)
+    drop(pool);
+    sql::execute(
+        &mut admin,
+        &format!("DROP DATABASE {name} WITH (FORCE)"),
+        params![],
+    )
+    .await
+    .unwrap();
+    sql::execute(&mut admin, &format!("DROP ROLE {name}"), params![])
         .await
         .unwrap();
 }

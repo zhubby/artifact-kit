@@ -1,15 +1,18 @@
 //! Runtime persistence. Lifecycle rules execute with the locked persistent state.
+mod models;
 use crate::{lifecycle::Lifecycle, server::id};
 use anyhow::{Context, Result, ensure};
+use artifactory_database::{params, sql};
 use artifactory_runtime_protocol::{Execution, Lease, RunIntent, crypto};
 use chrono::Utc;
 use serde_json::{Value, json};
-use sqlx::{Row, postgres::PgRow};
+use toasty::stmt::Type;
+
 use std::sync::Arc;
 use uuid::Uuid;
 #[derive(Clone)]
 pub struct RuntimeStore {
-    pool: sqlx::PgPool,
+    pool: toasty::Db,
     key: Arc<[u8; 32]>,
 }
 pub struct RuntimeMetrics {
@@ -48,80 +51,104 @@ pub enum ModelReservation {
     },
 }
 
-async fn locked(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, run: Uuid) -> Result<PgRow> {
-    Ok(
-        sqlx::query("SELECT * FROM runtime_runs WHERE id=$1 FOR UPDATE")
-            .bind(run)
-            .fetch_one(&mut **tx)
-            .await?,
+async fn locked(tx: &mut toasty::db::Transaction<'_>, run: Uuid) -> Result<sql::Record> {
+    Ok(sql::record(
+        tx,
+        "SELECT * FROM runtime_runs WHERE id=$1 FOR UPDATE",
+        params![run],
+        &[
+            ("id", Type::Uuid),
+            ("version", Type::I64),
+            ("intent_hash", Type::String),
+            ("intent_ciphertext", Type::String),
+            ("project_id", Type::Uuid),
+            ("pool", Type::String),
+            ("snapshot_id", Type::Uuid),
+            ("snapshot_digest", Type::String),
+            ("lifecycle", Type::String),
+            ("status", Type::String),
+            ("execution", Type::String),
+            ("grant_hash", Type::String),
+            ("grant_ciphertext", Type::String),
+            ("checkpoint", Type::String),
+            ("usage", Type::String),
+            ("report_sequence", Type::I64),
+            ("created_at", Type::Timestamp),
+            ("dispatched_at", Type::Timestamp),
+            ("updated_at", Type::Timestamp),
+        ],
     )
+    .await?)
 }
-fn config(s: &RuntimeStore, row: &PgRow) -> Result<RunIntent> {
+fn config(s: &RuntimeStore, row: &sql::Record) -> Result<RunIntent> {
     Ok(serde_json::from_slice(&crypto::open(
         &s.key,
-        &row.get::<String, _>("intent_ciphertext"),
+        &row.decode::<String>("intent_ciphertext")?,
     )?)?)
 }
-fn authorized(row: &PgRow, lease: &Lease) -> Result<Lifecycle> {
+fn authorized(row: &sql::Record, lease: &Lease) -> Result<Lifecycle> {
     ensure!(
-        row.get::<Option<String>, _>("grant_hash").as_deref() == Some(&crypto::hash(&lease.token)),
+        row.decode::<Option<String>>("grant_hash")?.as_deref() == Some(&crypto::hash(&lease.token)),
         "invalid run grant"
     );
-    let life: Lifecycle = serde_json::from_value(row.get("lifecycle"))?;
+    let life: Lifecycle = serde_json::from_value(row.decode("lifecycle")?)?;
     life.valid(lease.generation, &lease.uid, Utc::now().timestamp_millis())?;
     ensure!(
         !["succeeded", "needs_input", "failed", "canceled"]
-            .contains(&row.get::<String, _>("status").as_str()),
+            .contains(&row.decode::<String>("status")?.as_str()),
         "run is terminal"
     );
     Ok(life)
 }
-async fn save(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    run: Uuid,
-    life: &Lifecycle,
-) -> Result<()> {
-    sqlx::query("UPDATE runtime_runs SET lifecycle=$2,updated_at=now() WHERE id=$1")
-        .bind(run)
-        .bind(serde_json::to_value(life)?)
-        .execute(&mut **tx)
-        .await?;
+async fn save(tx: &mut toasty::db::Transaction<'_>, run: Uuid, life: &Lifecycle) -> Result<()> {
+    sql::execute(
+        tx,
+        "UPDATE runtime_runs SET lifecycle=$2,updated_at=now() WHERE id=$1",
+        params![run, serde_json::to_value(life)?],
+    )
+    .await?;
     Ok(())
 }
 async fn enqueue(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut toasty::db::Transaction<'_>,
     run: Uuid,
     kind: &str,
     payload: Value,
 ) -> Result<Uuid> {
     let event = Uuid::new_v4();
-    sqlx::query("INSERT INTO runtime_outbox(id,run_id,kind,payload) VALUES($1,$2,$3,$4)")
-        .bind(event)
-        .bind(run)
-        .bind(kind)
-        .bind(payload)
-        .execute(&mut **tx)
+    models::Outbox::create()
+        .id(event)
+        .run_id(run)
+        .kind(kind)
+        .payload(toasty::Json(payload))
+        .exec(tx)
         .await?;
     Ok(event)
 }
 impl RuntimeStore {
-    pub fn new(pool: sqlx::PgPool, key: Arc<[u8; 32]>) -> Self {
+    pub fn new(pool: toasty::Db, key: Arc<[u8; 32]>) -> Self {
         Self { pool, key }
     }
     pub async fn metrics(&self) -> Result<RuntimeMetrics> {
-        let rows = sqlx::query("SELECT status,count(*) AS runs FROM runtime_runs GROUP BY status")
-            .fetch_all(&self.pool)
-            .await?;
-        let (calls,pending,oldest):(i64,i64,f64)=sqlx::query_as("SELECT coalesce(sum((lifecycle->>'calls')::bigint),0)::bigint,count(*) FILTER(WHERE (lifecycle->>'pending')::bool),coalesce(max(extract(epoch FROM now()-created_at)) FILTER(WHERE status='queued'),0)::float8 FROM runtime_runs").fetch_one(&self.pool).await?;
-        let outbox: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM runtime_outbox WHERE NOT delivered")
-                .fetch_one(&self.pool)
-                .await?;
+        let rows = sql::records(
+            &mut self.pool.clone(),
+            "SELECT status,count(*) AS runs FROM runtime_runs GROUP BY status",
+            params![],
+            &[("status", Type::String), ("runs", Type::I64)],
+        )
+        .await?;
+        let (calls,pending,oldest):(i64,i64,f64)=sql::tuple(&mut self.pool.clone(), "SELECT coalesce(sum((lifecycle->>'calls')::bigint),0)::bigint,count(*) FILTER(WHERE (lifecycle->>'pending')::bool),coalesce(max(extract(epoch FROM now()-created_at)) FILTER(WHERE status='queued'),0)::float8 FROM runtime_runs", params![]).await?;
+        let outbox: i64 = sql::scalar(
+            &mut self.pool.clone(),
+            "SELECT count(*) FROM runtime_outbox WHERE NOT delivered",
+            params![],
+        )
+        .await?;
         Ok(RuntimeMetrics {
             statuses: rows
                 .into_iter()
-                .map(|row| (row.get("status"), row.get("runs")))
-                .collect(),
+                .map(|row| Ok((row.decode("status")?, row.decode("runs")?)))
+                .collect::<artifactory_database::Result<_>>()?,
             calls,
             pending,
             oldest,
@@ -138,67 +165,89 @@ impl RuntimeStore {
         intent: Option<RunIntent>,
         ciphertext: Option<String>,
     ) -> Result<Value> {
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
-            .bind(run.to_string())
-            .execute(&mut *tx)
-            .await?;
-        if let Some(row) = sqlx::query(
-            "SELECT version,intent_hash,status FROM runtime_runs WHERE id=$1 FOR UPDATE",
+        let mut tx_db = self.pool.clone();
+        let mut tx = tx_db.transaction().await?;
+        sql::execute(
+            &mut tx,
+            "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+            params![run.to_string()],
         )
-        .bind(run)
-        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(row) = sql::optional_record(
+            &mut tx,
+            "SELECT version,intent_hash,status FROM runtime_runs WHERE id=$1 FOR UPDATE",
+            params![run],
+            &[
+                ("version", Type::I64),
+                ("intent_hash", Type::String),
+                ("status", Type::String),
+            ],
+        )
         .await?
         {
-            if row.get::<i64, _>("version") > version {
+            if row.decode::<i64>("version")? > version {
                 return Ok(json!({"ok":true,"stale":true}));
             }
-            if row.get::<i64, _>("version") == version {
+            if row.decode::<i64>("version")? == version {
                 ensure!(
-                    row.get::<Option<String>, _>("intent_hash").as_deref() == Some(&hash),
+                    row.decode::<Option<String>>("intent_hash")?.as_deref() == Some(&hash),
                     "intent ID/version reused with different input"
                 );
                 return Ok(json!({"ok":true}));
             }
             ensure!(cancel, "running intent is immutable");
-            sqlx::query("UPDATE runtime_runs SET version=$2,intent_hash=$3,status='canceled',lifecycle=jsonb_set(lifecycle,'{canceled}','true'),updated_at=now() WHERE id=$1").bind(run).bind(version).bind(hash).execute(&mut *tx).await?;
+            sql::execute(&mut tx, "UPDATE runtime_runs SET version=$2,intent_hash=$3,status='canceled',lifecycle=jsonb_set(lifecycle,'{canceled}','true'),updated_at=now() WHERE id=$1", params![run, version, hash]).await?;
         } else {
             let mut life = Lifecycle::new(intent.as_ref().map_or(20, |i| i.model.max_calls));
             life.canceled = cancel;
-            sqlx::query("INSERT INTO runtime_runs(id,version,intent_hash,intent_ciphertext,project_id,pool,snapshot_id,snapshot_digest,lifecycle,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
-   .bind(run).bind(version).bind(hash).bind(ciphertext).bind(intent.as_ref().map(|i|i.project_id)).bind(intent.as_ref().map(|i|&i.pool)).bind(intent.as_ref().map(|i|i.snapshot_id)).bind(intent.as_ref().map(|i|&i.snapshot_digest)).bind(serde_json::to_value(life)?).bind(if cancel{"canceled"}else{"queued"}).execute(&mut *tx).await?;
-        }
-        tx.commit().await?;
-        Ok(json!({"ok":true}))
-    }
-
-    pub async fn register_execution(&self, execution: Execution) -> Result<Value> {
-        let mut tx = self.pool.begin().await?;
-        let row = locked(&mut tx, execution.run_id).await?;
-        let life: Lifecycle = serde_json::from_value(row.get("lifecycle"))?;
-        ensure!(
-            !life.canceled && life.generation == execution.generation,
-            "execution fenced"
-        );
-        let existing: Option<Value> = row.get("execution");
-        if let Some(existing) = existing {
-            ensure!(
-                existing == serde_json::to_value(&execution)?,
-                "execution identity already registered"
-            );
-        } else {
-            sqlx::query("UPDATE runtime_runs SET execution=$2 WHERE id=$1")
-                .bind(execution.run_id)
-                .bind(serde_json::to_value(execution)?)
-                .execute(&mut *tx)
+            models::Run::create()
+                .id(run)
+                .version(version)
+                .intent_hash(hash)
+                .intent_ciphertext(ciphertext)
+                .project_id(intent.as_ref().map(|i| i.project_id))
+                .pool(intent.as_ref().map(|i| i.pool.clone()))
+                .snapshot_id(intent.as_ref().map(|i| i.snapshot_id))
+                .snapshot_digest(intent.as_ref().map(|i| i.snapshot_digest.clone()))
+                .lifecycle(toasty::Json(serde_json::to_value(life)?))
+                .status(if cancel { "canceled" } else { "queued" })
+                .exec(&mut tx)
                 .await?;
         }
         tx.commit().await?;
         Ok(json!({"ok":true}))
     }
 
+    pub async fn register_execution(&self, execution: Execution) -> Result<Value> {
+        let mut tx_db = self.pool.clone();
+        let mut tx = tx_db.transaction().await?;
+        let row = locked(&mut tx, execution.run_id).await?;
+        let life: Lifecycle = serde_json::from_value(row.decode("lifecycle")?)?;
+        ensure!(
+            !life.canceled && life.generation == execution.generation,
+            "execution fenced"
+        );
+        let existing: Option<Value> = row.decode("execution")?;
+        if let Some(existing) = existing {
+            ensure!(
+                existing == serde_json::to_value(&execution)?,
+                "execution identity already registered"
+            );
+        } else {
+            sql::execute(
+                &mut tx,
+                "UPDATE runtime_runs SET execution=$2 WHERE id=$1",
+                params![execution.run_id, serde_json::to_value(execution)?],
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(json!({"ok":true}))
+    }
+
     pub async fn heartbeat_run(&self, lease: Lease) -> Result<Value> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx_db = self.pool.clone();
+        let mut tx = tx_db.transaction().await?;
         let row = locked(&mut tx, lease.run_id).await?;
         let mut life = authorized(&row, &lease)?;
         life.lease_until_ms =
@@ -209,40 +258,86 @@ impl RuntimeStore {
     }
 
     pub async fn validate_grant(&self, lease: Lease) -> Result<Value> {
-        let row = sqlx::query("SELECT * FROM runtime_runs WHERE id=$1")
-            .bind(lease.run_id)
-            .fetch_one(&self.pool)
-            .await?;
+        let row = sql::record(
+            &mut self.pool.clone(),
+            "SELECT * FROM runtime_runs WHERE id=$1",
+            params![lease.run_id],
+            &[
+                ("id", Type::Uuid),
+                ("version", Type::I64),
+                ("intent_hash", Type::String),
+                ("intent_ciphertext", Type::String),
+                ("project_id", Type::Uuid),
+                ("pool", Type::String),
+                ("snapshot_id", Type::Uuid),
+                ("snapshot_digest", Type::String),
+                ("lifecycle", Type::String),
+                ("status", Type::String),
+                ("execution", Type::String),
+                ("grant_hash", Type::String),
+                ("grant_ciphertext", Type::String),
+                ("checkpoint", Type::String),
+                ("usage", Type::String),
+                ("report_sequence", Type::I64),
+                ("created_at", Type::Timestamp),
+                ("dispatched_at", Type::Timestamp),
+                ("updated_at", Type::Timestamp),
+            ],
+        )
+        .await?;
         let life = authorized(&row, &lease)?;
         ensure!(!life.pending, "proposal awaiting acceptance");
         Ok(
-            json!({"snapshot_id":row.get::<Uuid,_>("snapshot_id"),"project_id":row.get::<Uuid,_>("project_id")}),
+            json!({"snapshot_id":row.decode::<Uuid>("snapshot_id")?,"project_id":row.decode::<Uuid>("project_id")?}),
         )
     }
 
     pub async fn read_run(&self, run: Uuid) -> Result<Value> {
-        let row = sqlx::query("SELECT * FROM runtime_runs WHERE id=$1")
-            .bind(run)
-            .fetch_one(&self.pool)
-            .await?;
+        let row = sql::record(
+            &mut self.pool.clone(),
+            "SELECT * FROM runtime_runs WHERE id=$1",
+            params![run],
+            &[
+                ("id", Type::Uuid),
+                ("version", Type::I64),
+                ("intent_hash", Type::String),
+                ("intent_ciphertext", Type::String),
+                ("project_id", Type::Uuid),
+                ("pool", Type::String),
+                ("snapshot_id", Type::Uuid),
+                ("snapshot_digest", Type::String),
+                ("lifecycle", Type::String),
+                ("status", Type::String),
+                ("execution", Type::String),
+                ("grant_hash", Type::String),
+                ("grant_ciphertext", Type::String),
+                ("checkpoint", Type::String),
+                ("usage", Type::String),
+                ("report_sequence", Type::I64),
+                ("created_at", Type::Timestamp),
+                ("dispatched_at", Type::Timestamp),
+                ("updated_at", Type::Timestamp),
+            ],
+        )
+        .await?;
         Ok(
-            json!({"run_id":run,"status":row.get::<String,_>("status"),"lifecycle":row.get::<Value,_>("lifecycle"),"execution":row.get::<Option<Value>,_>("execution")}),
+            json!({"run_id":run,"status":row.decode::<String>("status")?,"lifecycle":row.decode::<Value>("lifecycle")?,"execution":row.decode::<Option<Value>>("execution")?}),
         )
     }
 
     pub async fn report_event(&self, v: Value) -> Result<Value> {
         let lease: Lease = serde_json::from_value(v["lease"].clone())?;
         let event = id(&v, "event_id")?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx_db = self.pool.clone();
+        let mut tx = tx_db.transaction().await?;
         let row = locked(&mut tx, lease.run_id).await?;
         authorized(&row, &lease)?;
         let hash = crypto::hash(serde_json::to_vec(&v)?);
-        let prior: Option<String> = sqlx::query_scalar(
+        let prior: Option<String> = sql::optional_scalar(
+            &mut tx,
             "SELECT input_hash FROM runtime_reports WHERE run_id=$1 AND event_id=$2",
+            params![lease.run_id, event],
         )
-        .bind(lease.run_id)
-        .bind(event)
-        .fetch_optional(&mut *tx)
         .await?;
         if let Some(prior) = prior {
             ensure!(prior == hash, "event ID reused");
@@ -254,56 +349,59 @@ impl RuntimeStore {
             "unsupported event kind"
         );
         let sequence = v["sequence"].as_i64().context("event sequence required")?;
-        if sequence > row.get::<i64, _>("report_sequence") {
+        if sequence > row.decode::<i64>("report_sequence")? {
             if kind == "checkpoint" {
-                sqlx::query("UPDATE runtime_runs SET checkpoint=$2,report_sequence=$3 WHERE id=$1")
-                    .bind(lease.run_id)
-                    .bind(&v["payload"])
-                    .bind(sequence)
-                    .execute(&mut *tx)
-                    .await?;
+                sql::execute(
+                    &mut tx,
+                    "UPDATE runtime_runs SET checkpoint=$2,report_sequence=$3 WHERE id=$1",
+                    params![lease.run_id, &v["payload"], sequence],
+                )
+                .await?;
             }
             if kind == "usage" {
-                sqlx::query("UPDATE runtime_runs SET usage=$2,report_sequence=$3 WHERE id=$1")
-                    .bind(lease.run_id)
-                    .bind(&v["payload"])
-                    .bind(sequence)
-                    .execute(&mut *tx)
-                    .await?;
+                sql::execute(
+                    &mut tx,
+                    "UPDATE runtime_runs SET usage=$2,report_sequence=$3 WHERE id=$1",
+                    params![lease.run_id, &v["payload"], sequence],
+                )
+                .await?;
             }
             if kind == "failed" {
-                sqlx::query("UPDATE runtime_runs SET status='failed' WHERE id=$1")
-                    .bind(lease.run_id)
-                    .execute(&mut *tx)
-                    .await?;
-                enqueue(&mut tx,lease.run_id,"failed",json!({"error":"Pi planning failed","calls":serde_json::from_value::<Lifecycle>(row.get("lifecycle"))?.calls})).await?;
+                sql::execute(
+                    &mut tx,
+                    "UPDATE runtime_runs SET status='failed' WHERE id=$1",
+                    params![lease.run_id],
+                )
+                .await?;
+                enqueue(&mut tx,lease.run_id,"failed",json!({"error":"Pi planning failed","calls":serde_json::from_value::<Lifecycle>(row.decode("lifecycle")?)?.calls})).await?;
             }
         }
-        sqlx::query("INSERT INTO runtime_reports(run_id,event_id,input_hash) VALUES($1,$2,$3)")
-            .bind(lease.run_id)
-            .bind(event)
-            .bind(hash)
-            .execute(&mut *tx)
+        models::Report::create()
+            .run_id(lease.run_id)
+            .event_id(event)
+            .input_hash(hash)
+            .exec(&mut tx)
             .await?;
         tx.commit().await?;
         Ok(json!({"ok":true}))
     }
 
     pub async fn acquire_execution(&self, execution: Execution, public_url: &str) -> Result<Value> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx_db = self.pool.clone();
+        let mut tx = tx_db.transaction().await?;
         let row = locked(&mut tx, execution.run_id).await?;
         ensure!(
             matches!(
-                row.get::<String, _>("status").as_str(),
+                row.decode::<String>("status")?.as_str(),
                 "provisioning" | "running"
             ),
             "run is not admitted for execution"
         );
         ensure!(
-            row.get::<Option<Value>, _>("execution") == Some(serde_json::to_value(&execution)?),
+            row.decode::<Option<Value>>("execution")? == Some(serde_json::to_value(&execution)?),
             "unregistered Pod UID"
         );
-        let mut life: Lifecycle = serde_json::from_value(row.get("lifecycle"))?;
+        let mut life: Lifecycle = serde_json::from_value(row.decode("lifecycle")?)?;
         let intent = config(self, &row)?;
         life.acquire(
             execution.generation,
@@ -311,19 +409,19 @@ impl RuntimeStore {
             Utc::now().timestamp_millis(),
             i64::from(intent.model.timeout_seconds) * 1000,
         )?;
-        let token = if let Some(ciphertext) = row.get::<Option<String>, _>("grant_ciphertext") {
+        let token = if let Some(ciphertext) = row.decode::<Option<String>>("grant_ciphertext")? {
             String::from_utf8(crypto::open(&self.key, &ciphertext)?)?
         } else {
             crypto::token()
         };
-        sqlx::query("UPDATE runtime_runs SET status='running',lifecycle=$2,grant_hash=$3,grant_ciphertext=$4 WHERE id=$1").bind(execution.run_id).bind(serde_json::to_value(&life)?).bind(crypto::hash(&token)).bind(crypto::seal(&self.key,token.as_bytes())?).execute(&mut *tx).await?;
+        sql::execute(&mut tx, "UPDATE runtime_runs SET status='running',lifecycle=$2,grant_hash=$3,grant_ciphertext=$4 WHERE id=$1", params![execution.run_id, serde_json::to_value(&life)?, crypto::hash(&token), crypto::seal(&self.key,token.as_bytes())?]).await?;
         let source_url = intent.context.get("source_url").cloned();
         let mut context = intent.context;
         context["checkpoint"] = row
-            .get::<Option<Value>, _>("checkpoint")
+            .decode::<Option<Value>>("checkpoint")?
             .unwrap_or(Value::Null);
-        context["usage"] = row.get::<Value, _>("usage");
-        let rejected:Option<Value>=sqlx::query_scalar("SELECT jsonb_build_object('kind',kind,'payload',payload,'result',result) FROM runtime_proposals WHERE run_id=$1 AND result IS NOT NULL ORDER BY created_at DESC LIMIT 1").bind(execution.run_id).fetch_optional(&mut *tx).await?;
+        context["usage"] = row.decode::<Value>("usage")?;
+        let rejected:Option<Value>=sql::optional_scalar(&mut tx, "SELECT jsonb_build_object('kind',kind,'payload',payload,'result',result) FROM runtime_proposals WHERE run_id=$1 AND result IS NOT NULL ORDER BY created_at DESC LIMIT 1", params![execution.run_id]).await?;
         if let Some(value) = rejected {
             context["recovered_proposal"] = value;
         }
@@ -351,26 +449,27 @@ impl RuntimeStore {
         proposal: Uuid,
         v: &Value,
     ) -> Result<ToolDisposition> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx_db = self.pool.clone();
+        let mut tx = tx_db.transaction().await?;
         let row = locked(&mut tx, lease.run_id).await?;
-        let prior = sqlx::query(
+        let prior = sql::optional_record(
+            &mut tx,
             "SELECT input_hash,result FROM runtime_proposals WHERE id=$1 AND run_id=$2",
+            params![proposal, lease.run_id],
+            &[("input_hash", Type::String), ("result", Type::String)],
         )
-        .bind(proposal)
-        .bind(lease.run_id)
-        .fetch_optional(&mut *tx)
         .await?;
         let hash = crypto::hash(serde_json::to_vec(
             &json!({"name":name,"arguments":v["arguments"]}),
         )?);
         if let Some(prior) = prior {
             ensure!(
-                prior.get::<String, _>("input_hash") == hash,
+                prior.decode::<String>("input_hash")? == hash,
                 "proposal ID reused"
             );
             return Ok(ToolDisposition::Immediate(
                 prior
-                    .get::<Option<Value>, _>("result")
+                    .decode::<Option<Value>>("result")?
                     .unwrap_or(json!({"pending":true,"proposal_id":proposal})),
             ));
         }
@@ -378,9 +477,18 @@ impl RuntimeStore {
         ensure!(!life.pending, "proposal awaiting acceptance");
         if matches!(name, "submit_plan" | "request_input") {
             life.pending = true;
-            sqlx::query("INSERT INTO runtime_proposals(id,run_id,generation,input_hash,kind,payload,deadline_ms) VALUES($1,$2,$3,$4,$5,$6,$7)").bind(proposal).bind(lease.run_id).bind(lease.generation).bind(hash).bind(name).bind(&v["arguments"]).bind(life.deadline_ms.unwrap()).execute(&mut *tx).await?;
+            models::Proposal::create()
+                .id(proposal)
+                .run_id(lease.run_id)
+                .generation(lease.generation)
+                .input_hash(hash)
+                .kind(name)
+                .payload(toasty::Json(v["arguments"].clone()))
+                .deadline_ms(life.deadline_ms.unwrap())
+                .exec(&mut tx)
+                .await?;
             save(&mut tx, lease.run_id, &life).await?;
-            enqueue(&mut tx,lease.run_id,"proposal",json!({"proposal_id":proposal,"generation":lease.generation,"kind":name,"payload":v["arguments"],"deadline_ms":life.deadline_ms,"snapshot_digest":row.get::<String,_>("snapshot_digest")})).await?;
+            enqueue(&mut tx,lease.run_id,"proposal",json!({"proposal_id":proposal,"generation":lease.generation,"kind":name,"payload":v["arguments"],"deadline_ms":life.deadline_ms,"snapshot_digest":row.decode::<String>("snapshot_digest")?})).await?;
             tx.commit().await?;
             Ok(ToolDisposition::Immediate(
                 json!({"pending":true,"proposal_id":proposal}),
@@ -398,78 +506,100 @@ impl RuntimeStore {
     }
 
     pub async fn proposal_result(&self, proposal: Uuid, lease: Lease) -> Result<Value> {
-        let row=sqlx::query("SELECT p.result FROM runtime_proposals p JOIN runtime_runs r ON r.id=p.run_id WHERE p.id=$1 AND p.run_id=$2 AND r.grant_hash=$3 AND p.generation=$4").bind(proposal).bind(lease.run_id).bind(crypto::hash(lease.token)).bind(lease.generation).fetch_one(&self.pool).await?;
+        let row=sql::record(&mut self.pool.clone(), "SELECT p.result FROM runtime_proposals p JOIN runtime_runs r ON r.id=p.run_id WHERE p.id=$1 AND p.run_id=$2 AND r.grant_hash=$3 AND p.generation=$4", params![proposal, lease.run_id, crypto::hash(lease.token), lease.generation], &[("result", Type::String)]).await?;
         Ok(row
-            .get::<Option<Value>, _>("result")
+            .decode::<Option<Value>>("result")?
             .unwrap_or(json!({"pending":true})))
     }
 
     pub async fn queue(&self, pool: &str, limit: i64, per_project: i64) -> Result<Value> {
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,1))")
-            .bind(pool)
-            .execute(&mut *tx)
-            .await?;
-        let active: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM runtime_runs WHERE pool=$1 AND status IN ('provisioning','running')",
-    )
-    .bind(pool)
-    .fetch_one(&mut *tx)
+        let mut tx_db = self.pool.clone();
+        let mut tx = tx_db.transaction().await?;
+        sql::execute(
+            &mut tx,
+            "SELECT pg_advisory_xact_lock(hashtextextended($1,1))",
+            params![pool],
+        )
+        .await?;
+        let active: i64 = sql::scalar(&mut tx, "SELECT count(*) FROM runtime_runs WHERE pool=$1 AND status IN ('provisioning','running')", params![pool])
     .await?;
-        let rows=sqlx::query("SELECT * FROM runtime_runs r WHERE pool=$1 AND status='queued' AND (SELECT count(*) FROM runtime_runs a WHERE a.project_id=r.project_id AND a.pool=r.pool AND a.status IN ('provisioning','running'))<$3 ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT $2").bind(pool).bind((limit-active).max(0)).bind(per_project).fetch_all(&mut *tx).await?;
+        let rows=sql::records(&mut tx, "SELECT * FROM runtime_runs r WHERE pool=$1 AND status='queued' AND (SELECT count(*) FROM runtime_runs a WHERE a.project_id=r.project_id AND a.pool=r.pool AND a.status IN ('provisioning','running'))<$3 ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT $2", params![pool, (limit-active).max(0), per_project], &[("id", Type::Uuid),("version", Type::I64),("intent_hash", Type::String),("intent_ciphertext", Type::String),("project_id", Type::Uuid),("pool", Type::String),("snapshot_id", Type::Uuid),("snapshot_digest", Type::String),("lifecycle", Type::String),("status", Type::String),("execution", Type::String),("grant_hash", Type::String),("grant_ciphertext", Type::String),("checkpoint", Type::String),("usage", Type::String),("report_sequence", Type::I64),("created_at", Type::Timestamp),("dispatched_at", Type::Timestamp),("updated_at", Type::Timestamp)]).await?;
         let mut admitted = Vec::new();
         for row in rows {
-            let project: Uuid = row.get("project_id");
-            let count:i64=sqlx::query_scalar("SELECT count(*) FROM runtime_runs WHERE project_id=$1 AND pool=$2 AND status IN ('provisioning','running')").bind(project).bind(pool).fetch_one(&mut *tx).await?;
+            let project: Uuid = row.decode("project_id")?;
+            let count:i64=sql::scalar(&mut tx, "SELECT count(*) FROM runtime_runs WHERE project_id=$1 AND pool=$2 AND status IN ('provisioning','running')", params![project, pool]).await?;
             if count >= per_project {
                 continue;
             }
-            let run: Uuid = row.get("id");
-            let life: Lifecycle = serde_json::from_value(row.get("lifecycle"))?;
-            sqlx::query(
+            let run: Uuid = row.decode("id")?;
+            let life: Lifecycle = serde_json::from_value(row.decode("lifecycle")?)?;
+            sql::execute(
+                &mut tx,
                 "UPDATE runtime_runs SET status='provisioning',dispatched_at=now() WHERE id=$1",
+                params![run],
             )
-            .bind(run)
-            .execute(&mut *tx)
             .await?;
-            admitted.push(json!({"run_id":run,"generation":life.generation,"pool":pool,"snapshot_id":row.get::<Uuid,_>("snapshot_id"),"snapshot_digest":row.get::<String,_>("snapshot_digest")}));
+            admitted.push(json!({"run_id":run,"generation":life.generation,"pool":pool,"snapshot_id":row.decode::<Uuid>("snapshot_id")?,"snapshot_digest":row.decode::<String>("snapshot_digest")?}));
         }
         // Lost create acknowledgements are recovered by returning all admitted descriptors.
-        let active = sqlx::query(
+        let active = sql::records(
+            &mut tx,
             "SELECT * FROM runtime_runs WHERE pool=$1 AND status IN ('provisioning','running')",
+            params![pool],
+            &[
+                ("id", Type::Uuid),
+                ("version", Type::I64),
+                ("intent_hash", Type::String),
+                ("intent_ciphertext", Type::String),
+                ("project_id", Type::Uuid),
+                ("pool", Type::String),
+                ("snapshot_id", Type::Uuid),
+                ("snapshot_digest", Type::String),
+                ("lifecycle", Type::String),
+                ("status", Type::String),
+                ("execution", Type::String),
+                ("grant_hash", Type::String),
+                ("grant_ciphertext", Type::String),
+                ("checkpoint", Type::String),
+                ("usage", Type::String),
+                ("report_sequence", Type::I64),
+                ("created_at", Type::Timestamp),
+                ("dispatched_at", Type::Timestamp),
+                ("updated_at", Type::Timestamp),
+            ],
         )
-        .bind(pool)
-        .fetch_all(&mut *tx)
         .await?;
         let mut rows = Vec::new();
         for row in active {
             let intent = config(self, &row)?;
-            let lifecycle: Lifecycle = serde_json::from_value(row.get("lifecycle"))?;
+            let lifecycle: Lifecycle = serde_json::from_value(row.decode("lifecycle")?)?;
             rows.push(json!({"run_id":intent.run_id,"generation":lifecycle.generation,"pool":intent.pool,"snapshot_id":intent.snapshot_id,"snapshot_digest":intent.snapshot_digest,"source_url":intent.context["source_url"]}));
         }
         tx.commit().await?;
-        let queued: i64 = sqlx::query_scalar(
+        let queued: i64 = sql::scalar(
+            &mut self.pool.clone(),
             "SELECT count(*) FROM runtime_runs WHERE pool=$1 AND status='queued'",
+            params![pool],
         )
-        .bind(pool)
-        .fetch_one(&self.pool)
         .await?;
         Ok(json!({"active":rows.len(),"queued":queued,"runs":rows}))
     }
 
     pub async fn maintain(&self) -> Result<()> {
-        let ids: Vec<Uuid> = sqlx::query_scalar(
+        let ids: Vec<Uuid> = sql::scalars(
+            &mut self.pool.clone(),
             "SELECT id FROM runtime_runs WHERE status IN ('provisioning','running')",
+            params![],
         )
-        .fetch_all(&self.pool)
         .await?;
         for id in ids {
-            let mut tx = self.pool.begin().await?;
+            let mut tx_db = self.pool.clone();
+            let mut tx = tx_db.transaction().await?;
             let row = locked(&mut tx, id).await?;
-            let mut life: Lifecycle = serde_json::from_value(row.get("lifecycle"))?;
+            let mut life: Lifecycle = serde_json::from_value(row.decode("lifecycle")?)?;
             let now = Utc::now().timestamp_millis();
             if !matches!(
-                row.get::<String, _>("status").as_str(),
+                row.decode::<String>("status")?.as_str(),
                 "provisioning" | "running"
             ) {
                 continue;
@@ -478,20 +608,22 @@ impl RuntimeStore {
                 continue;
             }
             let expired = life.deadline_ms.is_some_and(|d| d <= now) || life.generation >= 4;
-            let stalled = row.get::<String, _>("status") == "provisioning"
+            let stalled = row.decode::<String>("status")? == "provisioning"
                 && row
-                    .get::<Option<chrono::DateTime<Utc>>, _>("dispatched_at")
+                    .decode::<Option<chrono::DateTime<Utc>>>("dispatched_at")?
                     .is_some_and(|t| t < Utc::now() - chrono::Duration::seconds(180));
             if expired || (stalled && life.generation >= 3) {
-                sqlx::query("UPDATE runtime_runs SET status='failed' WHERE id=$1")
-                    .bind(id)
-                    .execute(&mut *tx)
-                    .await?;
+                sql::execute(
+                    &mut tx,
+                    "UPDATE runtime_runs SET status='failed' WHERE id=$1",
+                    params![id],
+                )
+                .await?;
                 enqueue(&mut tx,id,"failed",json!({"error":"planning deadline or provisioning retry limit reached","calls":life.calls})).await?;
             } else if stalled || life.lease_until_ms.is_some_and(|until| until <= now) {
                 life.retry(now)?;
                 save(&mut tx, id, &life).await?;
-                sqlx::query("UPDATE runtime_runs SET status='queued',execution=NULL,grant_hash=NULL,grant_ciphertext=NULL WHERE id=$1").bind(id).execute(&mut *tx).await?;
+                sql::execute(&mut tx, "UPDATE runtime_runs SET status='queued',execution=NULL,grant_hash=NULL,grant_ciphertext=NULL WHERE id=$1", params![id]).await?;
             }
             tx.commit().await?;
         }
@@ -499,20 +631,31 @@ impl RuntimeStore {
     }
 
     pub async fn deliveries(&self) -> Result<Vec<OutboxDelivery>> {
-        let rows = sqlx::query(
+        let rows = sql::records(
+            &mut self.pool.clone(),
             "SELECT * FROM runtime_outbox WHERE NOT delivered ORDER BY created_at LIMIT 100",
+            params![],
+            &[
+                ("id", Type::Uuid),
+                ("run_id", Type::Uuid),
+                ("kind", Type::String),
+                ("payload", Type::String),
+                ("delivered", Type::Bool),
+                ("created_at", Type::Timestamp),
+            ],
         )
-        .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
-            .map(|row| OutboxDelivery {
-                id: row.get("id"),
-                run_id: row.get("run_id"),
-                kind: row.get("kind"),
-                payload: row.get("payload"),
+            .map(|row| {
+                Ok(OutboxDelivery {
+                    id: row.decode("id")?,
+                    run_id: row.decode("run_id")?,
+                    kind: row.decode("kind")?,
+                    payload: row.decode("payload")?,
+                })
             })
-            .collect())
+            .collect::<artifactory_database::Result<_>>()?)
     }
 
     pub async fn acknowledge_delivery(
@@ -523,40 +666,48 @@ impl RuntimeStore {
         payload: &Value,
         result: &Value,
     ) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx_db = self.pool.clone();
+        let mut tx = tx_db.transaction().await?;
         let run_row = locked(&mut tx, run).await?;
-        let already: bool =
-            sqlx::query_scalar("SELECT delivered FROM runtime_outbox WHERE id=$1 FOR UPDATE")
-                .bind(event)
-                .fetch_one(&mut *tx)
-                .await?;
+        let already: bool = sql::scalar(
+            &mut tx,
+            "SELECT delivered FROM runtime_outbox WHERE id=$1 FOR UPDATE",
+            params![event],
+        )
+        .await?;
         if already {
             return Ok(());
         }
         if kind == "proposal" {
-            let mut life: Lifecycle = serde_json::from_value(run_row.get("lifecycle"))?;
+            let mut life: Lifecycle = serde_json::from_value(run_row.decode("lifecycle")?)?;
             life.pending = false;
             save(&mut tx, run, &life).await?;
-            sqlx::query("UPDATE runtime_proposals SET result=$2 WHERE id=$1 AND result IS NULL")
-                .bind(id(payload, "proposal_id")?)
-                .bind(result)
-                .execute(&mut *tx)
-                .await?;
+            sql::execute(
+                &mut tx,
+                "UPDATE runtime_proposals SET result=$2 WHERE id=$1 AND result IS NULL",
+                params![id(payload, "proposal_id")?, result],
+            )
+            .await?;
             if result["accepted"] == true {
-                sqlx::query("UPDATE runtime_runs SET status=$2 WHERE id=$1 AND status<>'canceled'")
-                    .bind(run)
-                    .bind(if payload["kind"] == "request_input" {
-                        "needs_input"
-                    } else {
-                        "succeeded"
-                    })
-                    .execute(&mut *tx)
-                    .await?;
+                sql::execute(
+                    &mut tx,
+                    "UPDATE runtime_runs SET status=$2 WHERE id=$1 AND status<>'canceled'",
+                    params![
+                        run,
+                        if payload["kind"] == "request_input" {
+                            "needs_input"
+                        } else {
+                            "succeeded"
+                        }
+                    ],
+                )
+                .await?;
             }
         }
-        sqlx::query("UPDATE runtime_outbox SET delivered=true WHERE id=$1")
-            .bind(event)
-            .execute(&mut *tx)
+        models::Outbox::filter_by_id(event)
+            .update()
+            .delivered(true)
+            .exec(&mut tx)
             .await?;
         tx.commit().await?;
         Ok(())
@@ -572,7 +723,8 @@ impl RuntimeStore {
             value,
             hash,
         } = request;
-        let mut tx = self.pool.begin().await?;
+        let mut tx_db = self.pool.clone();
+        let mut tx = tx_db.transaction().await?;
         let row = locked(&mut tx, run).await?;
         let mut life = authorized(&row, lease)?;
         let cfg = config(self, &row)?.model;
@@ -592,28 +744,28 @@ impl RuntimeStore {
                 .is_some_and(|o| o.contains_key("base_url") || o.contains_key("api_key")),
             "invalid model request"
         );
-        if let Some(prior) = sqlx::query(
+        if let Some(prior) = sql::optional_record(
+            &mut tx,
             "SELECT input_hash FROM runtime_model_requests WHERE run_id=$1 AND request_id=$2",
+            params![run, request_id],
+            &[("input_hash", Type::String)],
         )
-        .bind(run)
-        .bind(request_id)
-        .fetch_optional(&mut *tx)
         .await?
         {
             ensure!(
-                prior.get::<String, _>("input_hash") == hash,
+                prior.decode::<String>("input_hash")? == hash,
                 "model request ID reused"
             );
             return Ok(ModelReservation::Duplicate);
         }
         life.reserve(generation, &lease.uid, Utc::now().timestamp_millis())?;
-        sqlx::query("INSERT INTO runtime_profiles(id) VALUES($1) ON CONFLICT DO NOTHING")
-            .bind(cfg.id)
-            .execute(&mut *tx)
+        models::Profile::upsert_by_id(cfg.id)
+            .or_ignore()
+            .exec(&mut tx)
             .await?;
         let rpm = cfg.parameters["requests_per_minute"].as_u64().unwrap_or(0);
         let wait: i64 = if rpm > 0 {
-            sqlx::query_scalar("UPDATE runtime_profiles SET next_call_at=greatest(next_call_at,clock_timestamp())+make_interval(secs=>$2) WHERE id=$1 RETURNING greatest(0,ceil(extract(epoch FROM next_call_at-clock_timestamp())*1000-$2*1000)::bigint)").bind(cfg.id).bind(60.0/rpm as f64+1.0).fetch_one(&mut *tx).await?
+            sql::scalar(&mut tx, "UPDATE runtime_profiles SET next_call_at=greatest(next_call_at,clock_timestamp())+make_interval(secs=>$2) WHERE id=$1 RETURNING greatest(0,ceil(extract(epoch FROM next_call_at-clock_timestamp())*1000-$2*1000)::bigint)", params![cfg.id, 60.0/rpm as f64+1.0]).await?
         } else {
             0
         };
@@ -621,7 +773,13 @@ impl RuntimeStore {
             Utc::now().timestamp_millis() + wait < life.deadline_ms.unwrap(),
             "profile queue exceeds deadline"
         );
-        sqlx::query("INSERT INTO runtime_model_requests(run_id,request_id,input_hash,generation) VALUES($1,$2,$3,$4)").bind(run).bind(request_id).bind(hash).bind(generation).execute(&mut *tx).await?;
+        models::ModelRequest::create()
+            .run_id(run)
+            .request_id(request_id)
+            .input_hash(hash)
+            .generation(generation)
+            .exec(&mut tx)
+            .await?;
         save(&mut tx, run, &life).await?;
         tx.commit().await?;
         Ok(ModelReservation::Reserved {
@@ -633,34 +791,48 @@ impl RuntimeStore {
     }
 
     pub async fn model_response_received(&self, run: Uuid, request_id: Uuid) -> Result<()> {
-        sqlx::query(
+        sql::execute(
+            &mut self.pool.clone(),
             "UPDATE runtime_model_requests SET state='response' WHERE run_id=$1 AND request_id=$2",
+            params![run, request_id],
         )
-        .bind(run)
-        .bind(request_id)
-        .execute(&self.pool)
         .await?;
         Ok(())
     }
 }
 pub fn database_failure_category(error: &anyhow::Error) -> Option<&'static str> {
-    error
-        .downcast_ref::<sqlx::Error>()
-        .map(|error| match error {
-            sqlx::Error::PoolTimedOut => "database_pool_timeout",
-            sqlx::Error::Database(_) => "database_statement",
-            _ => "database_transport",
+    let backend = error
+        .downcast_ref::<artifactory_database::Error>()
+        .and_then(|error| match error {
+            artifactory_database::Error::Backend(error) => Some(error),
+            _ => None,
         })
+        .or_else(|| error.downcast_ref::<toasty::Error>())?;
+    Some(if backend.is_connection_pool() {
+        "database_pool_timeout"
+    } else if backend.is_driver_operation_failed() {
+        "database_statement"
+    } else {
+        "database_transport"
+    })
 }
 
 impl RuntimeStore {
     pub async fn connect(url: &str, key: Arc<[u8; 32]>) -> Result<Self> {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(24)
-            .connect(url)
-            .await?;
+        let pool = artifactory_database::connect(
+            url,
+            models(),
+            artifactory_database::PoolSettings::new(24),
+        )
+        .await?;
         artifactory_database::require_timescale(&pool).await?;
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        artifactory_database::migrate(&pool, &MIGRATIONS).await?;
         Ok(Self::new(pool, key))
     }
+}
+
+pub static MIGRATIONS: toasty::migration::MigrationSet = toasty::embed_migrations!("migrations");
+
+pub fn models() -> toasty::schema::app::ModelSet {
+    toasty::models!(crate::*)
 }

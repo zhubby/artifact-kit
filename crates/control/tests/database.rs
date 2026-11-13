@@ -7,11 +7,12 @@ use artifactory_control::{
     state::{AppState, Connection},
     storage::Storage,
 };
+use artifactory_database::{PoolSettings, connect, with_options};
+use artifactory_database::{params, sql};
 use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{RwLock, mpsc};
 use tower::ServiceExt;
@@ -123,8 +124,7 @@ async fn evicted_source_restores_pinned_objects_after_upstream_refs_move() {
         .await
         .unwrap();
     let repository = Uuid::new_v4();
-    sqlx::query("INSERT INTO source_repositories(id,project_id,repository_url,cache_key) VALUES($1,$2,$3,$4)")
-        .bind(repository).bind(project).bind(format!("http://127.0.0.1:{}/repo.git", port.trim())).bind(crypto::hash(repository.to_string())).execute(&database.pool).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO source_repositories(id,project_id,repository_url,cache_key) VALUES($1,$2,$3,$4)", params![repository, project, format!("http://127.0.0.1:{}/repo.git", port.trim()), crypto::hash(repository.to_string())]).await.unwrap();
     let snapshot = Snapshot {
         id: Uuid::new_v4(),
         project_id: project,
@@ -142,13 +142,14 @@ async fn evicted_source_restores_pinned_objects_after_upstream_refs_move() {
             }],
         }],
     };
-    sqlx::query("INSERT INTO source_snapshots(id,project_id,root_repository_id,commit_sha,manifest,digest) VALUES($1,$2,$3,$4,$5,$6)").bind(snapshot.id).bind(project).bind(repository).bind(&commit).bind(serde_json::to_value(&snapshot).unwrap()).bind(snapshot.id.to_string()).execute(&database.pool).await.unwrap();
-    sqlx::query("UPDATE builds SET source_snapshot_id=$2,status='running' WHERE id=$1")
-        .bind(build)
-        .bind(snapshot.id)
-        .execute(&database.pool)
-        .await
-        .unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO source_snapshots(id,project_id,root_repository_id,commit_sha,manifest,digest) VALUES($1,$2,$3,$4,$5,$6)", params![snapshot.id, project, repository, &commit, serde_json::to_value(&snapshot).unwrap(), snapshot.id.to_string()]).await.unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "UPDATE builds SET source_snapshot_id=$2,status='running' WHERE id=$1",
+        params![build, snapshot.id],
+    )
+    .await
+    .unwrap();
     let repo = source_cache::repository_path(&database.state, repository)
         .await
         .unwrap();
@@ -187,18 +188,22 @@ async fn evicted_source_restores_pinned_objects_after_upstream_refs_move() {
             repo.join("HEAD").exists(),
             "running snapshot must remain protected"
         );
-        sqlx::query("UPDATE builds SET status='succeeded' WHERE id=$1")
-            .bind(build)
-            .execute(&database.pool)
-            .await
-            .unwrap();
+        sql::execute(
+            &mut database.pool.clone(),
+            "UPDATE builds SET status='succeeded' WHERE id=$1",
+            params![build],
+        )
+        .await
+        .unwrap();
         source_cache::collect(&database.state, 0).await.unwrap();
         assert!(!repo.exists(), "terminal cache should be evicted");
-        sqlx::query("UPDATE builds SET status='running' WHERE id=$1")
-            .bind(build)
-            .execute(&database.pool)
-            .await
-            .unwrap();
+        sql::execute(
+            &mut database.pool.clone(),
+            "UPDATE builds SET status='running' WHERE id=$1",
+            params![build],
+        )
+        .await
+        .unwrap();
     }
     assert_eq!(
         source_cache::git(&origin, &["show-ref"]).await.unwrap(),
@@ -235,7 +240,7 @@ async fn source_download_rechecks_authorization_after_cache_lock() {
     let attempt = Uuid::new_v4();
     let key = crypto::hash(repository.to_string());
     let oid = crypto::hash("data");
-    sqlx::query("INSERT INTO source_repositories(id,project_id,repository_url,cache_key) VALUES($1,$2,'https://example.com/repo.git',$3)").bind(repository).bind(project).bind(&key).execute(&database.pool).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO source_repositories(id,project_id,repository_url,cache_key) VALUES($1,$2,'https://example.com/repo.git',$3)", params![repository, project, &key]).await.unwrap();
     let manifest = Snapshot {
         id: snapshot,
         project_id: project,
@@ -253,15 +258,16 @@ async fn source_download_rechecks_authorization_after_cache_lock() {
             }],
         }],
     };
-    sqlx::query("INSERT INTO source_snapshots(id,project_id,root_repository_id,commit_sha,manifest,digest) VALUES($1,$2,$3,$4,$5,$6)").bind(snapshot).bind(project).bind(repository).bind("0".repeat(40)).bind(serde_json::to_value(manifest).unwrap()).bind(snapshot.to_string()).execute(&database.pool).await.unwrap();
-    sqlx::query("UPDATE builds SET source_snapshot_id=$2,status='running' WHERE id=$1")
-        .bind(build)
-        .bind(snapshot)
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO attempts(id,job_id,node_id,lease_token,lease_expires_at,status,command_id) VALUES($1,$2,$3,'lease',now()+interval '1 minute','running',$4)").bind(attempt).bind(job).bind(node).bind(Uuid::new_v4()).execute(&database.pool).await.unwrap();
-    sqlx::query("INSERT INTO source_tokens(token_hash,snapshot_id,attempt_id,expires_at) VALUES($1,$2,$3,now()+interval '1 hour')").bind(crypto::hash("download-token")).bind(snapshot).bind(attempt).execute(&database.pool).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO source_snapshots(id,project_id,root_repository_id,commit_sha,manifest,digest) VALUES($1,$2,$3,$4,$5,$6)", params![snapshot, project, repository, "0".repeat(40), serde_json::to_value(manifest).unwrap(), snapshot.to_string()]).await.unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "UPDATE builds SET source_snapshot_id=$2,status='running' WHERE id=$1",
+        params![build, snapshot],
+    )
+    .await
+    .unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO attempts(id,job_id,node_id,lease_token,lease_expires_at,status,command_id) VALUES($1,$2,$3,'lease',now()+interval '1 minute','running',$4)", params![attempt, job, node, Uuid::new_v4()]).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO source_tokens(token_hash,snapshot_id,attempt_id,expires_at) VALUES($1,$2,$3,now()+interval '1 hour')", params![crypto::hash("download-token"), snapshot, attempt]).await.unwrap();
     let repo = source_cache::repository_path(&database.state, repository)
         .await
         .unwrap();
@@ -282,21 +288,25 @@ async fn source_download_rechecks_authorization_after_cache_lock() {
     let mut actual = Vec::new();
     for kind in ["git", "lfs"] {
         for invalidation in ["cancel", "revoke", "expire"] {
-            sqlx::query("UPDATE builds SET cancel_requested=false WHERE id=$1")
-                .bind(build)
-                .execute(&database.pool)
-                .await
-                .unwrap();
-            sqlx::query("UPDATE nodes SET revoked=false WHERE id=$1")
-                .bind(node)
-                .execute(&database.pool)
-                .await
-                .unwrap();
-            sqlx::query(
-                "UPDATE attempts SET lease_expires_at=now()+interval '1 minute' WHERE id=$1",
+            sql::execute(
+                &mut database.pool.clone(),
+                "UPDATE builds SET cancel_requested=false WHERE id=$1",
+                params![build],
             )
-            .bind(attempt)
-            .execute(&database.pool)
+            .await
+            .unwrap();
+            sql::execute(
+                &mut database.pool.clone(),
+                "UPDATE nodes SET revoked=false WHERE id=$1",
+                params![node],
+            )
+            .await
+            .unwrap();
+            sql::execute(
+                &mut database.pool.clone(),
+                "UPDATE attempts SET lease_expires_at=now()+interval '1 minute' WHERE id=$1",
+                params![attempt],
+            )
             .await
             .unwrap();
             let suffix = if kind == "git" {
@@ -316,23 +326,25 @@ async fn source_download_rechecks_authorization_after_cache_lock() {
             axum::body::to_bytes(valid.into_body(), 65536)
                 .await
                 .unwrap();
-            let mut lock = database.pool.begin().await.unwrap();
-            let backend: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-                .fetch_one(&mut *lock)
+            let mut lock_db = database.pool.clone();
+            let mut lock = lock_db.transaction().await.unwrap();
+            let backend: i32 = sql::scalar(&mut lock, "SELECT pg_backend_pid()", params![])
                 .await
                 .unwrap();
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
-                .bind(&key)
-                .execute(&mut *lock)
-                .await
-                .unwrap();
+            sql::execute(
+                &mut lock,
+                "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+                params![&key],
+            )
+            .await
+            .unwrap();
             let waiting_router = router.clone();
             let pending = request();
             let download =
                 tokio::spawn(async move { waiting_router.oneshot(pending).await.unwrap() });
             let mut blocked = false;
             for _ in 0..100 {
-                blocked = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))").bind(backend).fetch_one(&database.pool).await.unwrap();
+                blocked = sql::scalar(&mut database.pool.clone(), "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))", params![backend]).await.unwrap();
                 if blocked {
                     break;
                 }
@@ -350,9 +362,7 @@ async fn source_download_rechecks_authorization_after_cache_lock() {
                     attempt,
                 ),
             };
-            sqlx::query(query)
-                .bind(id)
-                .execute(&database.pool)
+            sql::execute(&mut database.pool.clone(), query, params![id])
                 .await
                 .unwrap();
             lock.commit().await.unwrap();
@@ -368,13 +378,15 @@ async fn planning_fixture(database: &Database) -> (Uuid, Uuid, Uuid) {
     let (_, build, _) = database.fixture().await;
     let worker = Uuid::new_v4();
     let run = Uuid::new_v4();
-    sqlx::query("INSERT INTO ai_workers(id,name,certificate_hash,certificate_expires_at) VALUES($1,'planner',$2,now()+interval '1 day')").bind(worker).bind(worker.to_string()).execute(&database.pool).await.unwrap();
-    sqlx::query("UPDATE builds SET status='planning',goal='Build project' WHERE id=$1")
-        .bind(build)
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO planning_runs(id,build_id,worker_id,purpose,state,model_config,lease_hash,lease_expires_at,deadline_at) VALUES($1,$2,$3,'initial','leased','{}',$4,now()-interval '1 second',now()+interval '5 minutes')").bind(run).bind(build).bind(worker).bind(crypto::hash("lease")).execute(&database.pool).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO ai_workers(id,name,certificate_hash,certificate_expires_at) VALUES($1,'planner',$2,now()+interval '1 day')", params![worker, worker.to_string()]).await.unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "UPDATE builds SET status='planning',goal='Build project' WHERE id=$1",
+        params![build],
+    )
+    .await
+    .unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO planning_runs(id,build_id,worker_id,purpose,state,model_config,lease_hash,lease_expires_at,deadline_at) VALUES($1,$2,$3,'initial','leased','{}',$4,now()-interval '1 second',now()+interval '5 minutes')", params![run, build, worker, crypto::hash("lease")]).await.unwrap();
     (build, run, worker)
 }
 
@@ -383,50 +395,60 @@ async fn planning_fixture(database: &Database) -> (Uuid, Uuid, Uuid) {
 async fn planner_reaper_rechecks_renewal_after_waiting_for_build_lock() {
     let database = Database::new().await;
     let (build, run, _) = planning_fixture(&database).await;
-    let mut lock = database.pool.begin().await.unwrap();
-    sqlx::query("SELECT id FROM builds WHERE id=$1 FOR UPDATE")
-        .bind(build)
-        .execute(&mut *lock)
-        .await
-        .unwrap();
+    let mut lock_db = database.pool.clone();
+    let mut lock = lock_db.transaction().await.unwrap();
+    sql::execute(
+        &mut lock,
+        "SELECT id FROM builds WHERE id=$1 FOR UPDATE",
+        params![build],
+    )
+    .await
+    .unwrap();
     let state = database.state.clone();
     let reaper = tokio::spawn(async move { artifactory_control::planning::reap(&state).await });
     let mut blocked = false;
     for _ in 0..100 {
-        blocked=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE 'SELECT id FROM builds WHERE id=$1 FOR UPDATE%')").fetch_one(&database.pool).await.unwrap();
+        blocked=sql::scalar(&mut database.pool.clone(), "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE 'SELECT id FROM builds WHERE id=$1 FOR UPDATE%')", params![]).await.unwrap();
         if blocked {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(blocked, "reaper did not wait for the build lock");
-    sqlx::query("UPDATE planning_runs SET lease_expires_at=now()+interval '1 minute' WHERE id=$1")
-        .bind(run)
-        .execute(&mut *lock)
-        .await
-        .unwrap();
+    sql::execute(
+        &mut lock,
+        "UPDATE planning_runs SET lease_expires_at=now()+interval '1 minute' WHERE id=$1",
+        params![run],
+    )
+    .await
+    .unwrap();
     lock.commit().await.unwrap();
     reaper.await.unwrap().unwrap();
-    let state: String = sqlx::query_scalar("SELECT state FROM planning_runs WHERE id=$1")
-        .bind(run)
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
+    let state: String = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT state FROM planning_runs WHERE id=$1",
+        params![run],
+    )
+    .await
+    .unwrap();
     assert_eq!(state, "leased");
-    sqlx::query("UPDATE planning_runs SET lease_expires_at=now()-interval '1 second' WHERE id=$1")
-        .bind(run)
-        .execute(&database.pool)
-        .await
-        .unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "UPDATE planning_runs SET lease_expires_at=now()-interval '1 second' WHERE id=$1",
+        params![run],
+    )
+    .await
+    .unwrap();
     artifactory_control::planning::reap(&database.state)
         .await
         .unwrap();
-    let state: (String, Option<String>) =
-        sqlx::query_as("SELECT state,lease_hash FROM planning_runs WHERE id=$1")
-            .bind(run)
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
+    let state: (String, Option<String>) = sql::tuple(
+        &mut database.pool.clone(),
+        "SELECT state,lease_hash FROM planning_runs WHERE id=$1",
+        params![run],
+    )
+    .await
+    .unwrap();
     assert_eq!(state, ("queued".into(), None));
     database.close().await;
 }
@@ -436,22 +458,26 @@ async fn planner_reaper_rechecks_renewal_after_waiting_for_build_lock() {
 async fn planner_deadline_finishes_build_and_failed_planning_does_not_loop() {
     let database = Database::new().await;
     let (build, run, _) = planning_fixture(&database).await;
-    sqlx::query("UPDATE planning_runs SET deadline_at=now()-interval '1 second' WHERE id=$1")
-        .bind(run)
-        .execute(&database.pool)
-        .await
-        .unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "UPDATE planning_runs SET deadline_at=now()-interval '1 second' WHERE id=$1",
+        params![run],
+    )
+    .await
+    .unwrap();
     artifactory_control::planning::reap(&database.state)
         .await
         .unwrap();
-    let state:(String,String)=sqlx::query_as("SELECT b.status,r.state FROM builds b JOIN planning_runs r ON r.build_id=b.id WHERE b.id=$1").bind(build).fetch_one(&database.pool).await.unwrap();
+    let state:(String,String)=sql::tuple(&mut database.pool.clone(), "SELECT b.status,r.state FROM builds b JOIN planning_runs r ON r.build_id=b.id WHERE b.id=$1", params![build]).await.unwrap();
     assert_eq!(state, ("failed".into(), "failed".into()));
     scheduler::queue_revisions(&database.state).await.unwrap();
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM planning_runs WHERE build_id=$1")
-        .bind(build)
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
+    let count: i64 = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT count(*) FROM planning_runs WHERE build_id=$1",
+        params![build],
+    )
+    .await
+    .unwrap();
     assert_eq!(count, 1);
     database.close().await;
 }
@@ -461,19 +487,20 @@ async fn planner_deadline_finishes_build_and_failed_planning_does_not_loop() {
 async fn model_profile_queries_mask_keys_and_validate_runtime_parameters() {
     let database = Database::new().await;
     let user = Uuid::new_v4();
-    sqlx::query(
+    sql::execute(
+        &mut database.pool.clone(),
         "INSERT INTO users(id,username,password_hash,role) VALUES($1,'admin','unused','admin')",
+        params![user],
     )
-    .bind(user)
-    .execute(&database.pool)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO sessions VALUES($1,$2,now()+interval '1 hour')")
-        .bind(crypto::hash("ai-session"))
-        .bind(user)
-        .execute(&database.pool)
-        .await
-        .unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "INSERT INTO sessions VALUES($1,$2,now()+interval '1 hour')",
+        params![crypto::hash("ai-session"), user],
+    )
+    .await
+    .unwrap();
     let router = api::router(database.state.clone());
     for (parameters, expected) in [
         (
@@ -528,10 +555,13 @@ async fn model_profile_queries_mask_keys_and_validate_runtime_parameters() {
     assert!(!body.contains("private-model-key"));
     assert!(!body.contains("key_ciphertext"));
     assert!(body.contains("********"));
-    let ciphertext: String = sqlx::query_scalar("SELECT key_ciphertext FROM model_profiles")
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
+    let ciphertext: String = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT key_ciphertext FROM model_profiles",
+        params![],
+    )
+    .await
+    .unwrap();
     assert_ne!(ciphertext, "private-model-key");
     assert_eq!(
         crypto::open(&database.state.settings.master_key, &ciphertext).unwrap(),
@@ -542,8 +572,8 @@ async fn model_profile_queries_mask_keys_and_validate_runtime_parameters() {
 
 struct Database {
     state: AppState,
-    pool: PgPool,
-    admin: PgPool,
+    pool: toasty::Db,
+    admin: toasty::Db,
     schema: String,
 }
 
@@ -583,20 +613,19 @@ async fn registration_creates_viewer_and_standard_session() {
     assert_eq!(user["username"], "new-reader");
     assert_eq!(user["role"], "viewer");
     assert!(user.get("password_hash").is_none());
-    let (encoded, role): (String, String) =
-        sqlx::query_as("SELECT password_hash,role FROM users WHERE username='new-reader'")
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
+    let (encoded, role): (String, String) = sql::tuple(
+        &mut database.pool.clone(),
+        "SELECT password_hash,role FROM users WHERE username='new-reader'",
+        params![],
+    )
+    .await
+    .unwrap();
     assert_eq!(role, "viewer");
     assert_ne!(encoded, password);
     Argon2::default()
         .verify_password(password.as_bytes(), &PasswordHash::new(&encoded).unwrap())
         .unwrap();
-    let sessions: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM sessions WHERE expires_at>now()+interval '23 hours' AND expires_at<=now()+interval '24 hours'",
-    )
-    .fetch_one(&database.pool)
+    let sessions: i64 = sql::scalar(&mut database.pool.clone(), "SELECT count(*) FROM sessions WHERE expires_at>now()+interval '23 hours' AND expires_at<=now()+interval '24 hours'", params![])
     .await
     .unwrap();
     assert_eq!(sessions, 1);
@@ -612,11 +641,13 @@ async fn registration_creates_viewer_and_standard_session() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let audit: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE action='user_registered'")
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
+    let audit: i64 = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT count(*) FROM audit_events WHERE action='user_registered'",
+        params![],
+    )
+    .await
+    .unwrap();
     assert_eq!(audit, 1);
     let response = router
         .clone()
@@ -680,62 +711,68 @@ async fn revision_budget_excludes_source_authorization_and_transport_failures() 
         let snapshot = Uuid::new_v4();
         let run = Uuid::new_v4();
         let plan = Uuid::new_v4();
-        sqlx::query("INSERT INTO source_repositories(id,project_id,repository_url,cache_key) VALUES($1,$2,'https://example.com/source.git',$3)")
-            .bind(repo).bind(project).bind(repo.to_string()).execute(&database.pool).await.unwrap();
-        sqlx::query("INSERT INTO source_snapshots(id,project_id,root_repository_id,commit_sha,manifest,digest) VALUES($1,$2,$3,$4,'{}',$5)")
-            .bind(snapshot).bind(project).bind(repo).bind("0".repeat(40)).bind(snapshot.to_string()).execute(&database.pool).await.unwrap();
-        sqlx::query("INSERT INTO planning_runs(id,build_id,purpose,state,model_config) VALUES($1,$2,'initial','succeeded','{}')")
-            .bind(run).bind(build).execute(&database.pool).await.unwrap();
-        sqlx::query("INSERT INTO plan_revisions(id,build_id,run_id,revision,source_snapshot_id,contents,sha256) VALUES($1,$2,$3,0,$4,'{}','digest')")
-            .bind(plan).bind(build).bind(run).bind(snapshot).execute(&database.pool).await.unwrap();
-        sqlx::query("UPDATE builds SET goal='Build CLI',model_config_snapshot='{}',current_plan_id=$2,source_snapshot_id=$3,status='failed' WHERE id=$1")
-            .bind(build).bind(plan).bind(snapshot).execute(&database.pool).await.unwrap();
-        sqlx::query("UPDATE jobs SET status='failed',plan_revision_id=$2 WHERE id=$1")
-            .bind(job)
-            .bind(plan)
-            .execute(&database.pool)
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO attempts(id,job_id,node_id,lease_token,lease_expires_at,status,command_id,error,failure_kind) VALUES($1,$2,$3,'test',now(),'failed',$4,'controlled failure',$5)")
-            .bind(Uuid::new_v4()).bind(job).bind(node).bind(Uuid::new_v4()).bind(failure).execute(&database.pool).await.unwrap();
+        sql::execute(&mut database.pool.clone(), "INSERT INTO source_repositories(id,project_id,repository_url,cache_key) VALUES($1,$2,'https://example.com/source.git',$3)", params![repo, project, repo.to_string()]).await.unwrap();
+        sql::execute(&mut database.pool.clone(), "INSERT INTO source_snapshots(id,project_id,root_repository_id,commit_sha,manifest,digest) VALUES($1,$2,$3,$4,'{}',$5)", params![snapshot, project, repo, "0".repeat(40), snapshot.to_string()]).await.unwrap();
+        sql::execute(&mut database.pool.clone(), "INSERT INTO planning_runs(id,build_id,purpose,state,model_config) VALUES($1,$2,'initial','succeeded','{}')", params![run, build]).await.unwrap();
+        sql::execute(&mut database.pool.clone(), "INSERT INTO plan_revisions(id,build_id,run_id,revision,source_snapshot_id,contents,sha256) VALUES($1,$2,$3,0,$4,'{}','digest')", params![plan, build, run, snapshot]).await.unwrap();
+        sql::execute(&mut database.pool.clone(), "UPDATE builds SET goal='Build CLI',model_config_snapshot='{}',current_plan_id=$2,source_snapshot_id=$3,status='failed' WHERE id=$1", params![build, plan, snapshot]).await.unwrap();
+        sql::execute(
+            &mut database.pool.clone(),
+            "UPDATE jobs SET status='failed',plan_revision_id=$2 WHERE id=$1",
+            params![job, plan],
+        )
+        .await
+        .unwrap();
+        sql::execute(&mut database.pool.clone(), "INSERT INTO attempts(id,job_id,node_id,lease_token,lease_expires_at,status,command_id,error,failure_kind) VALUES($1,$2,$3,'test',now(),'failed',$4,'controlled failure',$5)", params![Uuid::new_v4(), job, node, Uuid::new_v4(), failure]).await.unwrap();
         scheduler::queue_revisions(&database.state).await.unwrap();
-        let (status, count): (String, i32) =
-            sqlx::query_as("SELECT status,revision_count FROM builds WHERE id=$1")
-                .bind(build)
-                .fetch_one(&database.pool)
-                .await
-                .unwrap();
+        let (status, count): (String, i32) = sql::tuple(
+            &mut database.pool.clone(),
+            "SELECT status,revision_count FROM builds WHERE id=$1",
+            params![build],
+        )
+        .await
+        .unwrap();
         if failure == "execution" {
             assert_eq!((status, count), ("replanning".into(), 1));
             // A later execution failure can consume the second revision, then
             // the same scheduler must leave the terminal failure untouched.
-            sqlx::query("UPDATE planning_runs SET state='succeeded' WHERE build_id=$1")
-                .bind(build)
-                .execute(&database.pool)
-                .await
-                .unwrap();
-            sqlx::query("UPDATE builds SET status='failed' WHERE id=$1")
-                .bind(build)
-                .execute(&database.pool)
-                .await
-                .unwrap();
+            sql::execute(
+                &mut database.pool.clone(),
+                "UPDATE planning_runs SET state='succeeded' WHERE build_id=$1",
+                params![build],
+            )
+            .await
+            .unwrap();
+            sql::execute(
+                &mut database.pool.clone(),
+                "UPDATE builds SET status='failed' WHERE id=$1",
+                params![build],
+            )
+            .await
+            .unwrap();
             scheduler::queue_revisions(&database.state).await.unwrap();
-            sqlx::query("UPDATE planning_runs SET state='succeeded' WHERE build_id=$1")
-                .bind(build)
-                .execute(&database.pool)
-                .await
-                .unwrap();
-            sqlx::query("UPDATE builds SET status='failed' WHERE id=$1")
-                .bind(build)
-                .execute(&database.pool)
-                .await
-                .unwrap();
+            sql::execute(
+                &mut database.pool.clone(),
+                "UPDATE planning_runs SET state='succeeded' WHERE build_id=$1",
+                params![build],
+            )
+            .await
+            .unwrap();
+            sql::execute(
+                &mut database.pool.clone(),
+                "UPDATE builds SET status='failed' WHERE id=$1",
+                params![build],
+            )
+            .await
+            .unwrap();
             scheduler::queue_revisions(&database.state).await.unwrap();
-            let count: i32 = sqlx::query_scalar("SELECT revision_count FROM builds WHERE id=$1")
-                .bind(build)
-                .fetch_one(&database.pool)
-                .await
-                .unwrap();
+            let count: i32 = sql::scalar(
+                &mut database.pool.clone(),
+                "SELECT revision_count FROM builds WHERE id=$1",
+                params![build],
+            )
+            .await
+            .unwrap();
             assert_eq!(count, 2);
         } else {
             assert_eq!((status, count), ("failed".into(), 0));
@@ -748,30 +785,28 @@ impl Database {
     async fn new() -> Self {
         let url = std::env::var("ARTIFACTORY_TEST_DATABASE_URL")
             .expect("ARTIFACTORY_TEST_DATABASE_URL is required for explicit database tests");
-        let admin = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&url)
+        let admin = connect(&url, Default::default(), PoolSettings::new(2))
             .await
             .unwrap();
         let schema = format!("test_{}", Uuid::new_v4().simple());
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
-            .execute(&admin)
+        sql::execute(
+            &mut admin.clone(),
+            &format!("CREATE SCHEMA {schema}"),
+            params![],
+        )
+        .await
+        .unwrap();
+        let scoped = with_options(&url, &[("search_path", &schema)]).unwrap();
+        let pool = connect(
+            &scoped,
+            artifactory_control::store::models(),
+            PoolSettings::new(10),
+        )
+        .await
+        .unwrap();
+        artifactory_database::migrate(&pool, &artifactory_control::store::MIGRATIONS)
             .await
             .unwrap();
-        let search = schema.clone();
-        let pool = PgPoolOptions::new()
-            .max_connections(10)
-            .after_connect(move |connection, _| {
-                let query = format!("SET search_path TO {search}");
-                Box::pin(async move {
-                    sqlx::query(&query).execute(connection).await?;
-                    Ok(())
-                })
-            })
-            .connect(&url)
-            .await
-            .unwrap();
-        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
         let settings = Settings {
             database_url: url,
             http_bind: "127.0.0.1:0".into(),
@@ -804,34 +839,39 @@ impl Database {
         }
     }
     async fn close(self) {
-        self.pool.close().await;
-        sqlx::query(&format!("DROP SCHEMA {} CASCADE", self.schema))
-            .execute(&self.admin)
-            .await
-            .unwrap();
+        sql::execute(
+            &mut self.admin.clone(),
+            &format!("DROP SCHEMA {} CASCADE", self.schema),
+            params![],
+        )
+        .await
+        .unwrap();
     }
     async fn fixture(&self) -> (Uuid, Uuid, Uuid) {
         let project = Uuid::new_v4();
         let build = Uuid::new_v4();
         let job = Uuid::new_v4();
         let recipe=Recipe::parse("version: 1\nrelease: {enabled: true}\ntargets:\n  app:\n    os: linux\n    arch: amd64\n    steps: [{name: compile, run: make}]\n    artifacts: [dist/app]\n").unwrap();
-        sqlx::query("INSERT INTO projects(id,name,repository_url) VALUES($1,'test','https://example.com/repo.git')").bind(project).execute(&self.pool).await.unwrap();
-        sqlx::query("INSERT INTO builds(id,project_id,requested_ref,commit_sha,config_snapshot,status,release_version,source_repository_url) VALUES($1,$2,'main',$3,$4,'queued','v1','https://example.com/repo.git')").bind(build).bind(project).bind("0".repeat(40)).bind(serde_json::to_value(&recipe).unwrap()).execute(&self.pool).await.unwrap();
-        sqlx::query("INSERT INTO jobs(id,build_id,target,target_config) VALUES($1,$2,'app',$3)")
-            .bind(job)
-            .bind(build)
-            .bind(serde_json::to_value(&recipe.targets["app"]).unwrap())
-            .execute(&self.pool)
-            .await
-            .unwrap();
+        sql::execute(&mut self.pool.clone(), "INSERT INTO projects(id,name,repository_url) VALUES($1,'test','https://example.com/repo.git')", params![project]).await.unwrap();
+        sql::execute(&mut self.pool.clone(), "INSERT INTO builds(id,project_id,requested_ref,commit_sha,config_snapshot,status,release_version,source_repository_url) VALUES($1,$2,'main',$3,$4,'queued','v1','https://example.com/repo.git')", params![build, project, "0".repeat(40), serde_json::to_value(&recipe).unwrap()]).await.unwrap();
+        sql::execute(
+            &mut self.pool.clone(),
+            "INSERT INTO jobs(id,build_id,target,target_config) VALUES($1,$2,'app',$3)",
+            params![
+                job,
+                build,
+                serde_json::to_value(&recipe.targets["app"]).unwrap()
+            ],
+        )
+        .await
+        .unwrap();
         (project, build, job)
     }
     async fn node(&self) -> Uuid {
         let node = Uuid::new_v4();
         let session = Uuid::new_v4();
         let (sender, _receiver) = mpsc::channel::<Result<Command, tonic::Status>>(128);
-        sqlx::query("INSERT INTO nodes(id,name,os,arch,pool_id,capabilities,certificate_hash,certificate_expires_at,active_session,last_seen) VALUES($1,'test','linux','amd64','00000000-0000-0000-0000-000000000001','[\"git\",\"bash\"]',$2,now()+interval '1 day',$3,now())")
-            .bind(node).bind(node.to_string()).bind(session).execute(&self.pool).await.unwrap();
+        sql::execute(&mut self.pool.clone(), "INSERT INTO nodes(id,name,os,arch,pool_id,capabilities,certificate_hash,certificate_expires_at,active_session,last_seen) VALUES($1,'test','linux','amd64','00000000-0000-0000-0000-000000000001','[\"git\",\"bash\"]',$2,now()+interval '1 day',$3,now())", params![node, node.to_string(), session]).await.unwrap();
         self.state
             .connections
             .write()
@@ -846,8 +886,7 @@ impl Database {
 async fn concurrent_schedulers_do_not_double_assign_or_exceed_slots() {
     let database = Database::new().await;
     let (_, _, job) = database.fixture().await;
-    sqlx::query("INSERT INTO jobs(id,build_id,target,target_config) SELECT $1,build_id,'second',target_config FROM jobs WHERE id=$2")
-        .bind(Uuid::new_v4()).bind(job).execute(&database.pool).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO jobs(id,build_id,target,target_config) SELECT $1,build_id,'second',target_config FROM jobs WHERE id=$2", params![Uuid::new_v4(), job]).await.unwrap();
     database.node().await;
     let (first, second) = tokio::join!(
         scheduler::tick(&database.state),
@@ -855,16 +894,21 @@ async fn concurrent_schedulers_do_not_double_assign_or_exceed_slots() {
     );
     first.unwrap();
     second.unwrap();
-    let attempts: i64 = sqlx::query_scalar("SELECT count(*) FROM attempts WHERE job_id=$1")
-        .bind(job)
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
+    let attempts: i64 = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT count(*) FROM attempts WHERE job_id=$1",
+        params![job],
+    )
+    .await
+    .unwrap();
     assert_eq!(attempts, 1);
-    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM attempts")
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
+    let total: i64 = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT count(*) FROM attempts",
+        params![],
+    )
+    .await
+    .unwrap();
     assert_eq!(total, 1);
     database.close().await;
 }
@@ -875,33 +919,44 @@ async fn queued_signing_authorization_is_rechecked() {
     let database = Database::new().await;
     let (project, _, _) = database.fixture().await;
     let node = database.node().await;
-    sqlx::query(
+    sql::execute(
+        &mut database.pool.clone(),
         "UPDATE jobs SET target_config=jsonb_set(target_config,'{signing_profiles}','[\"apple\"]')",
+        params![],
     )
-    .execute(&database.pool)
     .await
     .unwrap();
-    sqlx::query("UPDATE nodes SET signing_profiles='{apple}' WHERE id=$1")
-        .bind(node)
-        .execute(&database.pool)
-        .await
-        .unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "UPDATE nodes SET signing_profiles='{apple}' WHERE id=$1",
+        params![node],
+    )
+    .await
+    .unwrap();
     scheduler::tick(&database.state).await.unwrap();
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM attempts")
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
+    let count: i64 = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT count(*) FROM attempts",
+        params![],
+    )
+    .await
+    .unwrap();
     assert_eq!(count, 0);
-    sqlx::query("UPDATE projects SET signing_profiles='{apple}' WHERE id=$1")
-        .bind(project)
-        .execute(&database.pool)
-        .await
-        .unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "UPDATE projects SET signing_profiles='{apple}' WHERE id=$1",
+        params![project],
+    )
+    .await
+    .unwrap();
     scheduler::tick(&database.state).await.unwrap();
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM attempts")
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
+    let count: i64 = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT count(*) FROM attempts",
+        params![],
+    )
+    .await
+    .unwrap();
     assert_eq!(count, 1);
     database.close().await;
 }
@@ -912,13 +967,15 @@ async fn scoped_retry_cannot_enable_publication_and_source_is_snapshotted() {
     let database = Database::new().await;
     let (project, _, job) = database.fixture().await;
     let user = Uuid::new_v4();
-    sqlx::query("INSERT INTO users(id,username,password_hash,role) VALUES($1,'builder','unused','operator')").bind(user).execute(&database.pool).await.unwrap();
-    sqlx::query("INSERT INTO api_tokens(id,user_id,name,token_hash,project_ids,scopes,expires_at) VALUES($1,$2,'build-only',$3,$4,'{read,build}',now()+interval '1 hour')").bind(Uuid::new_v4()).bind(user).bind(crypto::hash("builder")).bind(vec![project]).execute(&database.pool).await.unwrap();
-    sqlx::query("UPDATE jobs SET status='failed' WHERE id=$1")
-        .bind(job)
-        .execute(&database.pool)
-        .await
-        .unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO users(id,username,password_hash,role) VALUES($1,'builder','unused','operator')", params![user]).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO api_tokens(id,user_id,name,token_hash,project_ids,scopes,expires_at) VALUES($1,$2,'build-only',$3,$4,'{read,build}',now()+interval '1 hour')", params![Uuid::new_v4(), user, crypto::hash("builder"), vec![project]]).await.unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "UPDATE jobs SET status='failed' WHERE id=$1",
+        params![job],
+    )
+    .await
+    .unwrap();
     let router = api::router(database.state.clone());
     let request = Request::builder()
         .method("POST")
@@ -945,17 +1002,20 @@ async fn scoped_retry_cannot_enable_publication_and_source_is_snapshotted() {
         .unwrap();
     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let build = Uuid::parse_str(body["id"].as_str().unwrap()).unwrap();
-    sqlx::query("UPDATE projects SET repository_url='https://example.com/changed.git' WHERE id=$1")
-        .bind(project)
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    let repository: String =
-        sqlx::query_scalar("SELECT source_repository_url FROM builds WHERE id=$1")
-            .bind(build)
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "UPDATE projects SET repository_url='https://example.com/changed.git' WHERE id=$1",
+        params![project],
+    )
+    .await
+    .unwrap();
+    let repository: String = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT source_repository_url FROM builds WHERE id=$1",
+        params![build],
+    )
+    .await
+    .unwrap();
     assert_eq!(repository, "https://example.com/repo.git");
     database.close().await;
 }
@@ -965,26 +1025,33 @@ async fn scoped_retry_cannot_enable_publication_and_source_is_snapshotted() {
 async fn incomplete_artifacts_never_make_a_release_visible() {
     let database = Database::new().await;
     let (_, build, _) = database.fixture().await;
-    sqlx::query("UPDATE builds SET status='succeeded' WHERE id=$1")
-        .bind(build)
-        .execute(&database.pool)
-        .await
-        .unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "UPDATE builds SET status='succeeded' WHERE id=$1",
+        params![build],
+    )
+    .await
+    .unwrap();
     assert!(
         scheduler::publish_build(&database.state, build)
             .await
             .is_err()
     );
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM releases")
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
+    let count: i64 = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT count(*) FROM releases",
+        params![],
+    )
+    .await
+    .unwrap();
     assert_eq!(count, 0);
-    let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM publish_attempts WHERE status='failed'")
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
+    let count: i64 = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT count(*) FROM publish_attempts WHERE status='failed'",
+        params![],
+    )
+    .await
+    .unwrap();
     assert_eq!(count, 1);
     database.close().await;
 }
@@ -996,25 +1063,32 @@ async fn expired_started_tasks_are_lost_and_unstarted_tasks_requeue() {
     let (_, _, job) = database.fixture().await;
     database.node().await;
     scheduler::tick(&database.state).await.unwrap();
-    sqlx::query("UPDATE attempts SET lease_expires_at=now()-interval '1 second'")
-        .execute(&database.pool)
-        .await
-        .unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "UPDATE attempts SET lease_expires_at=now()-interval '1 second'",
+        params![],
+    )
+    .await
+    .unwrap();
     scheduler::expire(&database.state).await.unwrap();
-    let state: String = sqlx::query_scalar("SELECT status FROM jobs WHERE id=$1")
-        .bind(job)
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
+    let state: String = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT status FROM jobs WHERE id=$1",
+        params![job],
+    )
+    .await
+    .unwrap();
     assert_eq!(state, "queued");
     scheduler::tick(&database.state).await.unwrap();
-    sqlx::query("UPDATE attempts SET status='running',started_at=now(),lease_expires_at=now()-interval '1 second' WHERE status='leased'").execute(&database.pool).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "UPDATE attempts SET status='running',started_at=now(),lease_expires_at=now()-interval '1 second' WHERE status='leased'", params![]).await.unwrap();
     scheduler::expire(&database.state).await.unwrap();
-    let state: String = sqlx::query_scalar("SELECT status FROM jobs WHERE id=$1")
-        .bind(job)
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
+    let state: String = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT status FROM jobs WHERE id=$1",
+        params![job],
+    )
+    .await
+    .unwrap();
     assert_eq!(state, "lost");
     database.close().await;
 }
@@ -1027,31 +1101,43 @@ async fn publication_is_atomic_immutable_and_idempotent() {
     let node = database.node().await;
     let attempt = Uuid::new_v4();
     let artifact = Uuid::new_v4();
-    sqlx::query("UPDATE jobs SET status='succeeded'")
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE builds SET status='succeeded'")
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO attempts(id,job_id,node_id,lease_token,lease_expires_at,status,command_id) VALUES($1,$2,$3,'test',now(),'succeeded',$4)").bind(attempt).bind(job).bind(node).bind(Uuid::new_v4()).execute(&database.pool).await.unwrap();
-    sqlx::query("INSERT INTO uploads(id,attempt_id,path,object_key,expected_size,expected_sha256,expires_at) VALUES($1,$2,'dist/app',$3,5,$4,now())").bind(artifact).bind(attempt).bind(format!("upload/{artifact}")).bind("a".repeat(64)).execute(&database.pool).await.unwrap();
-    sqlx::query("INSERT INTO artifacts(id,attempt_id,path,object_key,size,sha256) VALUES($1,$2,'dist/app',$3,5,$4)").bind(artifact).bind(attempt).bind(format!("artifact/{artifact}")).bind("a".repeat(64)).execute(&database.pool).await.unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "UPDATE jobs SET status='succeeded'",
+        params![],
+    )
+    .await
+    .unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "UPDATE builds SET status='succeeded'",
+        params![],
+    )
+    .await
+    .unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO attempts(id,job_id,node_id,lease_token,lease_expires_at,status,command_id) VALUES($1,$2,$3,'test',now(),'succeeded',$4)", params![attempt, job, node, Uuid::new_v4()]).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO uploads(id,attempt_id,path,object_key,expected_size,expected_sha256,expires_at) VALUES($1,$2,'dist/app',$3,5,$4,now())", params![artifact, attempt, format!("upload/{artifact}"), "a".repeat(64)]).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO artifacts(id,attempt_id,path,object_key,size,sha256) VALUES($1,$2,'dist/app',$3,5,$4)", params![artifact, attempt, format!("artifact/{artifact}"), "a".repeat(64)]).await.unwrap();
     let (first, second) = tokio::join!(
         scheduler::publish_build(&database.state, build),
         scheduler::publish_build(&database.state, build)
     );
     assert_eq!(first.unwrap(), second.unwrap());
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM releases")
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
+    let count: i64 = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT count(*) FROM releases",
+        params![],
+    )
+    .await
+    .unwrap();
     assert_eq!(count, 1);
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM release_artifacts")
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
+    let count: i64 = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT count(*) FROM release_artifacts",
+        params![],
+    )
+    .await
+    .unwrap();
     assert_eq!(count, 1);
     database.close().await;
 }
@@ -1062,14 +1148,15 @@ async fn real_http_authorization_rejects_csrf_and_scope_escalation() {
     let database = Database::new().await;
     let (project, _, _) = database.fixture().await;
     let user = Uuid::new_v4();
-    sqlx::query("INSERT INTO users(id,username,password_hash,role) VALUES($1,'operator','unused','operator')").bind(user).execute(&database.pool).await.unwrap();
-    sqlx::query("INSERT INTO sessions VALUES($1,$2,now()+interval '1 hour')")
-        .bind(crypto::hash("session"))
-        .bind(user)
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO api_tokens(id,user_id,name,token_hash,project_ids,scopes,expires_at) VALUES($1,$2,'scoped',$3,$4,'{read}',now()+interval '1 hour')").bind(Uuid::new_v4()).bind(user).bind(crypto::hash("api-token")).bind(vec![project]).execute(&database.pool).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO users(id,username,password_hash,role) VALUES($1,'operator','unused','operator')", params![user]).await.unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "INSERT INTO sessions VALUES($1,$2,now()+interval '1 hour')",
+        params![crypto::hash("session"), user],
+    )
+    .await
+    .unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO api_tokens(id,user_id,name,token_hash,project_ids,scopes,expires_at) VALUES($1,$2,'scoped',$3,$4,'{read}',now()+interval '1 hour')", params![Uuid::new_v4(), user, crypto::hash("api-token"), vec![project]]).await.unwrap();
     let router = api::router(database.state.clone());
     let request = Request::builder()
         .method("POST")
@@ -1111,19 +1198,20 @@ async fn node_revocation_audit_records_effective_irreversible_state() {
     let database = Database::new().await;
     let node = database.node().await;
     let user = Uuid::new_v4();
-    sqlx::query(
+    sql::execute(
+        &mut database.pool.clone(),
         "INSERT INTO users(id,username,password_hash,role) VALUES($1,'admin','unused','admin')",
+        params![user],
     )
-    .bind(user)
-    .execute(&database.pool)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO sessions VALUES($1,$2,now()+interval '1 hour')")
-        .bind(crypto::hash("admin-session"))
-        .bind(user)
-        .execute(&database.pool)
-        .await
-        .unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "INSERT INTO sessions VALUES($1,$2,now()+interval '1 hour')",
+        params![crypto::hash("admin-session"), user],
+    )
+    .await
+    .unwrap();
     let router = api::router(database.state.clone());
     for revoked in [true, false] {
         let request = Request::builder()
@@ -1150,16 +1238,14 @@ async fn node_revocation_audit_records_effective_irreversible_state() {
             StatusCode::OK
         );
     }
-    let revoked: bool = sqlx::query_scalar("SELECT revoked FROM nodes WHERE id=$1")
-        .bind(node)
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
-    let states: Vec<bool> = sqlx::query_scalar(
-        "SELECT (details->>'revoked')::boolean FROM audit_events WHERE action='node_updated' AND resource_id=$1 ORDER BY id",
+    let revoked: bool = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT revoked FROM nodes WHERE id=$1",
+        params![node],
     )
-    .bind(node.to_string())
-    .fetch_all(&database.pool)
+    .await
+    .unwrap();
+    let states: Vec<bool> = sql::scalars(&mut database.pool.clone(), "SELECT (details->>'revoked')::boolean FROM audit_events WHERE action='node_updated' AND resource_id=$1 ORDER BY id", params![node.to_string()])
     .await
     .unwrap();
     assert!(revoked);
@@ -1175,43 +1261,55 @@ async fn ota_uses_node_lock_and_pool_limit_and_never_changes_admin_drain() {
     let first = database.node().await;
     let second = database.node().await;
     let release = Uuid::new_v4();
-    sqlx::query("INSERT INTO emissary_releases(id,version,manifest,signature,manifest_hash) VALUES($1,'v-next',$2,'test','hash')")
-        .bind(release).bind(serde_json::json!({"assets":[{"os":"linux","arch":"amd64","name":"artifactory-emissary-linux-amd64"}]}).to_string()).execute(&database.pool).await.unwrap();
-    sqlx::query("UPDATE nodes SET capabilities=capabilities || '[\"emissary-ota-v1\"]'::jsonb,emissary_current_version='v-old',emissary_launcher_version='v-old',draining=true").execute(&database.pool).await.unwrap();
-    sqlx::query("UPDATE node_pools SET emissary_target_release=$1")
-        .bind(release)
-        .execute(&database.pool)
-        .await
-        .unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO emissary_releases(id,version,manifest,signature,manifest_hash) VALUES($1,'v-next',$2,'test','hash')", params![release, serde_json::json!({"assets":[{"os":"linux","arch":"amd64","name":"artifactory-emissary-linux-amd64"}]}).to_string()]).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "UPDATE nodes SET capabilities=capabilities || '[\"emissary-ota-v1\"]'::jsonb,emissary_current_version='v-old',emissary_launcher_version='v-old',draining=true", params![]).await.unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "UPDATE node_pools SET emissary_target_release=$1",
+        params![release],
+    )
+    .await
+    .unwrap();
     let (a, b) = tokio::join!(
         scheduler::tick(&database.state),
         scheduler::tick(&database.state)
     );
     a.unwrap();
     b.unwrap();
-    let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM emissary_updates WHERE status='offered'")
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
+    let count: i64 = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT count(*) FROM emissary_updates WHERE status='offered'",
+        params![],
+    )
+    .await
+    .unwrap();
     assert_eq!(
         count, 1,
         "pool concurrency must be one across racing schedulers"
     );
-    let updates: Vec<Uuid> = sqlx::query_scalar("SELECT node_id FROM emissary_updates")
-        .fetch_all(&database.pool)
-        .await
-        .unwrap();
+    let updates: Vec<Uuid> = sql::scalars(
+        &mut database.pool.clone(),
+        "SELECT node_id FROM emissary_updates",
+        params![],
+    )
+    .await
+    .unwrap();
     assert!(updates[0] == first || updates[0] == second);
-    let attempts: i64 = sqlx::query_scalar("SELECT count(*) FROM attempts")
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
+    let attempts: i64 = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT count(*) FROM attempts",
+        params![],
+    )
+    .await
+    .unwrap();
     assert_eq!(attempts, 0);
-    let drained: i64 = sqlx::query_scalar("SELECT count(*) FROM nodes WHERE draining")
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
+    let drained: i64 = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT count(*) FROM nodes WHERE draining",
+        params![],
+    )
+    .await
+    .unwrap();
     assert_eq!(drained, 2, "OTA must preserve administrator drain");
     database.close().await;
 }
@@ -1222,14 +1320,15 @@ async fn ota_management_rejects_operator_and_project_tokens() {
     let database = Database::new().await;
     let (project, _, _) = database.fixture().await;
     let user = Uuid::new_v4();
-    sqlx::query("INSERT INTO users(id,username,password_hash,role) VALUES($1,'ota-operator','unused','operator')").bind(user).execute(&database.pool).await.unwrap();
-    sqlx::query("INSERT INTO sessions VALUES($1,$2,now()+interval '1 hour')")
-        .bind(crypto::hash("ota-session"))
-        .bind(user)
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO api_tokens(id,user_id,name,token_hash,project_ids,scopes,expires_at) VALUES($1,$2,'scoped',$3,$4,'{read,build,release}',now()+interval '1 hour')").bind(Uuid::new_v4()).bind(user).bind(crypto::hash("ota-token")).bind(vec![project]).execute(&database.pool).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO users(id,username,password_hash,role) VALUES($1,'ota-operator','unused','operator')", params![user]).await.unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "INSERT INTO sessions VALUES($1,$2,now()+interval '1 hour')",
+        params![crypto::hash("ota-session"), user],
+    )
+    .await
+    .unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO api_tokens(id,user_id,name,token_hash,project_ids,scopes,expires_at) VALUES($1,$2,'scoped',$3,$4,'{read,build,release}',now()+interval '1 hour')", params![Uuid::new_v4(), user, crypto::hash("ota-token"), vec![project]]).await.unwrap();
     let router = api::router(database.state.clone());
     for (method, path, body) in [
         (
@@ -1291,14 +1390,16 @@ async fn ota_failed_activation_pauses_pool_and_fences_stale_sessions() {
     let database = Database::new().await;
     let node = database.node().await;
     let release = Uuid::new_v4();
-    sqlx::query("INSERT INTO emissary_releases(id,version,manifest,signature,manifest_hash) VALUES($1,'v-next',$2,'test','hash')").bind(release).bind(serde_json::json!({"assets":[{"os":"linux","arch":"amd64","name":"artifactory-emissary-linux-amd64"}]}).to_string()).execute(&database.pool).await.unwrap();
-    sqlx::query("UPDATE nodes SET capabilities=capabilities || '[\"emissary-ota-v1\"]'::jsonb,emissary_current_version='v-old',emissary_target_release=$1,draining=true WHERE id=$2").bind(release).bind(node).execute(&database.pool).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO emissary_releases(id,version,manifest,signature,manifest_hash) VALUES($1,'v-next',$2,'test','hash')", params![release, serde_json::json!({"assets":[{"os":"linux","arch":"amd64","name":"artifactory-emissary-linux-amd64"}]}).to_string()]).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "UPDATE nodes SET capabilities=capabilities || '[\"emissary-ota-v1\"]'::jsonb,emissary_current_version='v-old',emissary_target_release=$1,draining=true WHERE id=$2", params![release, node]).await.unwrap();
     scheduler::tick(&database.state).await.unwrap();
-    let id: Uuid = sqlx::query_scalar("SELECT id FROM emissary_updates WHERE node_id=$1")
-        .bind(node)
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
+    let id: Uuid = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT id FROM emissary_updates WHERE node_id=$1",
+        params![node],
+    )
+    .await
+    .unwrap();
     let session = database.state.connections.read().await[&node].session;
     let payload = serde_json::json!({"diagnostics":{"emissary_version":"v-old"},"ota":{"update_id":id,"phase":"rolled_back","launcher_version":"v-old","error":"candidate crashed"}});
     assert!(
@@ -1306,11 +1407,13 @@ async fn ota_failed_activation_pauses_pool_and_fences_stale_sessions() {
             .await
             .is_err()
     );
-    let status: String = sqlx::query_scalar("SELECT status FROM emissary_updates WHERE id=$1")
-        .bind(id)
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
+    let status: String = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT status FROM emissary_updates WHERE id=$1",
+        params![id],
+    )
+    .await
+    .unwrap();
     assert_eq!(status, "offered");
     let preparing = serde_json::json!({"diagnostics":{"emissary_version":"v-old"},"ota":{"update_id":id,"phase":"activating","activation_pending":true,"launcher_version":"v-old"}});
     assert!(
@@ -1324,26 +1427,31 @@ async fn ota_failed_activation_pauses_pool_and_fences_stale_sessions() {
             .await
             .unwrap()
     );
-    let flags:(bool,bool,bool)=sqlx::query_as("SELECT n.draining,n.ota_draining,p.emissary_updates_paused FROM nodes n JOIN node_pools p ON p.id=n.pool_id WHERE n.id=$1").bind(node).fetch_one(&database.pool).await.unwrap();
+    let flags:(bool,bool,bool)=sql::tuple(&mut database.pool.clone(), "SELECT n.draining,n.ota_draining,p.emissary_updates_paused FROM nodes n JOIN node_pools p ON p.id=n.pool_id WHERE n.id=$1", params![node]).await.unwrap();
     assert_eq!(flags, (true, false, true));
     scheduler::tick(&database.state).await.unwrap();
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM emissary_updates")
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
+    let count: i64 = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT count(*) FROM emissary_updates",
+        params![],
+    )
+    .await
+    .unwrap();
     assert_eq!(count, 1, "failed release must never loop automatically");
     // Revocation and certificate expiry are enforced within the status transaction.
-    sqlx::query("UPDATE nodes SET revoked=true WHERE id=$1")
-        .bind(node)
-        .execute(&database.pool)
-        .await
-        .unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "UPDATE nodes SET revoked=true WHERE id=$1",
+        params![node],
+    )
+    .await
+    .unwrap();
     assert!(
         artifactory_control::ota::report(&database.state, node, session, &payload)
             .await
             .is_err()
     );
-    sqlx::query("UPDATE nodes SET revoked=false,certificate_expires_at=now()-interval '1 minute' WHERE id=$1").bind(node).execute(&database.pool).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "UPDATE nodes SET revoked=false,certificate_expires_at=now()-interval '1 minute' WHERE id=$1", params![node]).await.unwrap();
     assert!(
         artifactory_control::ota::report(&database.state, node, session, &payload)
             .await
@@ -1361,40 +1469,44 @@ async fn ota_retry_after_pool_move_respects_new_pool_capacity() {
     let release = Uuid::new_v4();
     let prior = Uuid::new_v4();
     let new_pool = Uuid::new_v4();
-    sqlx::query("INSERT INTO emissary_releases(id,version,manifest,signature,manifest_hash) VALUES($1,'v-next','{}','test','hash')").bind(release).execute(&database.pool).await.unwrap();
-    sqlx::query("INSERT INTO emissary_updates(id,node_id,pool_id,release_id,status,finished_at) VALUES($1,$2,'00000000-0000-0000-0000-000000000001',$3,'failed',now())").bind(prior).bind(node).bind(release).execute(&database.pool).await.unwrap();
-    sqlx::query("INSERT INTO node_pools(id,name) VALUES($1,'new pool')")
-        .bind(new_pool)
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE nodes SET pool_id=$1")
-        .bind(new_pool)
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO emissary_updates(id,node_id,pool_id,release_id) VALUES($1,$2,$3,$4)")
-        .bind(Uuid::new_v4())
-        .bind(other)
-        .bind(new_pool)
-        .bind(release)
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    let user = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO users(id,username,password_hash,role) VALUES($1,'admin','unused','admin')",
+    sql::execute(&mut database.pool.clone(), "INSERT INTO emissary_releases(id,version,manifest,signature,manifest_hash) VALUES($1,'v-next','{}','test','hash')", params![release]).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO emissary_updates(id,node_id,pool_id,release_id,status,finished_at) VALUES($1,$2,'00000000-0000-0000-0000-000000000001',$3,'failed',now())", params![prior, node, release]).await.unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "INSERT INTO node_pools(id,name) VALUES($1,'new pool')",
+        params![new_pool],
     )
-    .bind(user)
-    .execute(&database.pool)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO sessions VALUES($1,$2,now()+interval '1 hour')")
-        .bind(crypto::hash("admin-session"))
-        .bind(user)
-        .execute(&database.pool)
-        .await
-        .unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "UPDATE nodes SET pool_id=$1",
+        params![new_pool],
+    )
+    .await
+    .unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "INSERT INTO emissary_updates(id,node_id,pool_id,release_id) VALUES($1,$2,$3,$4)",
+        params![Uuid::new_v4(), other, new_pool, release],
+    )
+    .await
+    .unwrap();
+    let user = Uuid::new_v4();
+    sql::execute(
+        &mut database.pool.clone(),
+        "INSERT INTO users(id,username,password_hash,role) VALUES($1,'admin','unused','admin')",
+        params![user],
+    )
+    .await
+    .unwrap();
+    sql::execute(
+        &mut database.pool.clone(),
+        "INSERT INTO sessions VALUES($1,$2,now()+interval '1 hour')",
+        params![crypto::hash("admin-session"), user],
+    )
+    .await
+    .unwrap();
     let request = Request::builder()
         .method("POST")
         .uri(format!("/api/v1/emissary-updates/{prior}/retry"))

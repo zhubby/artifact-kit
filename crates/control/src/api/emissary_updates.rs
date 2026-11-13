@@ -1,4 +1,5 @@
 pub use crate::store::Target;
+use crate::store::dto;
 use crate::{
     auth::Auth,
     error::{ApiError, Result},
@@ -13,7 +14,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-pub async fn releases(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
+pub async fn releases(
+    State(state): State<AppState>,
+    auth: Auth,
+) -> Result<Json<Vec<dto::EmissaryRelease>>> {
     auth.session_role("viewer")?;
     Ok(Json(state.store.emissary_releases().await?))
 }
@@ -74,7 +78,10 @@ pub async fn pool_target(
     Ok(Json(json!({"ok":true})))
 }
 
-pub async fn updates(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
+pub async fn updates(
+    State(state): State<AppState>,
+    auth: Auth,
+) -> Result<Json<Vec<dto::EmissaryUpdate>>> {
     auth.session_role("viewer")?;
     Ok(Json(state.store.emissary_updates().await?))
 }

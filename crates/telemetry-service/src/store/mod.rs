@@ -1,23 +1,24 @@
 //! Telemetry persistence and read-only business authorization.
+use artifactory_database::{params, sql};
 mod history;
 mod ingest;
+mod models;
 use crate::internal;
 pub use history::{HistoryPage, LatestTelemetry};
 pub use ingest::ingest;
-use sqlx::PgPool;
 use tonic::Status;
 use uuid::Uuid;
 #[derive(Clone)]
 pub struct TelemetryStore {
-    write: PgPool,
-    read: PgPool,
+    write: toasty::Db,
+    read: toasty::Db,
 }
 #[derive(Clone)]
 pub struct BusinessAuthorizationRepository {
-    pool: PgPool,
+    pool: toasty::Db,
 }
 impl TelemetryStore {
-    pub fn new(write: PgPool, read: PgPool) -> Self {
+    pub fn new(write: toasty::Db, read: toasty::Db) -> Self {
         Self { write, read }
     }
     pub async fn ingest(
@@ -36,7 +37,7 @@ impl TelemetryStore {
             "DELETE FROM inventory_observations WHERE sampled_at<now()-interval '180 days'",
             "DELETE FROM inventory_versions v WHERE NOT EXISTS(SELECT 1 FROM inventory_observations o WHERE o.node_id=v.node_id AND o.digest=v.digest) AND NOT EXISTS(SELECT 1 FROM latest_inventories l WHERE l.node_id=v.node_id AND l.digest=v.digest)",
         ] {
-            if let Err(error) = sqlx::query(statement).execute(&self.write).await {
+            if let Err(error) = sql::execute(&mut self.write.clone(), statement, params![]).await {
                 tracing::warn!(%error, "telemetry retention failed");
                 failure = Some(error);
             }
@@ -48,24 +49,23 @@ impl TelemetryStore {
     }
 }
 impl BusinessAuthorizationRepository {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: toasty::Db) -> Self {
         Self { pool }
     }
     pub async fn identify(&self, certificate_hash: String) -> Result<Uuid, Status> {
-        sqlx::query_scalar("SELECT id FROM nodes WHERE certificate_hash=$1 AND NOT revoked AND certificate_expires_at>now()")
-            .bind(certificate_hash).fetch_optional(&self.pool).await.map_err(internal)?.ok_or_else(|| Status::unauthenticated("Emissary certificate revoked, expired or unknown"))
+        sql::optional_scalar(&mut self.pool.clone(), "SELECT id FROM nodes WHERE certificate_hash=$1 AND NOT revoked AND certificate_expires_at>now()", params![certificate_hash]).await.map_err(internal)?.ok_or_else(|| Status::unauthenticated("Emissary certificate revoked, expired or unknown"))
     }
     pub async fn authorize_attempts(&self, node: Uuid, attempts: &[Uuid]) -> Result<(), Status> {
         if attempts.is_empty() {
             return Ok(());
         }
-        let owned: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM attempts WHERE node_id=$1 AND id=ANY($2)")
-                .bind(node)
-                .bind(attempts)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(internal)?;
+        let owned: i64 = sql::scalar(
+            &mut self.pool.clone(),
+            "SELECT count(*) FROM attempts WHERE node_id=$1 AND id=ANY($2)",
+            params![node, attempts],
+        )
+        .await
+        .map_err(internal)?;
         if owned as usize != attempts.len() {
             return Err(Status::permission_denied(
                 "process telemetry must belong to this Emissary's attempts",
@@ -77,3 +77,13 @@ impl BusinessAuthorizationRepository {
 
 mod connect;
 pub use connect::connect;
+
+pub static MIGRATIONS: toasty::migration::MigrationSet = toasty::embed_migrations!("migrations");
+
+pub fn models() -> toasty::schema::app::ModelSet {
+    toasty::models!(
+        models::TelemetryBatch,
+        models::InventoryVersion,
+        models::InventoryObservation
+    )
+}

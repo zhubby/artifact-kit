@@ -1,5 +1,6 @@
 use super::*;
-use sqlx::Row;
+use artifactory_database::{params, sql};
+use toasty::stmt::Type;
 
 #[tokio::test]
 #[ignore = "requires isolated PostgreSQL"]
@@ -9,10 +10,8 @@ async fn source_public_address_does_not_replace_internal_rpc_and_old_snapshots_s
     let (project, _, _) = db.fixture().await;
     let repository = Uuid::new_v4();
     let snapshot = Uuid::new_v4();
-    sqlx::query("INSERT INTO source_repositories(id,project_id,repository_url,cache_key) VALUES($1,$2,'https://example.com/repo.git',$3)")
-        .bind(repository).bind(project).bind(crypto::hash(repository.to_string())).execute(&db.pool).await.unwrap();
-    sqlx::query("INSERT INTO source_snapshots(id,project_id,root_repository_id,commit_sha,manifest,digest,service_origin,public_origin) VALUES($1,$2,$3,$4,'{}',$5,'https://source.internal:8090','https://source.example.com/shard-0')")
-        .bind(snapshot).bind(project).bind(repository).bind("0".repeat(40)).bind("a".repeat(64)).execute(&db.pool).await.unwrap();
+    sql::execute(&mut db.pool.clone(), "INSERT INTO source_repositories(id,project_id,repository_url,cache_key) VALUES($1,$2,'https://example.com/repo.git',$3)", params![repository, project, crypto::hash(repository.to_string())]).await.unwrap();
+    sql::execute(&mut db.pool.clone(), "INSERT INTO source_snapshots(id,project_id,root_repository_id,commit_sha,manifest,digest,service_origin,public_origin) VALUES($1,$2,$3,$4,'{}',$5,'https://source.internal:8090','https://source.example.com/shard-0')", params![snapshot, project, repository, "0".repeat(40), "a".repeat(64)]).await.unwrap();
     assert_eq!(
         runtime_bridge::source_origin(&db.state, snapshot)
             .await
@@ -27,11 +26,13 @@ async fn source_public_address_does_not_replace_internal_rpc_and_old_snapshots_s
             .as_deref(),
         Some("https://source.example.com/shard-0")
     );
-    sqlx::query("UPDATE source_snapshots SET public_origin=NULL WHERE id=$1")
-        .bind(snapshot)
-        .execute(&db.pool)
-        .await
-        .unwrap();
+    sql::execute(
+        &mut db.pool.clone(),
+        "UPDATE source_snapshots SET public_origin=NULL WHERE id=$1",
+        params![snapshot],
+    )
+    .await
+    .unwrap();
     assert_eq!(
         runtime_bridge::source_download_origin(&db.state, snapshot)
             .await
@@ -39,11 +40,13 @@ async fn source_public_address_does_not_replace_internal_rpc_and_old_snapshots_s
             .as_deref(),
         Some("https://source.internal:8090")
     );
-    sqlx::query("UPDATE source_snapshots SET service_origin=NULL WHERE id=$1")
-        .bind(snapshot)
-        .execute(&db.pool)
-        .await
-        .unwrap();
+    sql::execute(
+        &mut db.pool.clone(),
+        "UPDATE source_snapshots SET service_origin=NULL WHERE id=$1",
+        params![snapshot],
+    )
+    .await
+    .unwrap();
     assert!(
         runtime_bridge::source_download_origin(&db.state, snapshot)
             .await
@@ -57,66 +60,81 @@ async fn source_public_address_does_not_replace_internal_rpc_and_old_snapshots_s
 async fn native_run_outbox_is_atomic_and_cancel_is_a_new_version() {
     let db = Database::new().await;
     let (project, build, _) = db.fixture().await;
-    sqlx::query("UPDATE builds SET planner_backend='kubernetes',status='planning' WHERE id=$1")
-        .bind(build)
-        .execute(&db.pool)
-        .await
-        .unwrap();
-    let run = Uuid::new_v4();
-    let mut tx = db.pool.begin().await.unwrap();
-    sqlx::query(
-        "INSERT INTO planning_runs(id,build_id,purpose,model_config) VALUES($1,$2,'initial','{}')",
+    sql::execute(
+        &mut db.pool.clone(),
+        "UPDATE builds SET planner_backend='kubernetes',status='planning' WHERE id=$1",
+        params![build],
     )
-    .bind(run)
-    .bind(build)
-    .execute(&mut *tx)
+    .await
+    .unwrap();
+    let run = Uuid::new_v4();
+    let mut tx_db = db.pool.clone();
+    let mut tx = tx_db.transaction().await.unwrap();
+    sql::execute(
+        &mut tx,
+        "INSERT INTO planning_runs(id,build_id,purpose,model_config) VALUES($1,$2,'initial','{}')",
+        params![run, build],
+    )
     .await
     .unwrap();
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM runtime_intents WHERE run_id=$1")
-            .bind(run)
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap(),
+        sql::scalar::<i64>(
+            &mut tx,
+            "SELECT count(*) FROM runtime_intents WHERE run_id=$1",
+            params![run]
+        )
+        .await
+        .unwrap(),
         1
     );
     tx.rollback().await.unwrap();
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM runtime_intents WHERE run_id=$1")
-            .bind(run)
-            .fetch_one(&db.pool)
-            .await
-            .unwrap(),
+        sql::scalar::<i64>(
+            &mut db.pool.clone(),
+            "SELECT count(*) FROM runtime_intents WHERE run_id=$1",
+            params![run]
+        )
+        .await
+        .unwrap(),
         0
     );
-    sqlx::query(
+    sql::execute(
+        &mut db.pool.clone(),
         "INSERT INTO planning_runs(id,build_id,purpose,model_config) VALUES($1,$2,'initial','{}')",
+        params![run, build],
     )
-    .bind(run)
-    .bind(build)
-    .execute(&db.pool)
     .await
     .unwrap();
-    sqlx::query("UPDATE planning_runs SET state='canceled' WHERE id=$1")
-        .bind(run)
-        .execute(&db.pool)
-        .await
-        .unwrap();
-    let row=sqlx::query("SELECT authority,(SELECT count(*) FROM runtime_intents WHERE run_id=$1) AS events FROM planning_runs WHERE id=$1").bind(run).fetch_one(&db.pool).await.unwrap();
-    assert_eq!(row.get::<String, _>("authority"), "kubernetes");
-    assert_eq!(row.get::<i64, _>("events"), 2);
-    // Changing project default leaves the existing Build pinned to its original backend.
-    sqlx::query("UPDATE projects SET planner_backend='poll' WHERE id=$1")
-        .bind(project)
-        .execute(&db.pool)
-        .await
-        .unwrap();
+    sql::execute(
+        &mut db.pool.clone(),
+        "UPDATE planning_runs SET state='canceled' WHERE id=$1",
+        params![run],
+    )
+    .await
+    .unwrap();
+    let row=sql::record(&mut db.pool.clone(), "SELECT authority,(SELECT count(*) FROM runtime_intents WHERE run_id=$1) AS events FROM planning_runs WHERE id=$1", params![run], &[("authority", Type::String),("events", Type::Bool)]).await.unwrap();
     assert_eq!(
-        sqlx::query_scalar::<_, String>("SELECT planner_backend FROM builds WHERE id=$1")
-            .bind(build)
-            .fetch_one(&db.pool)
-            .await
-            .unwrap(),
+        row.decode::<String>("authority")
+            .expect("database projection"),
+        "kubernetes"
+    );
+    assert_eq!(row.decode::<i64>("events").expect("database projection"), 2);
+    // Changing project default leaves the existing Build pinned to its original backend.
+    sql::execute(
+        &mut db.pool.clone(),
+        "UPDATE projects SET planner_backend='poll' WHERE id=$1",
+        params![project],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        sql::scalar::<String>(
+            &mut db.pool.clone(),
+            "SELECT planner_backend FROM builds WHERE id=$1",
+            params![build]
+        )
+        .await
+        .unwrap(),
         "kubernetes"
     );
     db.close().await;

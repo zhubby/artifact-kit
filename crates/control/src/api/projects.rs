@@ -1,4 +1,5 @@
 pub use crate::store::ProjectInput;
+use crate::store::dto;
 use crate::{
     auth::Auth,
     error::{ApiError, Result},
@@ -12,7 +13,10 @@ use axum::{
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-pub async fn list(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
+pub async fn list(
+    State(state): State<AppState>,
+    auth: Auth,
+) -> Result<Json<Vec<dto::ProjectSummary>>> {
     if auth.token_projects.is_some() && !auth.token_scopes.iter().any(|scope| scope == "read") {
         return Err(ApiError::Forbidden);
     }
@@ -23,7 +27,7 @@ pub async fn detail(
     State(state): State<AppState>,
     auth: Auth,
     Path(id): Path<Uuid>,
-) -> Result<Json<Value>> {
+) -> Result<Json<dto::Project>> {
     auth.project(id, "read")?;
     Ok(Json(state.store.project(id).await?))
 }

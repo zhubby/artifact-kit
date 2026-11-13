@@ -1,12 +1,13 @@
 //! These tests use real Control, PostgreSQL locks and private object storage.
 //! Run against an isolated acceptance fixture; never a shared production database.
 use anyhow::{Context, Result, ensure};
+use artifactory_database::{PoolSettings, connect};
+use artifactory_database::{params, sql};
 use artifactory_emissary::{client, config::Config, platform, protocol as pb};
 use futures::{StreamExt, future::join_all};
 use reqwest::{Client, Method};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Postgres, Transaction};
 use std::{path::Path, time::Duration};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -17,7 +18,7 @@ struct Environment {
     http: Client,
     base: String,
     cookie: String,
-    db: PgPool,
+    db: toasty::Db,
     existing: Config,
     source: Value,
 }
@@ -38,11 +39,12 @@ impl Environment {
             })
             .collect::<std::result::Result<Vec<_>, _>>()?
             .join("; ");
-        let db = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(12)
-            .acquire_timeout(Duration::from_secs(10))
-            .connect(&std::env::var("DATABASE_URL")?)
-            .await?;
+        let db = connect(
+            &std::env::var("DATABASE_URL")?,
+            Default::default(),
+            PoolSettings::new(12).timeout(Duration::from_secs(10)),
+        )
+        .await?;
         let existing = Config::load(Path::new(&std::env::var(
             "ARTIFACTORY_LIVE_EMISSARY_CONFIG",
         )?))?;
@@ -157,13 +159,13 @@ impl<'a> Probe<'a> {
         let target = json!({"os":os,"arch":arch,"executor":"native","labels":{},"capabilities":[],"signing_profiles":profiles,"timeout_seconds":120,"steps":[{"name":"probe","phase":"build","shell":if cfg!(windows){"pwsh"}else{"sh"},"run":"echo probe","timeout_seconds":60}],"artifacts":["dist/probe"]});
         // Protocol tests seed an already-planned task. Planning is exercised by
         // the Kubernetes Pi acceptance and is not bypassed by the product API.
-        sqlx::query("INSERT INTO builds(id,project_id,requested_ref,commit_sha,config_snapshot,status,source_repository_url) VALUES($1,$2,'probe',$3,$4,'queued',$5)").bind(build).bind(project).bind("a".repeat(40)).bind(json!({"version":1,"parameters":{},"targets":{"native":target},"release":{"enabled":false}})).bind(env.source["repository_url"].as_str().context("source URL missing")?).execute(&env.db).await?;
-        sqlx::query("INSERT INTO jobs(id,build_id,target,target_config) VALUES($1,$2,'native',$3)")
-            .bind(job)
-            .bind(build)
-            .bind(target)
-            .execute(&env.db)
-            .await?;
+        sql::execute(&mut env.db.clone(), "INSERT INTO builds(id,project_id,requested_ref,commit_sha,config_snapshot,status,source_repository_url) VALUES($1,$2,'probe',$3,$4,'queued',$5)", params![build, project, "a".repeat(40), json!({"version":1,"parameters":{},"targets":{"native":target},"release":{"enabled":false}}), env.source["repository_url"].as_str().context("source URL missing")?]).await?;
+        sql::execute(
+            &mut env.db.clone(),
+            "INSERT INTO jobs(id,build_id,target,target_config) VALUES($1,$2,'native',$3)",
+            params![job, build, target],
+        )
+        .await?;
         let control = client::control(&cfg).await?;
         let (send, stream) = open(&cfg, control.clone(), 1).await?;
         let mut probe = Self {
@@ -217,35 +219,47 @@ impl<'a> Probe<'a> {
         );
         Ok(())
     }
-    async fn lock(&self, table: &str, id: &str) -> Result<(Transaction<'static, Postgres>, i32)> {
+    async fn lock(&self, table: &str, id: &str) -> Result<(ProtocolLock, i32)> {
         ensure!(
             ["attempts", "nodes"].contains(&table),
             "only owned protocol rows may be locked"
         );
         let id = Uuid::parse_str(id)?;
-        let mut tx = self.env.db.begin().await?;
-        let pid = sqlx::query_scalar("SELECT pg_backend_pid()")
-            .fetch_one(&mut *tx)
+        let table = table.to_owned();
+        let mut db = self.env.db.clone();
+        let (ready, initialized) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let mut tx = db.transaction().await?;
+            let pid: i32 = sql::scalar(&mut tx, "SELECT pg_backend_pid()", params![]).await?;
+            sql::scalar::<Uuid>(
+                &mut tx,
+                &format!("SELECT id FROM {table} WHERE id=$1 FOR UPDATE"),
+                params![id],
+            )
             .await?;
-        sqlx::query(&format!("SELECT id FROM {table} WHERE id=$1 FOR UPDATE"))
-            .bind(id)
-            .fetch_one(&mut *tx)
-            .await?;
-        Ok((tx, pid))
+            let _ = ready.send(pid);
+            if released.await.is_ok() {
+                tx.commit().await?;
+            }
+            Ok(())
+        });
+        let pid = initialized.await?;
+        Ok((ProtocolLock { release, task }, pid))
     }
     async fn waiting(&self, pid: i32) -> Result<()> {
         tokio::time::timeout(Duration::from_secs(10),async{
-            loop {let blocked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock')").bind(pid).fetch_one(&self.env.db).await?;if blocked{return Ok::<_,anyhow::Error>(());}tokio::time::sleep(Duration::from_millis(25)).await;}
+            loop {let blocked:bool=sql::scalar(&mut self.env.db.clone(), "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock')", params![pid]).await?;if blocked{return Ok::<_,anyhow::Error>(());}tokio::time::sleep(Duration::from_millis(25)).await;}
         }).await??;
         Ok(())
     }
     async fn session(&self) -> Result<Uuid> {
-        Ok(
-            sqlx::query_scalar("SELECT active_session FROM nodes WHERE id=$1")
-                .bind(Uuid::parse_str(&self.cfg.emissary_id)?)
-                .fetch_one(&self.env.db)
-                .await?,
+        Ok(sql::scalar(
+            &mut self.env.db.clone(),
+            "SELECT active_session FROM nodes WHERE id=$1",
+            params![Uuid::parse_str(&self.cfg.emissary_id)?],
         )
+        .await?)
     }
     async fn session_changed(&self, old: Uuid) -> Result<()> {
         tokio::time::timeout(Duration::from_secs(10), async {
@@ -270,7 +284,7 @@ impl<'a> Probe<'a> {
                     .await?;
             }
             "certificate-expired" => {
-                sqlx::query("UPDATE nodes SET certificate_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1").bind(Uuid::parse_str(&self.cfg.emissary_id)?).execute(&self.env.db).await?;
+                sql::execute(&mut self.env.db.clone(), "UPDATE nodes SET certificate_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1", params![Uuid::parse_str(&self.cfg.emissary_id)?]).await?;
             }
             "canceled" => {
                 self.env
@@ -292,14 +306,29 @@ impl<'a> Probe<'a> {
         Ok(())
     }
     async fn cleanup(&self) -> Result<()> {
-        self.env
+        let cancellation = self
+            .env
             .api(
                 Method::POST,
                 &format!("/builds/{}/cancel", self.build),
                 json!({}),
             )
-            .await?;
-        sqlx::query("UPDATE attempts SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE job_id=$1 AND status IN ('leased','running')").bind(self.job).execute(&self.env.db).await?;
+            .await;
+        if let Err(error) = cancellation {
+            // A successful completion/cancellation may already be terminal by
+            // the time cleanup runs. Preserve all other cancellation errors.
+            let build = self
+                .env
+                .api(Method::GET, &format!("/builds/{}", self.build), Value::Null)
+                .await?;
+            if !matches!(
+                build["status"].as_str(),
+                Some("succeeded" | "failed" | "lost" | "canceled")
+            ) {
+                return Err(error);
+            }
+        }
+        sql::execute(&mut self.env.db.clone(), "UPDATE attempts SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE job_id=$1 AND status IN ('leased','running')", params![self.job]).await?;
         let mut settings = self.settings.clone();
         settings["revoked"] = json!(true);
         self.env
@@ -312,7 +341,7 @@ impl<'a> Probe<'a> {
         Ok(())
     }
     async fn counts(&self) -> Result<(i64, i64)> {
-        Ok(sqlx::query_as("SELECT (SELECT count(*) FROM uploads WHERE attempt_id=$1),(SELECT count(*) FROM artifacts WHERE attempt_id=$1)").bind(Uuid::parse_str(&self.assignment.attempt_id)?).fetch_one(&self.env.db).await?)
+        Ok(sql::tuple(&mut self.env.db.clone(), "SELECT (SELECT count(*) FROM uploads WHERE attempt_id=$1),(SELECT count(*) FROM artifacts WHERE attempt_id=$1)", params![Uuid::parse_str(&self.assignment.attempt_id)?]).await?)
     }
     fn declaration(&self, path: &str, data: &[u8]) -> pb::ArtifactRequest {
         pb::ArtifactRequest {
@@ -584,8 +613,8 @@ async fn basic(env: &Environment) -> Result<()> {
         Ok(())
     }
     .await;
-    probe.cleanup().await?;
-    result
+    let cleanup = probe.cleanup().await;
+    result.and(cleanup)
 }
 async fn cancellation(env: &Environment, table: &str, kind: &str, change: &str) -> Result<()> {
     let mut probe = Probe::new(env).await?;
@@ -628,10 +657,12 @@ async fn cancellation(env: &Environment, table: &str, kind: &str, change: &str) 
                     "wrong completion acknowledgement"
                 );
             }
-            let status: String = sqlx::query_scalar("SELECT status FROM jobs WHERE id=$1")
-                .bind(probe.job)
-                .fetch_one(&env.db)
-                .await?;
+            let status: String = sql::scalar(
+                &mut env.db.clone(),
+                "SELECT status FROM jobs WHERE id=$1",
+                params![probe.job],
+            )
+            .await?;
             ensure!(
                 status
                     == if kind == "accept" {
@@ -648,14 +679,14 @@ async fn cancellation(env: &Environment, table: &str, kind: &str, change: &str) 
         Ok(())
     }
     .await;
-    probe.cleanup().await?;
-    result
+    let cleanup = probe.cleanup().await;
+    result.and(cleanup)
 }
 async fn authorization(env: &Environment, kind: &str, change: &str) -> Result<()> {
     let mut probe = Probe::new(env).await?;
     let result=async {
         if kind!="accept" {probe.start().await?;}
-        let before:Value=sqlx::query_scalar("SELECT jsonb_build_object('lease',lease_expires_at,'status',status,'sequence',last_sequence) FROM attempts WHERE id=$1").bind(Uuid::parse_str(&probe.assignment.attempt_id)?).fetch_one(&env.db).await?;
+        let before:Value=sql::scalar(&mut env.db.clone(), "SELECT jsonb_build_object('lease',lease_expires_at,'status',status,'sequence',last_sequence) FROM attempts WHERE id=$1", params![Uuid::parse_str(&probe.assignment.attempt_id)?]).await?;
         let(tx,pid)=probe.lock("attempts",&probe.assignment.attempt_id).await?;
         let mut event=probe.event(kind);
         if kind=="heartbeat" {event.attempt_id.clear();event.lease_token.clear();event.payload_json=json!({"active_attempts":[{"attempt_id":probe.assignment.attempt_id,"lease_token":probe.assignment.lease_token}],"capabilities":[]}).to_string();}
@@ -670,12 +701,12 @@ async fn authorization(env: &Environment, kind: &str, change: &str) -> Result<()
         }else{probe.mutate(change).await?;}
         tx.commit().await?;
         let reply=probe.next(match kind{"heartbeat"=>"renew","accept"=>"start",_=>"event_ack"}).await;
-        let after:Value=sqlx::query_scalar("SELECT jsonb_build_object('lease',lease_expires_at,'status',status,'sequence',last_sequence) FROM attempts WHERE id=$1").bind(Uuid::parse_str(&probe.assignment.attempt_id)?).fetch_one(&env.db).await?;
+        let after:Value=sql::scalar(&mut env.db.clone(), "SELECT jsonb_build_object('lease',lease_expires_at,'status',status,'sequence',last_sequence) FROM attempts WHERE id=$1", params![Uuid::parse_str(&probe.assignment.attempt_id)?]).await?;
         if change=="unchanged" {ensure!(reply.is_ok() && before!=after,"authorized waiting event failed");}else {ensure!(before==after && reply.is_err(),"invalid authorization committed a waiting event");}
         drop(fresh);println!("PASS authorization {kind}/{change}");Ok(())
     }.await;
-    probe.cleanup().await?;
-    result
+    let cleanup = probe.cleanup().await;
+    result.and(cleanup)
 }
 async fn artifact_fence(env: &Environment, stage: &str, change: &str) -> Result<()> {
     let mut probe = Probe::new(env).await?;
@@ -683,7 +714,7 @@ async fn artifact_fence(env: &Environment, stage: &str, change: &str) -> Result<
         probe.start().await?;let data=b"owned artifact authorization probe";let declaration=probe.declaration("dist/fenced",data);
         let ticket=if stage=="complete" {let ticket=probe.control.prepare_artifact(declaration.clone()).await?.into_inner();probe.put(&ticket,data).await?;Some(ticket)}else{None};
         let before=probe.counts().await?;
-        if change=="lease-expired" {sqlx::query("UPDATE attempts SET lease_expires_at=clock_timestamp()+interval '2 seconds' WHERE id=$1").bind(Uuid::parse_str(&probe.assignment.attempt_id)?).execute(&env.db).await?;}
+        if change=="lease-expired" {sql::execute(&mut env.db.clone(), "UPDATE attempts SET lease_expires_at=clock_timestamp()+interval '2 seconds' WHERE id=$1", params![Uuid::parse_str(&probe.assignment.attempt_id)?]).await?;}
         let(tx,pid)=probe.lock("attempts",&probe.assignment.attempt_id).await?;
         let mut control=probe.control.clone();let attempt=probe.assignment.attempt_id.clone();let token=probe.assignment.lease_token.clone();
         let rpc=tokio::spawn(async move {
@@ -697,8 +728,8 @@ async fn artifact_fence(env: &Environment, stage: &str, change: &str) -> Result<
         else {ensure!(outcome.is_err_and(|s|matches!(s.code(),Code::FailedPrecondition|Code::Unauthenticated)) && before==after,"invalid waiting artifact committed records");}
         println!("PASS artifact {stage}/{change}");Ok(())
     }.await;
-    probe.cleanup().await?;
-    result
+    let cleanup = probe.cleanup().await;
+    result.and(cleanup)
 }
 async fn concurrent_artifacts(env: &Environment) -> Result<()> {
     let mut probe = Probe::new(env).await?;
@@ -767,8 +798,8 @@ async fn concurrent_artifacts(env: &Environment) -> Result<()> {
         Ok(())
     }
     .await;
-    probe.cleanup().await?;
-    result
+    let cleanup = probe.cleanup().await;
+    result.and(cleanup)
 }
 async fn replay_completion(env: &Environment) -> Result<()> {
     let mut probe = Probe::new(env).await?;
@@ -787,10 +818,12 @@ async fn replay_completion(env: &Environment) -> Result<()> {
             json!({"status":"failed","error":"replay probe","failure_kind":"emissary"}).to_string();
         probe.send.send(finished.clone()).await?;
         probe.next("event_ack").await?;
-        let failure: String = sqlx::query_scalar("SELECT failure_kind FROM attempts WHERE id=$1")
-            .bind(Uuid::parse_str(&probe.assignment.attempt_id)?)
-            .fetch_one(&env.db)
-            .await?;
+        let failure: String = sql::scalar(
+            &mut env.db.clone(),
+            "SELECT failure_kind FROM attempts WHERE id=$1",
+            params![Uuid::parse_str(&probe.assignment.attempt_id)?],
+        )
+        .await?;
         ensure!(
             failure == "emissary",
             "Emissary failure classification was not persisted"
@@ -809,16 +842,18 @@ async fn replay_completion(env: &Environment) -> Result<()> {
             probe.next("event_ack").await?.ack_sequence == 1,
             "replay was not acknowledged"
         );
-        let status: String = sqlx::query_scalar("SELECT status FROM jobs WHERE id=$1")
-            .bind(probe.job)
-            .fetch_one(&env.db)
-            .await?;
+        let status: String = sql::scalar(
+            &mut env.db.clone(),
+            "SELECT status FROM jobs WHERE id=$1",
+            params![probe.job],
+        )
+        .await?;
         ensure!(status == "queued", "old completion changed retried job");
         Ok(())
     }
     .await;
-    probe.cleanup().await?;
-    result
+    let cleanup = probe.cleanup().await;
+    result.and(cleanup)
 }
 
 struct PausedStorage {
@@ -928,4 +963,16 @@ async fn storage_stalls(env: &Environment) -> Result<()> {
         result?;
     }
     Ok(())
+}
+
+// The task owns its Db and native transaction; cancellation rolls it back.
+struct ProtocolLock {
+    release: tokio::sync::oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<Result<()>>,
+}
+impl ProtocolLock {
+    async fn commit(self) -> Result<()> {
+        let _ = self.release.send(());
+        self.task.await?
+    }
 }

@@ -6,4 +6,4 @@ pub mod state {
 }
 pub mod source_http;
 
-mod store;
+pub mod store;

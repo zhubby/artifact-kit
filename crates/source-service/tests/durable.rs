@@ -1,29 +1,33 @@
+use artifactory_database::{PoolSettings, connect, with_options};
+use artifactory_database::{params, sql};
 use artifactory_runtime_protocol::{crypto, objects::Objects, service::Client};
 use artifactory_source_core::{self as core, LfsObject, Repository, Snapshot};
 use artifactory_source_service::service::{AppState, persist, restore};
 use serde_json::json;
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use std::{str::FromStr, sync::Arc};
+use std::sync::Arc;
 use uuid::Uuid;
 #[tokio::test]
 #[ignore = "requires isolated PostgreSQL and private S3"]
 async fn pvc_loss_restores_exact_commit_tag_and_lfs_without_upstream_and_tools_stay_bounded() {
     let url = std::env::var("ARTIFACTORY_TEST_DATABASE_URL").unwrap();
-    let admin = PgPoolOptions::new().connect(&url).await.unwrap();
+    let admin = connect(&url, Default::default(), PoolSettings::new(2))
+        .await
+        .unwrap();
     let schema = format!("src_{}", Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
-        .execute(&admin)
+    sql::execute(
+        &mut admin.clone(),
+        &format!("CREATE SCHEMA {schema}"),
+        params![],
+    )
+    .await
+    .unwrap();
+    let scoped = with_options(&url, &[("search_path", &schema)]).unwrap();
+    let pool = connect(&scoped, core::store::models(), PoolSettings::new(10))
         .await
         .unwrap();
-    let pool = PgPoolOptions::new()
-        .connect_with(
-            PgConnectOptions::from_str(&url)
-                .unwrap()
-                .options([("search_path", schema.as_str())]),
-        )
+    artifactory_database::migrate(&pool, &artifactory_source_service::store::MIGRATIONS)
         .await
         .unwrap();
-    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
     let directory = tempfile::tempdir().unwrap();
     let state = AppState {
         core: core::AppState {
@@ -61,7 +65,7 @@ async fn pvc_loss_restores_exact_commit_tag_and_lfs_without_upstream_and_tools_s
     let project = Uuid::new_v4();
     let repository = Uuid::new_v4();
     let key = crypto::hash(repository.to_string());
-    sqlx::query("INSERT INTO source_repositories(id,project_id,repository_url,cache_key) VALUES($1,$2,'https://unreachable.invalid/source.git',$3)").bind(repository).bind(project).bind(key).execute(&pool).await.unwrap();
+    sql::execute(&mut pool.clone(), "INSERT INTO source_repositories(id,project_id,repository_url,cache_key) VALUES($1,$2,'https://unreachable.invalid/source.git',$3)", params![repository, project, key]).await.unwrap();
     let repo = core::repository_path(&state, repository).await.unwrap();
     tokio::fs::create_dir_all(&repo).await.unwrap();
     core::git(&repo, &["init", "-b", "main"]).await.unwrap();
@@ -140,7 +144,7 @@ async fn pvc_loss_restores_exact_commit_tag_and_lfs_without_upstream_and_tools_s
             }],
         }],
     };
-    sqlx::query("INSERT INTO source_snapshots(id,project_id,root_repository_id,commit_sha,manifest,digest) VALUES($1,$2,$3,$4,$5,$6)").bind(snapshot.id).bind(project).bind(repository).bind(commit).bind(serde_json::to_value(&snapshot).unwrap()).bind(crypto::hash(serde_json::to_vec(&snapshot).unwrap())).execute(&pool).await.unwrap();
+    sql::execute(&mut pool.clone(), "INSERT INTO source_snapshots(id,project_id,root_repository_id,commit_sha,manifest,digest) VALUES($1,$2,$3,$4,$5,$6)", params![snapshot.id, project, repository, commit, serde_json::to_value(&snapshot).unwrap(), crypto::hash(serde_json::to_vec(&snapshot).unwrap())]).await.unwrap();
     core::ensure_available(&state, &snapshot).await.unwrap();
     persist(&state, &snapshot).await.unwrap();
     tokio::fs::remove_dir_all(&repo).await.unwrap();

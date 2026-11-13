@@ -1,3 +1,4 @@
+use crate::store::dto;
 use crate::{
     auth::Auth,
     error::{ApiError, Result},
@@ -99,7 +100,7 @@ pub async fn list(
     State(state): State<AppState>,
     auth: Auth,
     Query(filter): Query<Filter>,
-) -> Result<Json<Vec<Value>>> {
+) -> Result<Json<Vec<dto::BuildSummary>>> {
     read_scope(&auth)?;
     if let Some(project) = filter.project_id {
         auth.project(project, "read")?;
@@ -113,7 +114,8 @@ pub async fn list(
 }
 
 pub async fn build_detail(state: &AppState, id: Uuid) -> Result<Value> {
-    let mut build = state.store.build_detail(id).await?;
+    let mut build =
+        serde_json::to_value(state.store.build_detail(id).await?).map_err(anyhow::Error::from)?;
     build["source_snapshot"] = if let Some(snapshot) = build["source_snapshot_id"].as_str() {
         let id = Uuid::parse_str(snapshot).map_err(anyhow::Error::from)?;
         serde_json::to_value(crate::source_cache::load(state, id).await?)
@@ -190,7 +192,7 @@ pub async fn artifacts(
     State(state): State<AppState>,
     auth: Auth,
     Query(filter): Query<Filter>,
-) -> Result<Json<Vec<Value>>> {
+) -> Result<Json<Vec<dto::ArtifactSummary>>> {
     read_scope(&auth)?;
     if let Some(project) = filter.project_id {
         auth.project(project, "read")?;
@@ -222,7 +224,7 @@ pub async fn releases(
     State(state): State<AppState>,
     auth: Auth,
     Query(filter): Query<Filter>,
-) -> Result<Json<Vec<Value>>> {
+) -> Result<Json<Vec<dto::ReleaseSummary>>> {
     read_scope(&auth)?;
     if let Some(project) = filter.project_id {
         auth.project(project, "read")?;
@@ -240,7 +242,8 @@ pub async fn release_detail(
     auth: Auth,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>> {
-    let mut release = state.store.release(id).await?;
+    let mut release =
+        serde_json::to_value(state.store.release(id).await?).map_err(anyhow::Error::from)?;
     auth.project(
         Uuid::parse_str(release["project_id"].as_str().unwrap()).unwrap(),
         "read",

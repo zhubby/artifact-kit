@@ -1,11 +1,12 @@
 //! Persistence operations for the control plane.
+use artifactory_database::{params, sql};
 
 mod auth;
+pub mod dto;
 mod management;
+mod models;
 mod planning_management;
 mod projects;
-
-use sqlx::PgPool;
 
 pub use auth::LoginAccount;
 pub use projects::{ProjectInput, ProjectSource};
@@ -13,14 +14,14 @@ pub use projects::{ProjectInput, ProjectSource};
 /// Shared control-plane persistence; transport code calls business operations.
 #[derive(Clone)]
 pub struct ControlStore {
-    pool: PgPool,
+    pool: toasty::Db,
     pub source: artifactory_source_core::store::SourceStore,
 }
 
 impl ControlStore {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: toasty::Db) -> Self {
         Self {
-            source: artifactory_source_core::store::SourceStore::new(pool.clone()),
+            source: artifactory_source_core::store::SourceStore::embedded(pool.clone()),
             pool,
         }
     }
@@ -32,15 +33,13 @@ impl ControlStore {
         resource: String,
         details: serde_json::Value,
     ) -> anyhow::Result<()> {
-        sqlx::query(
-            "INSERT INTO audit_events(actor,action,resource_id,details) VALUES($1,$2,$3,$4)",
-        )
-        .bind(actor)
-        .bind(action)
-        .bind(resource)
-        .bind(details)
-        .execute(&self.pool)
-        .await?;
+        models::AuditEvent::create()
+            .actor(actor)
+            .action(action)
+            .resource_id(resource)
+            .details(toasty::Json((details).clone()))
+            .exec(&mut self.pool.clone())
+            .await?;
         Ok(())
     }
 }
@@ -77,22 +76,33 @@ mod source_cache;
 
 impl ControlStore {
     pub async fn connect(url: &str) -> anyhow::Result<Self> {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(20)
-            .connect(url)
-            .await?;
+        let pool = artifactory_database::connect(
+            url,
+            models(),
+            artifactory_database::PoolSettings::new(20),
+        )
+        .await?;
         artifactory_database::require_timescale(&pool).await?;
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        artifactory_database::migrate(&pool, &MIGRATIONS).await?;
         Ok(Self::new(pool))
     }
     pub async fn users_empty(&self) -> anyhow::Result<bool> {
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
-            .fetch_one(&self.pool)
-            .await?;
+        let count: i64 = sql::scalar(
+            &mut self.pool.clone(),
+            "SELECT count(*) FROM users",
+            params![],
+        )
+        .await?;
         Ok(count == 0)
     }
     pub async fn bootstrap_admin(&self, username: String, hash: String) -> anyhow::Result<()> {
-        sqlx::query("INSERT INTO users(id,username,password_hash,role) VALUES($1,$2,$3,'admin') ON CONFLICT(username) DO NOTHING").bind(uuid::Uuid::new_v4()).bind(username).bind(hash).execute(&self.pool).await?;
+        models::User::upsert_by_username(username)
+            .id(uuid::Uuid::new_v4())
+            .password_hash(hash)
+            .role("admin")
+            .or_ignore()
+            .exec(&mut self.pool.clone())
+            .await?;
         Ok(())
     }
 }
@@ -101,3 +111,13 @@ mod errors;
 
 #[cfg(test)]
 mod performance;
+
+pub static MIGRATIONS: toasty::migration::MigrationSet = toasty::embed_migrations!("migrations");
+
+pub fn models() -> toasty::schema::app::ModelSet {
+    let mut models = models::registry();
+    for model in artifactory_source_core::store::embedded_models() {
+        models.add(model);
+    }
+    models
+}

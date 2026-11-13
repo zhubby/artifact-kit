@@ -1,6 +1,12 @@
 [workspace]
 members = ["crates/control", "crates/runtime-protocol", "crates/planner-runtime", "crates/source-core", "crates/source-service", "crates/emissary-protocol", "crates/emissary", "crates/database", "crates/telemetry-model", "crates/telemetry-service", "operator"]
+exclude = ["vendor/toasty"]
 resolver = "2"
+
+[workspace.dependencies]
+toasty = { version = "=0.11.0", default-features = false, features = ["postgresql", "serde", "jiff", "migration"] }
+toasty-core = { version = "=0.11.0", default-features = false }
+jiff = "0.2"
 
 [workspace.package]
 version = "0.1.0"
@@ -10,3 +16,7 @@ license = "MIT"
 [profile.release]
 lto = "thin"
 strip = true
+
+# Toasty 0.11.0 with the connection-recycling fix described in vendor/toasty/PATCH.md.
+[patch.crates-io]
+toasty = { path = "vendor/toasty" }

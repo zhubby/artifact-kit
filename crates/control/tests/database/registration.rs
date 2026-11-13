@@ -1,4 +1,5 @@
 use super::*;
+use artifactory_database::{params, sql};
 use serde_json::{Value, json};
 
 fn registration_request(input: Value) -> Request<Body> {
@@ -63,8 +64,7 @@ async fn rejects_invalid_fields_and_csrf_without_consuming_registration_slots() 
         router.oneshot(cross_origin).await.unwrap().status(),
         StatusCode::FORBIDDEN
     );
-    let counts: (i64, i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM users),(SELECT count(*) FROM sessions),(SELECT count(*) FROM audit_events)")
-        .fetch_one(&database.pool).await.unwrap();
+    let counts: (i64, i64, i64) = sql::tuple(&mut database.pool.clone(), "SELECT (SELECT count(*) FROM users),(SELECT count(*) FROM sessions),(SELECT count(*) FROM audit_events)", params![]).await.unwrap();
     assert_eq!(counts, (0, 0, 0));
     database.close().await;
 }
@@ -163,8 +163,7 @@ async fn concurrent_duplicate_registration_creates_only_one_user_session_and_aud
     ];
     statuses.sort_unstable();
     assert_eq!(statuses, [201, 409]);
-    let counts: (i64, i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM users),(SELECT count(*) FROM sessions),(SELECT count(*) FROM audit_events WHERE action='user_registered')")
-        .fetch_one(&database.pool).await.unwrap();
+    let counts: (i64, i64, i64) = sql::tuple(&mut database.pool.clone(), "SELECT (SELECT count(*) FROM users),(SELECT count(*) FROM sessions),(SELECT count(*) FROM audit_events WHERE action='user_registered')", params![]).await.unwrap();
     assert_eq!(counts, (1, 1, 1));
     database.close().await;
 }
@@ -195,8 +194,7 @@ async fn session_or_audit_failure_rolls_back_registration() {
         "ALTER TABLE audit_events ADD CONSTRAINT reject_registration CHECK (action <> 'user_registered')",
     ] {
         let database = Database::new().await;
-        sqlx::query(constraint)
-            .execute(&database.pool)
+        sql::execute(&mut database.pool.clone(), constraint, params![])
             .await
             .unwrap();
         let response = api::router(database.state.clone())
@@ -207,8 +205,7 @@ async fn session_or_audit_failure_rolls_back_registration() {
             .unwrap();
         assert!(!response.status().is_success());
         assert!(!response.headers().contains_key("set-cookie"));
-        let counts: (i64, i64, i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM users),(SELECT count(*) FROM sessions),(SELECT count(*) FROM audit_events WHERE action='user_registered'),(SELECT count(*) FROM audit_events WHERE action='registration_attempt')")
-            .fetch_one(&database.pool).await.unwrap();
+        let counts: (i64, i64, i64, i64) = sql::tuple(&mut database.pool.clone(), "SELECT (SELECT count(*) FROM users),(SELECT count(*) FROM sessions),(SELECT count(*) FROM audit_events WHERE action='user_registered'),(SELECT count(*) FROM audit_events WHERE action='registration_attempt')", params![]).await.unwrap();
         assert_eq!(counts, (0, 0, 0, 1));
         database.close().await;
     }
@@ -218,10 +215,8 @@ async fn session_or_audit_failure_rolls_back_registration() {
 #[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
 async fn concurrent_registration_limit_is_persistent_and_expires() {
     let database = Database::new().await;
-    sqlx::query("INSERT INTO audit_events(actor,action,resource_id,created_at) SELECT 'anonymous','registration_attempt','registration',now()-interval '6 minutes' FROM generate_series(1,3)")
-        .execute(&database.pool).await.unwrap();
-    sqlx::query("INSERT INTO audit_events(actor,action,resource_id) SELECT 'anonymous','registration_attempt','registration' FROM generate_series(1,9)")
-        .execute(&database.pool).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO audit_events(actor,action,resource_id,created_at) SELECT 'anonymous','registration_attempt','registration',now()-interval '6 minutes' FROM generate_series(1,3)", params![]).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO audit_events(actor,action,resource_id) SELECT 'anonymous','registration_attempt','registration' FROM generate_series(1,9)", params![]).await.unwrap();
     let mut tasks = tokio::task::JoinSet::new();
     for index in 0..4 {
         let router = api::router(database.state.clone());
@@ -265,8 +260,7 @@ async fn concurrent_registration_limit_is_persistent_and_expires() {
             .status(),
         StatusCode::TOO_MANY_REQUESTS
     );
-    sqlx::query("UPDATE audit_events SET created_at=now()-interval '6 minutes' WHERE action='registration_attempt'")
-        .execute(&database.pool).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "UPDATE audit_events SET created_at=now()-interval '6 minutes' WHERE action='registration_attempt'", params![]).await.unwrap();
     assert_eq!(
         router
             .oneshot(registration_request(input))
@@ -286,12 +280,9 @@ async fn registered_viewer_can_read_and_download_but_cannot_write_or_manage() {
     let node = database.node().await;
     let attempt = Uuid::new_v4();
     let artifact = Uuid::new_v4();
-    sqlx::query("INSERT INTO attempts(id,job_id,node_id,lease_token,lease_expires_at,status,command_id) VALUES($1,$2,$3,'test',now(),'succeeded',$4)")
-        .bind(attempt).bind(job).bind(node).bind(Uuid::new_v4()).execute(&database.pool).await.unwrap();
-    sqlx::query("INSERT INTO uploads(id,attempt_id,path,object_key,expected_size,expected_sha256,expires_at) VALUES($1,$2,'dist/app','staging/test',1,'test',now())")
-        .bind(artifact).bind(attempt).execute(&database.pool).await.unwrap();
-    sqlx::query("INSERT INTO artifacts(id,attempt_id,path,object_key,size,sha256) VALUES($1,$2,'dist/app','final/test',1,'test')")
-        .bind(artifact).bind(attempt).execute(&database.pool).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO attempts(id,job_id,node_id,lease_token,lease_expires_at,status,command_id) VALUES($1,$2,$3,'test',now(),'succeeded',$4)", params![attempt, job, node, Uuid::new_v4()]).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO uploads(id,attempt_id,path,object_key,expected_size,expected_sha256,expires_at) VALUES($1,$2,'dist/app','staging/test',1,'test',now())", params![artifact, attempt]).await.unwrap();
+    sql::execute(&mut database.pool.clone(), "INSERT INTO artifacts(id,attempt_id,path,object_key,size,sha256) VALUES($1,$2,'dist/app','final/test',1,'test')", params![artifact, attempt]).await.unwrap();
     let router = api::router(database.state.clone());
     let response = router
         .clone()
