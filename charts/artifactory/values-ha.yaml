@@ -1,0 +1,28 @@
+# Overlay after separating the legacy source volume; see docs/control-ha.md.
+control:
+  replicas: 3
+  databaseConnections: 40
+  artifactVerifications: 4
+  schedulerBatch: 64
+  drainSeconds: 5
+localSource:
+  enabled: true
+postgres:
+  # Also reserve for terminating Pods overlapping the next rollout step.
+  maxConnections: 450
+telemetry:
+  replicas: 2
+  writeConnections: 12
+  readConnections: 4
+  authorizationConnections: 4
+resources:
+  control:
+    requests: {cpu: "1", memory: 512Mi}
+    limits: {cpu: "4", memory: 2Gi}
+  postgres:
+    requests: {cpu: "1", memory: 1Gi}
+    limits: {cpu: "4", memory: 4Gi}
+# This overlay replicates Control only. Configure external HA PostgreSQL and S3
+# in deployment values, with postgres.enabled=false / s3.enabled=false and the
+# existing credentials Secret pointing to those services. Include surge and
+# terminating Control/Telemetry pools, Source and operational connections.

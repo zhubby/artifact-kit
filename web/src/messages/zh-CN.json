@@ -311,6 +311,10 @@
     "publication": "发布"
   },
   "nodes": {
+    "pages": "节点分页",
+    "previous": "上一页",
+    "next": "下一页",
+    "page": "第 {page} 页",
     "description": "机器主动接入。按实际工具链、授权节点池和空闲槽位匹配任务。",
     "register": "注册新节点",
     "empty": "等待第一台机器接入",

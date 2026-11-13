@@ -311,6 +311,10 @@
     "publication": "Publication"
   },
   "nodes": {
+    "pages": "Node pages",
+    "previous": "Previous",
+    "next": "Next",
+    "page": "Page {page}",
     "description": "Nodes connect outbound. Jobs match real toolchains, authorized pools and available slots.",
     "register": "Register new node",
     "empty": "Waiting for your first machine",

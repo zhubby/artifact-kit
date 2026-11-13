@@ -586,6 +586,9 @@ pub async fn run(cfg: Config, cancel: CancellationToken) -> Result<()> {
     let mut retry = Instant::now();
     let mut backoff = 1;
     let mut log_busy = HashSet::new();
+    // Tonic reconnects this independent HTTP/2 channel. Share cheap client
+    // clones across upload batches instead of rebuilding TLS for every batch.
+    let log_transport = std::sync::Arc::new(tokio::sync::OnceCell::new());
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     let mut heartbeat = Instant::now();
     let mut shutdown: Option<Instant> = None;
@@ -620,10 +623,10 @@ pub async fn run(cfg: Config, cancel: CancellationToken) -> Result<()> {
                 for (id,task) in &state.tasks {
                     if !log_busy.contains(id)
                         && let Ok(records)=state.spool.batch(id)&& !records.is_empty() {
-                            log_busy.insert(id.clone());let cfg=cfg.clone();let id=id.clone();let token=task.token.clone();let send=send.clone();
+                            log_busy.insert(id.clone());let cfg=cfg.clone();let id=id.clone();let token=task.token.clone();let send=send.clone();let log_transport=log_transport.clone();
                             jobs.spawn(async move {
                                 let operation=async {
-                                    let mut control=client::control(&cfg).await?;
+                                    let mut control=log_transport.get_or_try_init(||client::control(&cfg)).await?.clone();
                                     let max=records.last().map(|r|r.sequence).unwrap_or(0);
                                     let chunks=records.into_iter().map(|r|pb::LogChunk{attempt_id:id.clone(),lease_token:token.clone(),sequence:r.sequence,step:r.step,data:r.data}).collect::<Vec<_>>();
                                     let ack=control.upload_logs(tokio_stream::iter(chunks)).await?.into_inner();
@@ -644,7 +647,7 @@ pub async fn run(cfg: Config, cancel: CancellationToken) -> Result<()> {
                         task.sent_sequence=0;task.replay_at=None;task.last_accept_at=None;
                     }
                 },
-                Message::Disconnected(id) if id==session=>{outbound=None;connecting=false;retry=Instant::now()+Duration::from_secs(backoff);backoff=(backoff*2).min(30);if shutdown.is_none(){eprintln!("control connection interrupted; reconnecting");}},
+                Message::Disconnected(id) if id==session=>{outbound=None;connecting=false;retry=Instant::now()+client::retry_delay(backoff);backoff=(backoff*2).min(30);if shutdown.is_none(){eprintln!("control connection interrupted; reconnecting");}},
                 Message::Command(id,command) if id==session=>{
                     let actions=state.command(*command,Instant::now())?;
                     for action in actions {match action {

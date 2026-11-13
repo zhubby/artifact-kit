@@ -14,6 +14,34 @@ SCRIPT = Path(__file__).with_name("init-helm.py")
 
 class HelmBootstrapTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which('helm'), 'requires helm')
+    def test_replicated_control_requires_source_isolation_and_renders_ha_resources(self):
+        chart = SCRIPT.parents[1] / 'charts/artifactory'
+        invalid = subprocess.run(['helm', 'template', 'ha-test', str(chart), '--set', 'control.replicas=3'],
+                                 capture_output=True, text=True)
+        self.assertNotEqual(invalid.returncode, 0)
+        self.assertIn('localSource.enabled', invalid.stderr)
+        result = subprocess.run(['helm', 'template', 'ha-test', str(chart), '-f', str(chart / 'values-ha.yaml')],
+                                check=True, capture_output=True, text=True)
+        self.assertIn('replicas: 3', result.stdout)
+        self.assertIn('command: [artifactory-control, serve-source]', result.stdout)
+        self.assertIn('emptyDir: {sizeLimit: 10Gi}', result.stdout)
+        self.assertIn('kind: PodDisruptionBudget', result.stdout)
+        self.assertIn('https://ha-test-local-source:8080', result.stdout)
+        self.assertIn('tls_trust_pool file /run/pki/ca.pem', result.stdout)
+        self.assertIn('ARTIFACTORY_DB_MAX_CONNECTIONS: "40"', result.stdout)
+        self.assertIn('path: /readyz', result.stdout)
+
+    @unittest.skipUnless(shutil.which('helm'), 'requires helm')
+    def test_external_stateful_services_are_not_created(self):
+        chart = SCRIPT.parents[1] / 'charts/artifactory'
+        result = subprocess.run(['helm', 'template', 'external', str(chart), '--set',
+                                 'postgres.enabled=false,s3.enabled=false,s3.endpoint=https://objects.example.com'],
+                                check=True, capture_output=True, text=True)
+        self.assertNotIn('name: external-postgres\n', result.stdout)
+        self.assertNotIn('name: external-s3\n', result.stdout)
+        self.assertIn('ARTIFACTORY_S3_ENDPOINT: "https://objects.example.com"', result.stdout)
+
+    @unittest.skipUnless(shutil.which('helm'), 'requires helm')
     def test_registration_defaults_on_and_can_be_disabled(self):
         chart = SCRIPT.parents[1] / 'charts/artifactory'
         for enabled in ['true', 'false']:
@@ -49,6 +77,9 @@ class HelmBootstrapTests(unittest.TestCase):
                            check=True, capture_output=True)
             subprocess.run(["openssl", "verify", "-CAfile", str(output / "pki/ca.pem"),
                             "-verify_ip", "127.0.0.1", str(output / "pki/server.pem")],
+                           check=True, capture_output=True)
+            subprocess.run(["openssl", "verify", "-CAfile", str(output / "pki/ca.pem"),
+                            "-verify_hostname", "test-kit-local-source", str(output / "pki/server.pem")],
                            check=True, capture_output=True)
             if os.name != "nt":
                 for path in output.rglob("*"):

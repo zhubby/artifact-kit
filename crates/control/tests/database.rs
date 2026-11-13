@@ -19,10 +19,43 @@ use uuid::Uuid;
 
 #[path = "database/registration.rs"]
 mod registration;
+#[path = "database/replication.rs"]
+mod replication;
 #[path = "database/runtime.rs"]
 mod runtime;
 #[path = "database/source_refs.rs"]
 mod source_refs;
+#[path = "database/transport.rs"]
+mod transport;
+
+#[tokio::test]
+#[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL"]
+async fn unchanged_terminal_builds_do_not_generate_new_row_versions() {
+    let database = Database::new().await;
+    let (_, build, job) = database.fixture().await;
+    sqlx::query("UPDATE jobs SET status='succeeded' WHERE id=$1")
+        .bind(job)
+        .execute(&database.state.pool)
+        .await
+        .unwrap();
+    scheduler::refresh_builds(&database.state).await.unwrap();
+    let before: String = sqlx::query_scalar("SELECT ctid::text FROM builds WHERE id=$1")
+        .bind(build)
+        .fetch_one(&database.state.pool)
+        .await
+        .unwrap();
+    scheduler::refresh_builds(&database.state).await.unwrap();
+    let after: String = sqlx::query_scalar("SELECT ctid::text FROM builds WHERE id=$1")
+        .bind(build)
+        .fetch_one(&database.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        before, after,
+        "an unchanged terminal build must not be rewritten"
+    );
+    database.close().await;
+}
 
 #[tokio::test]
 #[ignore = "requires ARTIFACTORY_TEST_DATABASE_URL and git-lfs"]
@@ -772,6 +805,8 @@ impl Database {
             .unwrap();
         sqlx::migrate!("./migrations").run(&pool).await.unwrap();
         let settings = Settings {
+            local_source_url: None,
+            control: Default::default(),
             database_url: url,
             http_bind: "127.0.0.1:0".into(),
             grpc_bind: "127.0.0.1:0".into(),
@@ -792,6 +827,8 @@ impl Database {
         let storage = Arc::new(Storage::new(&settings).unwrap());
         Self {
             state: AppState {
+                coordination: Arc::new(artifactory_control::coordination::Coordination::new(10)),
+                source_client: Default::default(),
                 pool,
                 settings: Arc::new(settings),
                 storage,
@@ -828,8 +865,8 @@ impl Database {
         let node = Uuid::new_v4();
         let session = Uuid::new_v4();
         let (sender, _receiver) = mpsc::channel::<Result<Command, tonic::Status>>(128);
-        sqlx::query("INSERT INTO nodes(id,name,os,arch,pool_id,capabilities,certificate_hash,certificate_expires_at,active_session,last_seen) VALUES($1,'test','linux','amd64','00000000-0000-0000-0000-000000000001','[\"git\",\"bash\"]',$2,now()+interval '1 day',$3,now())")
-            .bind(node).bind(node.to_string()).bind(session).execute(&self.state.pool).await.unwrap();
+        sqlx::query("INSERT INTO nodes(id,name,os,arch,pool_id,capabilities,certificate_hash,certificate_expires_at,active_session,last_seen,connection_owner) VALUES($1,'test','linux','amd64','00000000-0000-0000-0000-000000000001','[\"git\",\"bash\"]',$2,now()+interval '1 day',$3,now(),$4)")
+            .bind(node).bind(node.to_string()).bind(session).bind(self.state.coordination.id()).execute(&self.state.pool).await.unwrap();
         self.state
             .connections
             .write()

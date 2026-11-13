@@ -1,5 +1,6 @@
 {{- if .Values.ingress.enabled }}
 {{- range $component := list "console" "s3" }}
+{{- if or (eq $component "console") $.Values.s3.enabled }}
 {{- $host := ternary $.Values.ingress.consoleHost $.Values.ingress.s3Host (eq $component "console") }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -30,5 +31,6 @@ spec:
                 name: {{ include "artifactory.fullname" $ }}-{{ ternary "web" "s3" (eq $component "console") }}
                 port:
                   number: {{ ternary 80 8333 (eq $component "console") }}
+{{- end }}
 {{- end }}
 {{- end }}

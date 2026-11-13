@@ -1,4 +1,4 @@
-# The release name is the resource prefix. One scheduler per release.
+# The release name is the resource prefix. PostgreSQL fences concurrent dispatchers.
 fullnameOverride: ""
 imagePullSecrets: []
 podAnnotations: {}
@@ -35,6 +35,22 @@ secrets:
   credentials: ""
   pki: ""
 
+control:
+  replicas: 1
+  databaseConnections: 20
+  artifactVerifications: 4
+  schedulerBatch: 64
+  drainSeconds: 5
+  temporaryStorage: 10Gi
+  # Optional ConfigMap containing emissary-releases.json; mounted on every replica.
+  releaseSourceConfigMap: ""
+localSource:
+  # Required before setting control.replicas > 1. Retains the existing control PVC.
+  enabled: false
+postgres:
+  enabled: true
+  maxConnections: 100
+
 auth:
   registrationEnabled: true
 
@@ -51,6 +67,10 @@ grpc:
 
 telemetry:
   enabled: true
+  replicas: 1
+  writeConnections: 12
+  readConnections: 4
+  authorizationConnections: 4
   # Device-reachable TLS endpoint. Include this host in init-helm.py --grpc-host.
   endpoint: https://build.example.com:8444
   service:
@@ -61,6 +81,7 @@ telemetry:
     limits: {cpu: '2', memory: 512Mi}
 
 s3:
+  enabled: true
   # Production uses the reachable HTTPS endpoint, including from control pods.
   # In development, an empty endpoint selects the internal HTTP service.
   endpoint: ""

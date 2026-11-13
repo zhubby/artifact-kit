@@ -17,10 +17,14 @@ jobs:
         run: |
           helm lint charts/artifactory --strict
           helm lint charts/artifactory --strict -f charts/artifactory/values-kind.yaml
+          helm lint charts/artifactory --strict -f charts/artifactory/values-ha.yaml
           helm lint charts/artifactory-operator --strict
           helm template native charts/artifactory-operator > /dev/null
           helm template artifactory charts/artifactory --set ingress.enabled=true > /dev/null
           helm template artifactory charts/artifactory -f charts/artifactory/values-kind.yaml > /dev/null
+          helm template artifactory charts/artifactory -f charts/artifactory/values-ha.yaml \
+            --set postgres.enabled=false,s3.enabled=false,ingress.enabled=true \
+            --set s3.endpoint=https://objects.example.com > /dev/null
           if helm template artifactory charts/artifactory --set console.publicUrl=http://build.example.com > /dev/null 2>&1; then
             echo 'Production HTTP must be rejected' >&2
             exit 1

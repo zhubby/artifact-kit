@@ -1,3 +1,4 @@
+{{- if .Values.postgres.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -36,6 +37,7 @@ spec:
         - name: postgres
           image: "{{ .Values.images.postgres.repository }}:{{ .Values.images.postgres.tag }}"
           imagePullPolicy: {{ .Values.images.postgres.pullPolicy }}
+          args: [postgres, -c, "max_connections={{ int .Values.postgres.maxConnections }}"]
           securityContext:
             {{- include "artifactory.containerSecurity" . | nindent 12 }}
           ports:
@@ -79,3 +81,5 @@ spec:
         - {name: run, emptyDir: {sizeLimit: 16Mi}}
         - {name: tmp, emptyDir: {sizeLimit: 128Mi}}
         - {name: shm, emptyDir: {medium: Memory, sizeLimit: 128Mi}}
+
+{{- end }}

@@ -59,6 +59,16 @@ pub async fn refs(
             serde_json::from_value(result).map_err(anyhow::Error::from)?,
         ));
     }
+    if let Some(client) = crate::local_source::client(&state).await? {
+        return Ok(Json(
+            client
+                .post(
+                    "/internal/local-source",
+                    &json!({"operation":"refs","project_id":id}),
+                )
+                .await?,
+        ));
+    }
     source_cache::list_refs(
         &state,
         &project.get::<String, _>("repository_url"),

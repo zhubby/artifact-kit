@@ -2,7 +2,7 @@
 
 ## 部署边界
 
-Control 为 Linux 单实例模块化单体。后端统一使用 TimescaleDB 2.32+ / PostgreSQL 17，关系表保存队列和业务状态，独立 Rust Telemetry 服务保存时序数据。不部署多个设备调度实例；Kubernetes Pi 的 Runtime / Source / Operator 部署见 [Operator 运维](operator-operations.md)。宿主执行只接受内部可信项目；签名节点应与一般构建节点分池、最小授权、限制网络和服务账户权限。
+Control 为 Linux 模块化服务，支持多副本。后端统一使用 TimescaleDB 2.32+ / PostgreSQL 17，关系表保存队列和业务状态，独立 Rust Telemetry 服务保存时序数据。多副本设备调度使用 PostgreSQL Outbox 与节点行锁，部署、容量与回退见 [Control 多副本](control-ha.md)；Kubernetes Pi 的 Runtime / Source / Operator 部署见 [Operator 运维](operator-operations.md)。宿主执行只接受内部可信项目；签名节点应与一般构建节点分池、最小授权、限制网络和服务账户权限。
 
 生产需三个可解析的 DNS 名称：控制台、S3 HTTPS、Emissary gRPC。前两者通过 Caddy 80/443；构建 gRPC 使用钉住私有 CA 的 TLS 8443，独立遥测 mTLS 使用同一设备可达域名的 8444。仅向受信网络开放 8443 / 8444；不公开数据库、遥测内部查询端口、SeaweedFS 管理端口或其内部 filer/master。按组织要求提供受信 HTTPS、证书自动续期和反向代理限流。代理不得缓冲 SSE。
 

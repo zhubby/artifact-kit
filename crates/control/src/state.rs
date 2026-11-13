@@ -12,6 +12,8 @@ pub struct Connection {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub coordination: Arc<crate::coordination::Coordination>,
+    pub source_client: Arc<tokio::sync::OnceCell<artifactory_runtime_protocol::service::Client>>,
     pub pool: PgPool,
     pub settings: Arc<Settings>,
     pub storage: Arc<Storage>,

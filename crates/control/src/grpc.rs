@@ -7,7 +7,7 @@ use crate::{
 use chrono::{Duration as ChronoDuration, Utc};
 use serde_json::{Value, json};
 use sqlx::Row;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{
@@ -26,15 +26,20 @@ fn internal(error: impl std::fmt::Display) -> Status {
     Status::internal("control plane operation failed")
 }
 
-async fn identity<T>(state: &AppState, request: &Request<T>) -> Result<Uuid, Status> {
+fn peer_certificate_hash<T>(request: &Request<T>) -> Result<String, Status> {
     let certificate = request
         .extensions()
         .get::<TlsConnectInfo<TcpConnectInfo>>()
         .and_then(|info| info.peer_certs())
         .and_then(|certificates| certificates.first().cloned())
         .ok_or_else(|| Status::unauthenticated("node certificate required"))?;
+    Ok(crypto::hash(certificate.as_ref()))
+}
+
+async fn identity<T>(state: &AppState, request: &Request<T>) -> Result<Uuid, Status> {
+    let certificate = peer_certificate_hash(request)?;
     sqlx::query_scalar("SELECT id FROM nodes WHERE certificate_hash=$1 AND NOT revoked AND certificate_expires_at>now()")
-        .bind(crypto::hash(certificate.as_ref())).fetch_optional(&state.pool).await.map_err(internal)?
+        .bind(certificate).fetch_optional(&state.pool).await.map_err(internal)?
         .ok_or_else(|| Status::unauthenticated("node certificate revoked, expired or unknown"))
 }
 
@@ -181,14 +186,35 @@ impl protocol::control_server::Control for EmissaryService {
 
     async fn connect(
         &self,
-        request: Request<Streaming<EmissaryEvent>>,
+        mut request: Request<Streaming<EmissaryEvent>>,
     ) -> Result<Response<Self::ConnectStream>, Status> {
-        let node = identity(&self.0, &request).await?;
-        let mut stream = request.into_inner();
-        let hello = tokio::time::timeout(Duration::from_secs(10), stream.message())
+        if self.0.coordination.is_draining() {
+            return Err(Status::unavailable("control replica is draining"));
+        }
+        let hello = tokio::time::timeout(Duration::from_secs(10), request.get_mut().message())
             .await
             .map_err(|_| Status::deadline_exceeded("hello required"))??
             .ok_or_else(|| Status::invalid_argument("hello required"))?;
+        // Queue reconnects before they enter the shared database pool. A slow
+        // session replacement must not put every heartbeat behind the burst.
+        let queued = Instant::now();
+        let admission = self
+            .0
+            .coordination
+            .admissions
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| Status::unavailable("control admission stopped"))?;
+        let admitted = Instant::now();
+        if self.0.coordination.is_draining() {
+            return Err(Status::unavailable("control replica is draining"));
+        }
+        let certificate_hash = peer_certificate_hash(&request)?;
+        let node = Uuid::parse_str(&hello.emissary_id)
+            .map_err(|_| Status::invalid_argument("invalid node ID"))?;
+        let identified = Instant::now();
+        let mut stream = request.into_inner();
         if hello.kind != "hello"
             || hello.emissary_id != node.to_string()
             || hello.protocol_major != 1
@@ -198,12 +224,28 @@ impl protocol::control_server::Control for EmissaryService {
             ));
         }
         let session = Uuid::new_v4();
-        sqlx::query("UPDATE nodes SET active_session=$2,last_seen=now() WHERE id=$1")
-            .bind(node)
-            .bind(session)
-            .execute(&self.0.pool)
-            .await
-            .map_err(internal)?;
+        let payload = heartbeat_payload(&hello)?;
+        // Bind the claimed node to its current certificate while registering
+        // the session and hello. Reconnects need only one database round trip.
+        record_heartbeat(
+            &self.0,
+            node,
+            session,
+            &payload,
+            SessionUpdate::Register {
+                owner: self.0.coordination.id,
+                certificate_hash,
+            },
+        )
+        .await?;
+        let registered = Instant::now();
+        // Drain can start while the hello or the node-row update is in flight.
+        if self.0.coordination.is_draining() {
+            sqlx::query("UPDATE nodes SET connection_owner=NULL WHERE id=$1 AND active_session=$2 AND connection_owner=$3")
+                .bind(node).bind(session).bind(self.0.coordination.id)
+                .execute(&self.0.pool).await.map_err(internal)?;
+            return Err(Status::unavailable("control replica is draining"));
+        }
         let (sender, receiver) = mpsc::channel(128);
         let connection = Connection {
             session,
@@ -214,18 +256,33 @@ impl protocol::control_server::Control for EmissaryService {
                 .sender
                 .try_send(Err(Status::aborted("node connection superseded")));
         }
+        self.0.coordination.wake.notify_one();
+        self.0.coordination.commands.notify_one();
         let state = self.0.clone();
         tokio::spawn(async move {
             let result = async {
-                heartbeat(&state, node, session, &hello, &sender).await?;
+                let initialized =
+                    report_heartbeat(&state, node, session, &hello, &payload, &sender).await;
+                tracing::debug!(
+                    %node,
+                    admission_ms = admitted.duration_since(queued).as_secs_f64() * 1000.0,
+                    identity_ms = identified.duration_since(admitted).as_secs_f64() * 1000.0,
+                    session_ms = registered.duration_since(identified).as_secs_f64() * 1000.0,
+                    hello_ms = registered.elapsed().as_secs_f64() * 1000.0,
+                    "device connection initialized"
+                );
+                drop(admission);
+                initialized?;
                 loop {
-                    let event = tokio::time::timeout(Duration::from_secs(35), stream.message())
-                        .await
+                    let message = tokio::select! {
+                        _ = state.coordination.stop.cancelled() => return Err(Status::unavailable("control replica stopped")),
+                        message = tokio::time::timeout(Duration::from_secs(35), stream.message()) => message,
+                    };
+                    let event = message
                         .map_err(|_| Status::deadline_exceeded("heartbeat timeout"))??;
                     let Some(event) = event else {
                         return Ok::<(), Status>(());
                     };
-                    valid_node(&state.pool, node, session).await?;
                     if event.emissary_id != node.to_string() {
                         return Err(Status::permission_denied("node ID mismatch"));
                     }
@@ -240,13 +297,17 @@ impl protocol::control_server::Control for EmissaryService {
             if let Err(error) = result {
                 let _ = sender.try_send(Err(error));
             }
-            let mut connections = state.connections.write().await;
-            if connections
-                .get(&node)
-                .is_some_and(|entry| entry.session == session)
             {
-                connections.remove(&node);
+                let mut connections = state.connections.write().await;
+                if connections
+                    .get(&node)
+                    .is_some_and(|entry| entry.session == session)
+                {
+                    connections.remove(&node);
+                }
             }
+            let _ = sqlx::query("UPDATE nodes SET connection_owner=NULL WHERE id=$1 AND active_session=$2 AND connection_owner=$3")
+                .bind(node).bind(session).bind(state.coordination.id).execute(&state.pool).await;
         });
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
@@ -411,17 +472,18 @@ impl protocol::control_server::Control for EmissaryService {
         .await?;
         let id = Uuid::parse_str(&input.upload_id)
             .map_err(|_| Status::invalid_argument("invalid upload ID"))?;
-        let mut transaction = self.0.pool.begin().await.map_err(internal)?;
-        let row = sqlx::query("SELECT * FROM uploads WHERE id=$1 AND attempt_id=$2 FOR UPDATE")
+        // Upload declarations are immutable. Release the pool connection before
+        // reading and promoting the object; slow storage must not starve renewals.
+        let row = sqlx::query("SELECT * FROM uploads WHERE id=$1 AND attempt_id=$2")
             .bind(id)
             .bind(attempt)
-            .fetch_optional(&mut *transaction)
+            .fetch_optional(&self.0.pool)
             .await
             .map_err(internal)?
             .ok_or_else(|| Status::not_found("upload not found"))?;
         let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM artifacts WHERE id=$1)")
             .bind(id)
-            .fetch_one(&mut *transaction)
+            .fetch_one(&self.0.pool)
             .await
             .map_err(internal)?;
         let final_key = format!("artifacts/{id}");
@@ -439,11 +501,16 @@ impl protocol::control_server::Control for EmissaryService {
                     Status::failed_precondition("artifact verification or promotion failed")
                 })?;
         }
-        // Network verification completes before taking the attempt/node locks,
-        // so a slow S3 request does not block heartbeat renewal.
+        let mut transaction = self.0.pool.begin().await.map_err(internal)?;
+        sqlx::query("SELECT id FROM uploads WHERE id=$1 AND attempt_id=$2 FOR UPDATE")
+            .bind(id)
+            .bind(attempt)
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
         lock_artifact_attempt(&mut transaction, node, attempt, &input.lease_token).await?;
         if !exists {
-            sqlx::query("INSERT INTO artifacts(id,attempt_id,path,object_key,size,sha256) VALUES($1,$2,$3,$4,$5,$6)")
+            sqlx::query("INSERT INTO artifacts(id,attempt_id,path,object_key,size,sha256) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING")
                 .bind(id).bind(attempt).bind(row.get::<String,_>("path")).bind(final_key).bind(row.get::<i64,_>("expected_size")).bind(row.get::<String,_>("expected_sha256")).execute(&mut *transaction).await.map_err(internal)?;
         }
         transaction.commit().await.map_err(internal)?;
@@ -456,14 +523,15 @@ impl protocol::control_server::Control for EmissaryService {
     }
 }
 
-async fn heartbeat(
-    state: &AppState,
-    node: Uuid,
-    session: Uuid,
-    event: &EmissaryEvent,
-    sender: &mpsc::Sender<Result<Command, Status>>,
-) -> Result<(), Status> {
-    valid_node(&state.pool, node, session).await?;
+enum SessionUpdate {
+    Current,
+    Register {
+        owner: Uuid,
+        certificate_hash: String,
+    },
+}
+
+fn heartbeat_payload(event: &EmissaryEvent) -> Result<Value, Status> {
     if event.payload_json.len() > 65536 {
         return Err(Status::invalid_argument("oversized heartbeat"));
     }
@@ -473,8 +541,74 @@ async fn heartbeat(
     if !capabilities.is_array() || capabilities.as_array().unwrap().len() > 256 {
         return Err(Status::invalid_argument("invalid capabilities"));
     }
-    sqlx::query("UPDATE nodes SET last_seen=now(),capabilities=$3,diagnostics=$4 WHERE id=$1 AND active_session=$2")
-        .bind(node).bind(session).bind(capabilities).bind(payload.get("diagnostics").cloned().unwrap_or(json!({}))).execute(&state.pool).await.map_err(internal)?;
+    Ok(payload)
+}
+
+fn ordinary_health(payload: &Value) -> Option<&Value> {
+    payload.get("ota").filter(|status| {
+        status.is_object()
+            && status["update_id"]
+                .as_str()
+                .and_then(|id| Uuid::parse_str(id).ok())
+                .is_none()
+    })
+}
+
+async fn record_heartbeat(
+    state: &AppState,
+    node: Uuid,
+    session: Uuid,
+    payload: &Value,
+    update: SessionUpdate,
+) -> Result<(), Status> {
+    let (new_owner, certificate_hash) = match update {
+        SessionUpdate::Current => (None, None),
+        SessionUpdate::Register {
+            owner,
+            certificate_hash,
+        } => (Some(owner), Some(certificate_hash)),
+    };
+    let ordinary_health = ordinary_health(payload);
+    // Health is a replaceable snapshot: a database crash may discard its latest
+    // samples. Avoid a WAL flush for every idle heartbeat. The materialized CTE
+    // confines this policy to this implicit transaction; session registration
+    // and the separate lease/command transactions retain the configured policy.
+    let updated=sqlx::query("WITH durability AS MATERIALIZED (SELECT set_config('synchronous_commit',CASE WHEN $8::uuid IS NULL THEN 'off' ELSE current_setting('synchronous_commit') END,true)) UPDATE nodes SET active_session=$2,connection_owner=coalesce($8,connection_owner),last_seen=now(),capabilities=$3,diagnostics=$4,emissary_ota_status=coalesce($5,emissary_ota_status),emissary_current_version=CASE WHEN $5::jsonb IS NULL THEN emissary_current_version ELSE $6 END,emissary_launcher_version=CASE WHEN $5::jsonb IS NULL THEN emissary_launcher_version ELSE $7 END FROM durability WHERE id=$1 AND (($8::uuid IS NULL AND active_session=$2) OR ($8::uuid IS NOT NULL AND certificate_hash=$9)) AND NOT revoked AND certificate_expires_at>clock_timestamp()")
+        .bind(node).bind(session).bind(payload.get("capabilities").cloned().unwrap_or(json!([]))).bind(payload.get("diagnostics").cloned().unwrap_or(json!({})))
+        .bind(ordinary_health).bind(payload["diagnostics"]["emissary_version"].as_str().unwrap_or(""))
+        .bind(ordinary_health.and_then(|status|status["launcher_version"].as_str()))
+        .bind(new_owner).bind(certificate_hash)
+        .execute(&state.pool).await.map_err(internal)?;
+    if updated.rows_affected() == 0 {
+        return Err(if new_owner.is_some() {
+            Status::permission_denied("node authorization expired")
+        } else {
+            Status::unauthenticated("node session revoked or superseded")
+        });
+    }
+    Ok(())
+}
+
+async fn heartbeat(
+    state: &AppState,
+    node: Uuid,
+    session: Uuid,
+    event: &EmissaryEvent,
+    sender: &mpsc::Sender<Result<Command, Status>>,
+) -> Result<(), Status> {
+    let payload = heartbeat_payload(event)?;
+    record_heartbeat(state, node, session, &payload, SessionUpdate::Current).await?;
+    report_heartbeat(state, node, session, event, &payload, sender).await
+}
+
+async fn report_heartbeat(
+    state: &AppState,
+    node: Uuid,
+    session: Uuid,
+    event: &EmissaryEvent,
+    payload: &Value,
+    sender: &mpsc::Sender<Result<Command, Status>>,
+) -> Result<(), Status> {
     if let Some(active) = payload.get("active_attempts").and_then(Value::as_array) {
         if active.len() > 32 {
             return Err(Status::invalid_argument("too many active attempts"));
@@ -522,11 +656,16 @@ async fn heartbeat(
                 .map_err(|_| Status::unavailable("connection closed"))?;
         }
     }
-    let ota_healthy = crate::ota::report(state, node, session, &payload)
-        .await
-        .map_err(internal)?;
+    let ota_healthy = if ordinary_health(payload).is_some() {
+        true
+    } else {
+        crate::ota::report(state, node, session, payload)
+            .await
+            .map_err(internal)?
+    };
     if ota_healthy && event.kind == "heartbeat" {
-        valid_node(&state.pool, node, session).await?;
+        // The health update and any lease/OTA writes already authorize this
+        // session. Idle heartbeats need no extra database read for their ACK.
         sender
             .send(Ok(Command {
                 kind: "emissary_health".into(),

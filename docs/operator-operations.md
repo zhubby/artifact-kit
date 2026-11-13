@@ -34,7 +34,7 @@ SourcePool 由 Operator 创建 headless Service 和 StatefulSet；每个 replica
 
 删除 Operator release 或 SourcePool 不级联删除 Source StatefulSet/Service/PVC，PVC retention 为 Retain。Job 清理按 UID 显式级联删除 Pod；终态 AgentRun 在清理完成且创建超过 24 小时后回收，尚有 `CleanupPending` 或 Pod UID 的资源继续保留。dispatcher 标记的 SourceSnapshot 元数据在没有 AgentRun 引用且超过 24 小时后清理，用户声明的 SourceSnapshot 保留。元数据删除不删除持久快照、DB、S3 或 PVC。首期 Source 无自动破坏性 GC，要监控磁盘/对象容量并按备份策略保留。
 
-Runtime 支持多个副本，数据库行锁/advisory lock 保护准入、预算与结果；Operator 通过 Kubernetes Lease CAS 选主，失去新鲜 Lease 即停止变更。业务 control 仍按现有单实例边界部署。
+Runtime 支持多个副本，数据库行锁/advisory lock 保护准入、预算与结果；Operator 通过 Kubernetes Lease CAS 选主，失去新鲜 Lease 即停止变更。业务 Control 可按 [Control 多副本方案](control-ha.md) 部署，设备命令使用业务 PostgreSQL Outbox；不能将 Runtime 的排队容量当作设备连接容量。
 
 ## 观测与诊断
 

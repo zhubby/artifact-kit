@@ -12,7 +12,7 @@ export interface Pool { id: string; name: string; emissary_target_release?: stri
 export interface Credential { id: string; name: string; kind: string; created_at: string }
 export interface Token { id: string; name: string; scopes: string[]; project_ids: string[]; expires_at: string; revoked: boolean }
 export interface Audit { id: number; actor: string; action: string; resource_id: string; created_at: string }
-export interface Overview { projects: number; nodes_online: number; running: number; queued: number; releases: number; builds_today: number }
+export interface Overview { nodes_registered?: number; projects: number; nodes_online: number; running: number; queued: number; releases: number; builds_today: number }
 
 export interface EmissaryRelease { id: string; version: string; created_at: string }
 export interface EmissaryUpdate { id: string; node_id: string; node_name: string; version: string; previous_version: string | null; status: string; error: string | null; cancel_requested: boolean; finished_at: string | null; updated_at: string }

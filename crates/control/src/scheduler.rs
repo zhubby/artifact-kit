@@ -1,6 +1,6 @@
 use crate::{
     crypto,
-    protocol::{Assignment, Command, GitCredential, Step},
+    protocol::{Assignment, GitCredential, Step},
     recipe::{Recipe, Target},
     source,
     state::AppState,
@@ -12,6 +12,32 @@ use std::time::Duration;
 use uuid::Uuid;
 
 pub fn start(state: AppState) {
+    let notifications = state.clone();
+    tokio::spawn(async move {
+        loop {
+            if notifications.coordination.stop.is_cancelled() {
+                break;
+            }
+            let result = async {
+                let mut listener = sqlx::postgres::PgListener::connect_with(&notifications.pool).await?;
+                listener.listen("artifactory_work").await?;
+                loop {
+                    tokio::select! {
+                        _ = notifications.coordination.stop.cancelled() => return Ok::<(), sqlx::Error>(()),
+                        message = listener.recv() => {
+                            message?;
+                            notifications.coordination.wake.notify_one();
+                            notifications.coordination.commands.notify_one();
+                        }
+                    }
+                }
+            }.await;
+            if let Err(error) = result {
+                tracing::warn!(%error,"control notifications reconnecting; reconciliation remains active");
+            }
+            tokio::select! { _=notifications.coordination.stop.cancelled()=>break, _=tokio::time::sleep(Duration::from_secs(1))=>{} }
+        }
+    });
     if std::env::var("ARTIFACTORY_RUNTIME_URL").is_ok() {
         let bridge = state.clone();
         tokio::spawn(async move {
@@ -35,6 +61,63 @@ pub fn start(state: AppState) {
             });
         }
     }
+    if state.settings.local_source_url.is_none() {
+        start_source(state.clone());
+    }
+    // Source restoration can take minutes. Keep assignment preparation apart
+    // from cancellation, lease expiry and scheduling, with one bounded batch.
+    let assignments = state.clone();
+    tokio::spawn(async move {
+        loop {
+            if !assignments.coordination.is_draining()
+                && let Err(error) = crate::dispatch::deliver_assignments(&assignments).await
+            {
+                tracing::warn!(%error,"assignment delivery deferred");
+            }
+            tokio::select! {
+                _ = assignments.coordination.stop.cancelled() => break,
+                _ = assignments.coordination.commands.notified() => {},
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+            }
+        }
+    });
+    // Connection/work wakeups should only accelerate job admission and command
+    // delivery. Global scans run on a fixed cadence and cannot stall that path.
+    let maintenance = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = maintenance.coordination.stop.cancelled() => break,
+                _ = interval.tick() => {},
+            }
+            if !maintenance.coordination.is_draining()
+                && let Err(error) = crate::dispatch::deliver_ota(&maintenance).await
+            {
+                tracing::warn!(%error,"OTA delivery deferred");
+            }
+            if let Err(error) = maintain(&maintenance).await {
+                tracing::error!(%error,"scheduler maintenance failed");
+            }
+        }
+    });
+    tokio::spawn(async move {
+        loop {
+            if let Err(error) = dispatch_work(&state).await {
+                tracing::error!(%error,"scheduler tick failed");
+            }
+            tokio::select! {
+                _ = state.coordination.stop.cancelled() => break,
+                _ = state.coordination.wake.notified() => {},
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+            }
+        }
+    });
+}
+
+/// Run the singleton legacy source cache and resolver on its retained volume.
+pub fn start_source(state: AppState) {
     let cache = state.clone();
     tokio::spawn(async move {
         let quota = std::env::var("ARTIFACTORY_SOURCE_CACHE_BYTES")
@@ -55,14 +138,6 @@ pub fn start(state: AppState) {
                 tracing::warn!(%error,"source resolution failed");
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-    });
-    tokio::spawn(async move {
-        loop {
-            if let Err(error) = tick(&state).await {
-                tracing::error!(%error,"scheduler tick failed");
-            }
-            tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
 }
@@ -162,38 +237,50 @@ pub fn matches(
             .all(|name| signing.contains(name))
 }
 
+/// Reconcile job admission, command cancellation, OTA and global maintenance.
+///
+/// # Errors
+/// Returns database or preparation failures; durable work remains retryable.
 pub async fn tick(state: &AppState) -> Result<()> {
+    if !state.coordination.is_draining() {
+        crate::dispatch::deliver_ota(state).await?;
+    }
+    dispatch_work(state).await?;
+    maintain(state).await
+}
+
+async fn dispatch_work(state: &AppState) -> Result<()> {
+    if !state.coordination.is_draining() {
+        schedule(state).await?;
+        crate::dispatch::deliver_cancellations(state).await?;
+    }
+    Ok(())
+}
+
+async fn maintain(state: &AppState) -> Result<()> {
+    // Only one replica performs housekeeping at a time. This transaction holds
+    // the advisory lock, while each operation retains its existing short commits.
+    let mut guard = state.pool.begin().await?;
+    let acquired: bool = sqlx::query_scalar(
+        "SELECT pg_try_advisory_xact_lock(hashtextextended('artifactory:maintenance',12))",
+    )
+    .fetch_one(&mut *guard)
+    .await?;
+    if !acquired {
+        return Ok(());
+    }
     crate::planning::reap(state).await?;
     expire(state).await?;
-    let connections = state.connections.read().await.clone();
-    for (node_id, connection) in connections {
-        if let Some(command) = crate::ota::next(state, node_id, connection.session).await? {
-            let _ = connection.sender.try_send(Ok(command));
-        }
-        if let Some(command) = assign(state, node_id, connection.session).await? {
-            let _ =
-                tokio::time::timeout(Duration::from_secs(2), connection.sender.send(Ok(command)))
-                    .await;
-        }
-        let canceled=sqlx::query("SELECT a.id,a.lease_token FROM attempts a JOIN jobs j ON j.id=a.job_id JOIN builds b ON b.id=j.build_id WHERE a.node_id=$1 AND a.status IN ('leased','running') AND b.cancel_requested")
-            .bind(node_id).fetch_all(&state.pool).await?;
-        for attempt in canceled {
-            let command = Command {
-                command_id: Uuid::new_v4().to_string(),
-                kind: "cancel".into(),
-                attempt_id: attempt.get::<Uuid, _>("id").to_string(),
-                lease_token: attempt.get("lease_token"),
-                ..Default::default()
-            };
-            let _ = connection.sender.try_send(Ok(command));
-        }
-    }
     refresh_builds(state).await?;
     queue_revisions(state).await?;
-    let pending:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM builds WHERE status='succeeded' AND publish_status='pending' AND NOT cancel_requested LIMIT 10").fetch_all(&state.pool).await?;
+    sqlx::query("DELETE FROM device_commands WHERE id IN (SELECT id FROM device_commands WHERE acknowledged_at<now()-interval '7 days' ORDER BY acknowledged_at LIMIT 1000)")
+        .execute(&state.pool).await?;
+    let pending: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM builds WHERE status='succeeded' AND publish_status='pending' AND NOT cancel_requested LIMIT 10")
+        .fetch_all(&state.pool).await?;
     for id in pending {
         let _ = publish_build(state, id).await;
     }
+    guard.commit().await?;
     Ok(())
 }
 
@@ -222,92 +309,88 @@ pub async fn expire(state: &AppState) -> Result<()> {
     Ok(())
 }
 
-async fn assign(state: &AppState, node_id: Uuid, session: Uuid) -> Result<Option<Command>> {
-    let mut transaction = state.pool.begin().await?;
-    let Some(node)=sqlx::query("SELECT * FROM nodes WHERE id=$1 AND active_session=$2 AND NOT revoked AND NOT draining AND NOT ota_draining AND certificate_expires_at>clock_timestamp() AND last_seen>now()-interval '30 seconds' FOR UPDATE SKIP LOCKED")
-        .bind(node_id).bind(session).fetch_optional(&mut *transaction).await? else { return Ok(None); };
-    let active:i64=sqlx::query_scalar("SELECT count(*) FROM attempts WHERE node_id=$1 AND status IN ('leased','running') AND lease_expires_at>now()")
-        .bind(node_id).fetch_one(&mut *transaction).await?;
-    if active >= node.get::<i32, _>("slots") as i64 {
-        return Ok(None);
-    }
-    let candidates=sqlx::query("SELECT j.id,j.target_config,j.plan_revision_id,b.source_snapshot_id,b.goal,b.planning_context,p.signing_profiles AS permitted_signing FROM jobs j JOIN builds b ON b.id=j.build_id JOIN projects p ON p.id=b.project_id WHERE j.status='queued' AND b.status IN ('queued','running') AND NOT b.cancel_requested AND $1=ANY(p.pool_ids) ORDER BY j.created_at FOR UPDATE OF j SKIP LOCKED LIMIT 128")
-        .bind(node.get::<Uuid,_>("pool_id")).fetch_all(&mut *transaction).await?;
-    for candidate in candidates {
+/// Match queued jobs to available nodes, without visiting idle connections.
+///
+/// # Errors
+/// Returns database or invalid persisted target errors.
+pub async fn schedule(state: &AppState) -> Result<()> {
+    for _ in 0..state.settings.control.scheduler_batch {
+        if state.coordination.is_draining() {
+            break;
+        }
+        let mut tx = state.pool.begin().await?;
+        let candidate = sqlx::query("SELECT j.id,j.target_config,j.plan_revision_id,b.source_snapshot_id,b.goal,b.planning_context,p.pool_ids,p.signing_profiles AS permitted_signing FROM jobs j JOIN builds b ON b.id=j.build_id JOIN projects p ON p.id=b.project_id WHERE j.status='queued' AND j.dispatch_after<=clock_timestamp() AND b.status IN ('queued','running') AND NOT b.cancel_requested ORDER BY j.dispatch_after,j.created_at,j.id LIMIT 1 FOR UPDATE OF b,j SKIP LOCKED")
+            .fetch_optional(&mut *tx).await?;
+        let Some(candidate) = candidate else {
+            break;
+        };
+        let job: Uuid = candidate.get("id");
+        let target: Target = serde_json::from_value(candidate.get("target_config"))?;
+        let permitted: Vec<String> = candidate.get("permitted_signing");
+        let mut pools: Vec<Uuid> = candidate.get("pool_ids");
+        let mut capabilities = target.capabilities.clone();
+        capabilities.push("git".into());
+        capabilities.extend(target.steps.iter().map(|s| {
+            s.shell.clone().unwrap_or_else(|| {
+                if target.os == "windows" {
+                    "powershell".into()
+                } else {
+                    "bash".into()
+                }
+            })
+        }));
         if candidate.get::<Option<String>, _>("goal").is_some() {
-            let capabilities: Value = node.get("capabilities");
-            if !["source-cache-v1", "external-build-plan-v1"]
-                .iter()
-                .all(|required| {
-                    capabilities.as_array().is_some_and(|items| {
-                        items.iter().any(|item| item.as_str() == Some(required))
-                    })
-                })
-            {
-                continue;
-            }
+            capabilities.extend(["source-cache-v1".into(), "external-build-plan-v1".into()]);
             let context: Value = candidate.get("planning_context");
             let allowed: Vec<Uuid> =
                 serde_json::from_value(context.get("pool_ids").cloned().unwrap_or(json!([])))?;
-            if !allowed.contains(&node.get("pool_id")) {
-                continue;
-            }
+            pools.retain(|pool| allowed.contains(pool));
         }
-        let target: Target = serde_json::from_value(candidate.get("target_config"))?;
-        let permitted: Vec<String> = candidate.get("permitted_signing");
-        if !target
+        let node = if target
             .signing_profiles
             .iter()
             .all(|profile| permitted.contains(profile))
         {
-            continue;
-        }
-        if !matches(
-            &target,
-            &node.get::<String, _>("os"),
-            &node.get::<String, _>("arch"),
-            &node.get("labels"),
-            &node.get("capabilities"),
-            &node.get::<Vec<String>, _>("signing_profiles"),
-        ) {
-            continue;
-        }
-        let job: Uuid = candidate.get("id");
-        let attempt = Uuid::new_v4();
-        let command_id = Uuid::new_v4();
-        let lease_token = crypto::token();
-        sqlx::query("INSERT INTO attempts(id,job_id,node_id,lease_token,lease_expires_at,status,command_id,plan_revision_id,source_snapshot_id) VALUES($1,$2,$3,$4,now()+interval '90 seconds','leased',$5,$6,$7)")
-            .bind(attempt).bind(job).bind(node_id).bind(&lease_token).bind(command_id).bind(candidate.get::<Option<Uuid>,_>("plan_revision_id")).bind(candidate.get::<Option<Uuid>,_>("source_snapshot_id")).execute(&mut *transaction).await?;
-        sqlx::query("UPDATE jobs SET status='leased' WHERE id=$1")
-            .bind(job)
-            .execute(&mut *transaction)
-            .await?;
-        transaction.commit().await?;
-        let assignment = match assignment(state, job, attempt).await {
-            Ok(assignment) => assignment,
-            Err(error) => {
-                sqlx::query("UPDATE attempts SET status='failed',failure_kind='source',error='platform source preparation failed',finished_at=now() WHERE id=$1 AND status='leased'").bind(attempt).execute(&state.pool).await?;
-                sqlx::query("UPDATE jobs SET status='failed' WHERE id=$1 AND status='leased'")
-                    .bind(job)
-                    .execute(&state.pool)
-                    .await?;
-                return Err(error);
-            }
+            sqlx::query("SELECT n.id FROM nodes n WHERE n.pool_id=ANY($1) AND n.os=$2 AND n.arch=$3 AND n.labels @> $4 AND n.capabilities @> $5 AND $6::text[] <@ n.signing_profiles AND n.active_session IS NOT NULL AND n.connection_owner IS NOT NULL AND NOT n.revoked AND NOT n.draining AND NOT n.ota_draining AND n.certificate_expires_at>clock_timestamp() AND n.last_seen>clock_timestamp()-interval '30 seconds' AND n.slots>(SELECT count(*) FROM attempts a WHERE a.node_id=n.id AND a.status IN ('leased','running') AND a.lease_expires_at>clock_timestamp()) ORDER BY n.id LIMIT 1 FOR UPDATE OF n SKIP LOCKED")
+                .bind(&pools).bind(&target.os).bind(&target.arch).bind(serde_json::to_value(&target.labels)?).bind(json!(capabilities)).bind(&target.signing_profiles)
+                .fetch_optional(&mut *tx).await?
+        } else {
+            None
         };
-        return Ok(Some(Command {
-            command_id: command_id.to_string(),
-            kind: "assign".into(),
-            attempt_id: attempt.to_string(),
-            lease_token,
-            lease_seconds: 90,
-            assignment: Some(assignment),
-            ..Default::default()
-        }));
+        let node = if let Some(node) = node {
+            // Use a new READ COMMITTED snapshot after acquiring the node lock.
+            // Another assignment may have committed after the selection began.
+            let valid: bool = sqlx::query_scalar("SELECT active_session IS NOT NULL AND connection_owner IS NOT NULL AND NOT revoked AND NOT draining AND NOT ota_draining AND certificate_expires_at>clock_timestamp() AND last_seen>clock_timestamp()-interval '30 seconds' AND slots>(SELECT count(*) FROM attempts WHERE node_id=$1 AND status IN ('leased','running') AND lease_expires_at>clock_timestamp()) FROM nodes WHERE id=$1")
+                .bind(node.get::<Uuid,_>("id")).fetch_one(&mut *tx).await?;
+            valid.then_some(node)
+        } else {
+            None
+        };
+        if let Some(node) = node {
+            // The node row serializes slots and OTA admission across replicas.
+            sqlx::query("INSERT INTO attempts(id,job_id,node_id,lease_token,lease_expires_at,status,command_id,plan_revision_id,source_snapshot_id) VALUES($1,$2,$3,$4,clock_timestamp()+interval '90 seconds','leased',$5,$6,$7)")
+                .bind(Uuid::new_v4()).bind(job).bind(node.get::<Uuid,_>("id")).bind(crypto::token()).bind(Uuid::new_v4()).bind(candidate.get::<Option<Uuid>,_>("plan_revision_id")).bind(candidate.get::<Option<Uuid>,_>("source_snapshot_id"))
+                .execute(&mut *tx).await?;
+            sqlx::query("UPDATE jobs SET status='leased' WHERE id=$1")
+                .bind(job)
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            // Rotate incompatible/saturated work so the oldest platform cannot
+            // starve later jobs. Periodic reconciliation bounds lost wakeups.
+            sqlx::query(
+                "UPDATE jobs SET dispatch_after=clock_timestamp()+interval '5 seconds' WHERE id=$1",
+            )
+            .bind(job)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
     }
-    Ok(None)
+    Ok(())
 }
 
-async fn assignment(state: &AppState, job: Uuid, attempt: Uuid) -> Result<Assignment> {
+pub(crate) async fn assignment(state: &AppState, job: Uuid, attempt: Uuid) -> Result<Assignment> {
     let row=sqlx::query("SELECT j.target,j.target_config,j.plan_revision_id,b.source_snapshot_id,b.id,b.commit_sha,b.config_snapshot,b.parameters,b.source_repository_url AS repository_url,b.source_credential_id AS credential_id FROM jobs j JOIN builds b ON b.id=j.build_id WHERE j.id=$1")
         .bind(job).fetch_one(&state.pool).await?;
     let target: Target = serde_json::from_value(row.get("target_config"))?;
@@ -390,7 +473,7 @@ async fn assignment(state: &AppState, job: Uuid, attempt: Uuid) -> Result<Assign
 }
 
 pub async fn refresh_builds(state: &AppState) -> Result<()> {
-    sqlx::query("WITH summaries AS (SELECT b.id, CASE WHEN b.cancel_requested THEN CASE WHEN bool_or(j.status IN ('leased','running')) THEN 'canceling' ELSE 'canceled' END WHEN bool_or(j.status='running') THEN 'running' WHEN bool_or(j.status IN ('queued','leased')) THEN 'queued' WHEN bool_or(j.status='failed') THEN 'failed' WHEN bool_or(j.status='lost') THEN 'lost' WHEN bool_or(j.status='canceled') THEN 'canceled' ELSE 'succeeded' END AS status FROM builds b JOIN jobs j ON j.build_id=b.id WHERE b.status NOT IN ('resolving','planning','replanning','needs_input') GROUP BY b.id) UPDATE builds b SET status=s.status,finished_at=CASE WHEN s.status IN ('succeeded','failed','lost','canceled') THEN coalesce(b.finished_at,now()) ELSE NULL END FROM summaries s WHERE b.id=s.id")
+    sqlx::query("WITH summaries AS (SELECT b.id, CASE WHEN b.cancel_requested THEN CASE WHEN bool_or(j.status IN ('leased','running')) THEN 'canceling' ELSE 'canceled' END WHEN bool_or(j.status='running') THEN 'running' WHEN bool_or(j.status IN ('queued','leased')) THEN 'queued' WHEN bool_or(j.status='failed') THEN 'failed' WHEN bool_or(j.status='lost') THEN 'lost' WHEN bool_or(j.status='canceled') THEN 'canceled' ELSE 'succeeded' END AS status FROM builds b JOIN jobs j ON j.build_id=b.id WHERE b.status IN ('queued','running','canceling') GROUP BY b.id) UPDATE builds b SET status=s.status,finished_at=CASE WHEN s.status IN ('succeeded','failed','lost','canceled') THEN coalesce(b.finished_at,now()) ELSE NULL END FROM summaries s WHERE b.id=s.id AND b.status IS DISTINCT FROM s.status")
         .execute(&state.pool).await?;
     Ok(())
 }

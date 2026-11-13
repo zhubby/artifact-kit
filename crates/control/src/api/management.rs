@@ -7,7 +7,7 @@ use crate::{
 };
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
 };
 use chrono::{Duration, Utc};
 use serde::Deserialize;
@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 pub async fn overview(State(state): State<AppState>, auth: Auth) -> Result<Json<Value>> {
     auth.session_role("viewer")?;
-    let value: Value = sqlx::query_scalar("SELECT jsonb_build_object('projects',(SELECT count(*) FROM projects),'nodes_online',(SELECT count(*) FROM nodes WHERE NOT revoked AND last_seen>now()-interval '30 seconds'),'running',(SELECT count(*) FROM jobs WHERE status IN ('leased','running')),'queued',(SELECT count(*) FROM jobs WHERE status='queued'),'releases',(SELECT count(*) FROM releases),'builds_today',(SELECT count(*) FROM builds WHERE created_at>now()-interval '24 hours'))")
+    let value: Value = sqlx::query_scalar("SELECT jsonb_build_object('projects',(SELECT count(*) FROM projects),'nodes_registered',(SELECT count(*) FROM nodes),'nodes_online',(SELECT count(*) FROM nodes WHERE NOT revoked AND last_seen>now()-interval '30 seconds'),'running',(SELECT count(*) FROM jobs WHERE status IN ('leased','running')),'queued',(SELECT count(*) FROM jobs WHERE status='queued'),'releases',(SELECT count(*) FROM releases),'builds_today',(SELECT count(*) FROM builds WHERE created_at>now()-interval '24 hours'))")
         .fetch_one(&state.pool).await?;
     Ok(Json(value))
 }
@@ -195,9 +195,35 @@ pub async fn enrollment_token(
     Ok(Json(json!({"id":id,"token":token,"expires_seconds":900})))
 }
 
-pub async fn nodes(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
+#[derive(Debug, Deserialize)]
+pub struct NodeQuery {
+    #[serde(default = "node_page_size")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+    #[serde(default)]
+    q: String,
+}
+fn node_page_size() -> i64 {
+    100
+}
+
+pub async fn nodes(
+    State(state): State<AppState>,
+    auth: Auth,
+    Query(query): Query<NodeQuery>,
+) -> Result<Json<Vec<Value>>> {
     auth.session_role("viewer")?;
-    Ok(Json(sqlx::query_scalar("SELECT (to_jsonb(n)-'certificate_hash'-'active_session') || jsonb_build_object('emissary_desired_release',coalesce(n.emissary_target_release,p.emissary_target_release),'emissary_pool_paused',p.emissary_updates_paused,'pool_name',p.name,'online',NOT n.revoked AND n.last_seen>now()-interval '30 seconds','active_jobs',(SELECT count(*) FROM attempts a WHERE a.node_id=n.id AND a.status IN ('leased','running') AND a.lease_expires_at>now())) FROM nodes n JOIN node_pools p ON p.id=n.pool_id ORDER BY n.created_at DESC").fetch_all(&state.pool).await?))
+    if !(1..=500).contains(&query.limit)
+        || !(0..=10_000_000).contains(&query.offset)
+        || query.q.len() > 100
+    {
+        return Err(ApiError::BadRequest(
+            "invalid node pagination or search".into(),
+        ));
+    }
+    Ok(Json(sqlx::query_scalar("SELECT (to_jsonb(n)-'certificate_hash'-'active_session'-'connection_owner') || jsonb_build_object('emissary_desired_release',coalesce(n.emissary_target_release,p.emissary_target_release),'emissary_pool_paused',p.emissary_updates_paused,'pool_name',p.name,'online',NOT n.revoked AND n.last_seen>now()-interval '30 seconds','active_jobs',(SELECT count(*) FROM attempts a WHERE a.node_id=n.id AND a.status IN ('leased','running') AND a.lease_expires_at>now())) FROM nodes n JOIN node_pools p ON p.id=n.pool_id WHERE strpos(lower(n.name||' '||n.os||' '||p.name),lower($3))>0 ORDER BY n.created_at DESC,n.id DESC LIMIT $1 OFFSET $2")
+        .bind(query.limit).bind(query.offset).bind(query.q).fetch_all(&state.pool).await?))
 }
 
 #[derive(Deserialize)]

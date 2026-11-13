@@ -5,7 +5,10 @@ use std::{
     collections::HashMap,
     fs,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 use tokio::sync::mpsc;
@@ -48,6 +51,14 @@ struct Peer {
     connected: mpsc::Sender<Connection>,
     logs: Arc<Mutex<HashMap<String, Vec<u8>>>>,
     ack_delay: Duration,
+    metrics: Arc<TransportMetrics>,
+}
+
+#[derive(Default)]
+pub struct TransportMetrics {
+    pub accepted: AtomicUsize,
+    pub log_batches: AtomicUsize,
+    pub fail_next_log: AtomicBool,
 }
 #[tonic::async_trait]
 impl pb::control_server::Control for Peer {
@@ -159,6 +170,10 @@ impl pb::control_server::Control for Peer {
         &self,
         request: Request<Streaming<pb::LogChunk>>,
     ) -> Result<Response<pb::LogAck>, Status> {
+        self.metrics.log_batches.fetch_add(1, Ordering::SeqCst);
+        if self.metrics.fail_next_log.swap(false, Ordering::SeqCst) {
+            return Err(Status::unavailable("injected log transport failure"));
+        }
         let mut stream = request.into_inner();
         let mut sequence = 0;
         while let Some(chunk) = stream.message().await? {
@@ -190,6 +205,7 @@ impl pb::control_server::Control for Peer {
 pub struct Fixture {
     pub cfg: Config,
     pub connections: mpsc::Receiver<Connection>,
+    pub metrics: Arc<TransportMetrics>,
     #[cfg(unix)]
     logs: Arc<Mutex<HashMap<String, Vec<u8>>>>,
     cancel: CancellationToken,
@@ -246,21 +262,30 @@ impl Fixture {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = listener.local_addr().unwrap().to_string();
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
-        let incoming =
-            futures::stream::unfold((listener, acceptor), |(listener, acceptor)| async move {
+        let metrics = Arc::new(TransportMetrics::default());
+        let accepted = metrics.clone();
+        let incoming = futures::stream::unfold(
+            (listener, acceptor, accepted),
+            |(listener, acceptor, accepted)| async move {
                 loop {
                     let (socket, _) = listener.accept().await.unwrap();
                     if let Ok(tls) = acceptor.accept(socket).await {
-                        return Some((Ok::<_, std::io::Error>(tls), (listener, acceptor)));
+                        accepted.accepted.fetch_add(1, Ordering::SeqCst);
+                        return Some((
+                            Ok::<_, std::io::Error>(tls),
+                            (listener, acceptor, accepted),
+                        ));
                     }
                 }
-            });
+            },
+        );
         let (connected, connections) = mpsc::channel(8);
         let logs = Arc::new(Mutex::new(HashMap::new()));
         let peer = Peer {
             connected,
             logs: logs.clone(),
             ack_delay,
+            metrics: metrics.clone(),
         };
         let cancel = CancellationToken::new();
         let shutdown = cancel.clone();
@@ -283,6 +308,7 @@ impl Fixture {
                 ..Default::default()
             },
             connections,
+            metrics,
             #[cfg(unix)]
             logs,
             cancel,
@@ -307,6 +333,11 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        eprintln!(
+            "mTLS fixture: connections={} log_batches={}",
+            self.metrics.accepted.load(Ordering::SeqCst),
+            self.metrics.log_batches.load(Ordering::SeqCst)
+        );
         self.cancel.cancel();
         self.server.abort();
     }

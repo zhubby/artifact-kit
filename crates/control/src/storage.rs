@@ -11,11 +11,13 @@ pub struct Storage {
     credentials: Credentials,
     client: reqwest::Client,
     temporary_dir: std::path::PathBuf,
+    verifications: tokio::sync::Semaphore,
 }
 
 impl Storage {
     pub fn new(settings: &Settings) -> Result<Self> {
         Ok(Self {
+            verifications: tokio::sync::Semaphore::new(settings.control.artifact_verifications),
             bucket: Bucket::new(
                 settings.s3_endpoint.parse()?,
                 UrlStyle::Path,
@@ -123,6 +125,7 @@ impl Storage {
         expected_hash: &str,
     ) -> Result<()> {
         use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+        let _permit = self.verifications.acquire().await?;
         let url = self
             .bucket
             .get_object(Some(&self.credentials), key)

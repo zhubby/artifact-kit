@@ -711,6 +711,15 @@ pub async fn ensure_available(state: &AppState, snapshot: &Snapshot) -> Result<(
             .await?;
         return Ok(());
     }
+    if let Some(client) = crate::local_source::client(state).await? {
+        let _: Value = client
+            .post(
+                "/internal/local-source",
+                &json!({"operation":"ensure","snapshot_id":snapshot.id}),
+            )
+            .await?;
+        return Ok(());
+    }
     for entry in &snapshot.repositories {
         let row = sqlx::query(
             "SELECT repository_url,credential_id,cache_key FROM source_repositories WHERE id=$1",
@@ -928,6 +937,15 @@ pub async fn validate_evidence(
         );
         return Ok(());
     }
+    if let Some(client) = crate::local_source::client(state).await? {
+        let _: Value = client
+            .post(
+                "/internal/local-source",
+                &json!({"operation":"evidence","snapshot_id":snapshot.id,"paths":paths}),
+            )
+            .await?;
+        return Ok(());
+    }
     for path in paths {
         validate_path(path)?;
         let entry = snapshot
@@ -966,6 +984,9 @@ pub async fn inspect_tool(
                 &json!({"snapshot_id":snapshot_id,"name":name,"arguments":args}),
             )
             .await;
+    }
+    if let Some(client) = crate::local_source::client(state).await? {
+        return client.post("/internal/local-source", &json!({"operation":"inspect","snapshot_id":snapshot_id,"name":name,"arguments":args})).await;
     }
     let snapshot = load(state, snapshot_id).await?;
     let requested = args

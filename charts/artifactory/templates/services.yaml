@@ -1,4 +1,8 @@
-{{- range $component := list "postgres" "s3" "control" "web" "grpc" }}
+{{- $components := list "control" "web" "grpc" }}
+{{- if .Values.postgres.enabled }}{{- $components = append $components "postgres" }}{{- end }}
+{{- if .Values.s3.enabled }}{{- $components = append $components "s3" }}{{- end }}
+{{- if .Values.localSource.enabled }}{{- $components = append $components "local-source" }}{{- end }}
+{{- range $component := $components }}
 {{- $settings := dict "type" "ClusterIP" }}
 {{- $port := 5432 }}
 {{- $target := "postgres" }}
@@ -7,7 +11,7 @@
 {{- $settings = $.Values.s3.service }}
 {{- $port = 8333 }}
 {{- $target = "s3" }}
-{{- else if eq $component "control" }}
+{{- else if or (eq $component "control") (eq $component "local-source") }}
 {{- $port = 8080 }}
 {{- $target = "http" }}
 {{- else if eq $component "web" }}

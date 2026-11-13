@@ -9,6 +9,115 @@ use std::{fs, path::Path, time::Duration};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(unix)]
+#[tokio::test]
+async fn log_batches_reuse_one_mtls_transport_and_retry_from_spool() {
+    use std::sync::atomic::Ordering;
+    let directory = tempfile::tempdir().unwrap();
+    let mut fixture = support::Fixture::start(directory.path(), &[&rustls::version::TLS13]).await;
+    fixture.metrics.fail_next_log.store(true, Ordering::SeqCst);
+    let config = directory.path().join("emissary.json");
+    fixture.cfg.save(&config).unwrap();
+    let repo = directory.path().join("repository");
+    fs::create_dir(&repo).unwrap();
+    for args in [
+        vec!["init"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@localhost",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "fixture",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+    let commit = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_artifactory-emissary"))
+        .args(["run", "--config"])
+        .arg(&config)
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut connection = fixture.connection().await;
+    let attempt = uuid::Uuid::new_v4().to_string();
+    connection
+        .commands
+        .send(pb::Command {
+            kind: "assign".into(),
+            attempt_id: attempt.clone(),
+            lease_token: "log-transport-fixture".into(),
+            lease_seconds: 90,
+            assignment: Some(pb::Assignment {
+                repository_url: repo.to_string_lossy().into(),
+                commit_sha: String::from_utf8(commit.stdout).unwrap().trim().into(),
+                timeout_seconds: 30,
+                steps: vec![pb::Step {
+                    name: "compile".into(),
+                    shell: "sh".into(),
+                    run:
+                        "for i in 1 2 3 4 5 6 7 8; do printf 'chunk-%s\\n' \"$i\"; sleep 0.4; done"
+                            .into(),
+                    timeout_seconds: 15,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let finished = connection.event("finished").await;
+    assert!(finished.payload_json.contains("succeeded"));
+    let output = String::from_utf8(fixture.logs(&attempt)).unwrap();
+    for index in 1..=8 {
+        assert_eq!(
+            output.matches(&format!("chunk-{index}\n")).count(),
+            1,
+            "missing or repeated chunk {index}"
+        );
+    }
+    assert!(fixture.metrics.log_batches.load(Ordering::SeqCst) >= 3);
+    assert_eq!(
+        fixture.metrics.accepted.load(Ordering::SeqCst),
+        2,
+        "control stream and all log batches should use two TLS connections"
+    );
+    assert!(
+        std::process::Command::new("kill")
+            .args(["-TERM", &daemon.id().unwrap().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(15), daemon.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+}
+
 #[tokio::test]
 async fn pinned_mtls_requires_tls13() {
     for (version, accepted) in [

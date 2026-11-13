@@ -77,6 +77,14 @@ pub async fn dial(cfg: &Config, enrollment: bool) -> Result<Channel> {
 pub async fn control(cfg: &Config) -> Result<ControlClient<Channel>> {
     Ok(ControlClient::new(dial(cfg, false).await?).max_decoding_message_size(512 * 1024))
 }
+
+/// Randomize retry phase without extending the configured maximum backoff.
+pub(crate) fn retry_delay(seconds: u64) -> Duration {
+    let ceiling = seconds.clamp(1, 30) * 1000;
+    let half = ceiling / 2;
+    let random = (uuid::Uuid::new_v4().as_u128() % u128::from(half + 1)) as u64;
+    Duration::from_millis(half + random)
+}
 pub async fn enroll(path: &Path, mut cfg: Config, token: String) -> Result<Config> {
     ensure!(
         !path.try_exists()?,

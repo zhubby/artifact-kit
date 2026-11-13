@@ -28,6 +28,7 @@ struct Arguments {
 #[derive(Subcommand)]
 enum Command {
     Serve,
+    ServeSource,
     Migrate,
 }
 
@@ -40,10 +41,15 @@ async fn main() -> Result<()> {
         )
         .init();
     let arguments = Arguments::parse();
-    let settings = Settings::from_env()?;
+    let mut settings = Settings::from_env()?;
+    let source_only = matches!(arguments.command, Some(Command::ServeSource));
+    if source_only {
+        settings.local_source_url = None;
+    }
     tokio::fs::create_dir_all(&settings.data_dir).await?;
     let pool = PgPoolOptions::new()
-        .max_connections(20)
+        .max_connections(settings.control.database_connections)
+        .acquire_timeout(std::time::Duration::from_secs(5))
         .connect(&settings.database_url)
         .await?;
     artifactory_database::require_timescale(&pool).await?;
@@ -54,7 +60,7 @@ async fn main() -> Result<()> {
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
         .fetch_one(&pool)
         .await?;
-    if count == 0 {
+    if count == 0 && !source_only {
         let username =
             std::env::var("ARTIFACTORY_BOOTSTRAP_USERNAME").unwrap_or_else(|_| "admin".into());
         let password = std::env::var("ARTIFACTORY_BOOTSTRAP_PASSWORD")
@@ -67,14 +73,40 @@ async fn main() -> Result<()> {
         sqlx::query("INSERT INTO users(id,username,password_hash,role) VALUES($1,$2,$3,'admin') ON CONFLICT(username) DO NOTHING").bind(Uuid::new_v4()).bind(username).bind(hash).execute(&pool).await?;
     }
     let storage = Storage::new(&settings)?;
-    storage.initialize().await?;
+    if !source_only {
+        storage.initialize().await?;
+    }
     let state = AppState {
+        coordination: Arc::new(artifactory_control::coordination::Coordination::new(
+            settings.control.database_connections,
+        )),
+        source_client: Default::default(),
         pool,
         settings: Arc::new(settings.clone()),
         storage: Arc::new(storage),
         connections: Arc::new(RwLock::new(HashMap::new())),
     };
+    if source_only {
+        scheduler::start_source(state.clone());
+        let http = artifactory_runtime_protocol::service::serve(
+            &settings.http_bind,
+            artifactory_control::local_source::router(state),
+        );
+        return tokio::select! { result = http => result, _ = shutdown() => Ok(()) };
+    }
     scheduler::start(state.clone());
+    let lifecycle = state.clone();
+    let drain_seconds = settings.control.drain_seconds;
+    tokio::spawn(async move {
+        shutdown().await;
+        if let Err(error) = artifactory_control::coordination::drain(&lifecycle).await {
+            tracing::warn!(%error,"could not clear draining replica ownership");
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(drain_seconds)).await;
+        lifecycle.coordination.stop();
+    });
+    let grpc_stop = state.coordination.clone();
+    let http_stop = state.coordination.clone();
     let server_identity = Identity::from_pem(
         tokio::fs::read(settings.pki_dir.join("server.pem")).await?,
         tokio::fs::read(settings.pki_dir.join("server.key")).await?,
@@ -98,10 +130,13 @@ async fn main() -> Result<()> {
                 .max_decoding_message_size(768 * 1024)
                 .max_encoding_message_size(2 * 1024 * 1024),
         )
-        .serve_with_shutdown(settings.grpc_bind.parse()?, shutdown());
+        .serve_with_shutdown(settings.grpc_bind.parse()?, async move {
+            grpc_stop.stopped().await
+        });
     let listener = tokio::net::TcpListener::bind(&settings.http_bind).await?;
     tracing::info!(http=%settings.http_bind,grpc=%settings.grpc_bind,"artifactory control plane ready");
-    let http = axum::serve(listener, api::router(state)).with_graceful_shutdown(shutdown());
+    let http = axum::serve(listener, api::router(state))
+        .with_graceful_shutdown(async move { http_stop.stopped().await });
     tokio::try_join!(async { http.await.map_err(anyhow::Error::from) }, async {
         grpc.await.map_err(anyhow::Error::from)
     })?;

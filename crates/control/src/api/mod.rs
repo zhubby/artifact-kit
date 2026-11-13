@@ -14,7 +14,7 @@ use axum::{
 };
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    health_routes()
         .route("/api/v1/model-options", get(ai_management::model_options))
         .route(
             "/api/v1/model-profiles",
@@ -39,33 +39,7 @@ pub fn router(state: AppState) -> Router {
             post(ai_management::clarify),
         )
         .route("/api/v1/builds/{id}/plans", get(ai_management::plans))
-        .merge(
-            Router::new()
-                .route(
-                    "/api/v1/source/{snapshot}/{entry}/git/info/refs",
-                    get(source_http::git),
-                )
-                .route(
-                    "/api/v1/source/{snapshot}/{entry}/git/git-upload-pack",
-                    post(source_http::git),
-                )
-                .route(
-                    "/api/v1/source/{snapshot}/{entry}/lfs/objects/batch",
-                    post(source_http::lfs_batch),
-                )
-                .route(
-                    "/api/v1/source/{snapshot}/{entry}/lfs/objects/{oid}",
-                    get(source_http::lfs_object),
-                )
-                .layer(DefaultBodyLimit::disable())
-                .layer(axum::middleware::map_response(source_http::challenge)),
-        )
-        .route(
-            "/healthz",
-            get(|| async {
-                axum::Json(serde_json::json!({"status":"ok","version":env!("CARGO_PKG_VERSION")}))
-            }),
-        )
+        .merge(source_routes())
         .route("/api/v1/auth/login", post(auth::login))
         .route("/api/v1/auth/config", get(auth::registration_config))
         .route("/api/v1/auth/register", post(auth::register))
@@ -152,4 +126,52 @@ pub fn router(state: AppState) -> Router {
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state.clone())
         .merge(crate::runtime_bridge::routes(state))
+}
+
+pub(crate) fn health_routes() -> Router<AppState> {
+    Router::new().route("/readyz", get(readiness)).route(
+        "/healthz",
+        get(|| async {
+            axum::Json(serde_json::json!({"status":"ok","version":env!("CARGO_PKG_VERSION")}))
+        }),
+    )
+}
+
+pub(crate) fn source_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/v1/source/{snapshot}/{entry}/git/info/refs",
+            get(source_http::git),
+        )
+        .route(
+            "/api/v1/source/{snapshot}/{entry}/git/git-upload-pack",
+            post(source_http::git),
+        )
+        .route(
+            "/api/v1/source/{snapshot}/{entry}/lfs/objects/batch",
+            post(source_http::lfs_batch),
+        )
+        .route(
+            "/api/v1/source/{snapshot}/{entry}/lfs/objects/{oid}",
+            get(source_http::lfs_object),
+        )
+        .layer(DefaultBodyLimit::disable())
+        .layer(axum::middleware::map_response(source_http::challenge))
+}
+
+async fn readiness(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> axum::http::StatusCode {
+    if state.coordination.is_draining() {
+        return axum::http::StatusCode::SERVICE_UNAVAILABLE;
+    }
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        sqlx::query("SELECT 1").execute(&state.pool),
+    )
+    .await
+    {
+        Ok(Ok(_)) => axum::http::StatusCode::OK,
+        _ => axum::http::StatusCode::SERVICE_UNAVAILABLE,
+    }
 }

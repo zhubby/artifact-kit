@@ -20,6 +20,59 @@ pub struct Settings {
     pub s3_access_key: String,
     pub s3_secret_key: String,
     pub telemetry: Option<TelemetrySettings>,
+    pub control: ControlLimits,
+    pub local_source_url: Option<String>,
+}
+
+/// Per-replica resource budgets; database capacity must cover their aggregate.
+#[derive(Clone, Debug)]
+pub struct ControlLimits {
+    pub database_connections: u32,
+    pub artifact_verifications: usize,
+    pub scheduler_batch: i64,
+    pub drain_seconds: u64,
+}
+
+impl Default for ControlLimits {
+    fn default() -> Self {
+        Self {
+            database_connections: 20,
+            artifact_verifications: 4,
+            scheduler_batch: 64,
+            drain_seconds: 5,
+        }
+    }
+}
+
+impl ControlLimits {
+    fn from_env() -> Result<Self> {
+        fn count(name: &str, default: u64, minimum: u64, maximum: u64) -> Result<u64> {
+            let value = env::var(name)
+                .map_or(Ok(default), |value| value.parse::<u64>())
+                .with_context(|| format!("{name} must be an integer"))?;
+            ensure!(
+                (minimum..=maximum).contains(&value),
+                "{name} must be between {minimum} and {maximum}"
+            );
+            Ok(value)
+        }
+        Ok(Self {
+            database_connections: u32::try_from(count(
+                "ARTIFACTORY_DB_MAX_CONNECTIONS",
+                20,
+                8,
+                256,
+            )?)?,
+            artifact_verifications: usize::try_from(count(
+                "ARTIFACTORY_ARTIFACT_VERIFY_CONCURRENCY",
+                4,
+                1,
+                32,
+            )?)?,
+            scheduler_batch: i64::try_from(count("ARTIFACTORY_SCHEDULER_BATCH_SIZE", 64, 1, 256)?)?,
+            drain_seconds: count("ARTIFACTORY_CONTROL_DRAIN_SECONDS", 5, 1, 30)?,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -38,6 +91,12 @@ impl Settings {
             );
         }
         let required = |name: &str| env::var(name).with_context(|| format!("{name} is required"));
+        let local_source_url = env::var("ARTIFACTORY_LOCAL_SOURCE_URL")
+            .ok()
+            .filter(|url| !url.is_empty());
+        if let Some(url) = &local_source_url {
+            artifactory_runtime_protocol::service::endpoint(url)?;
+        }
         let insecure_dev = env::var("ARTIFACTORY_INSECURE_DEV").as_deref() == Ok("true");
         let public_url = required("ARTIFACTORY_PUBLIC_URL")?;
         let s3_endpoint = required("ARTIFACTORY_S3_ENDPOINT")?;
@@ -88,6 +147,8 @@ impl Settings {
             anyhow::anyhow!("ARTIFACTORY_MASTER_KEY must contain 32 base64-encoded bytes")
         })?;
         Ok(Self {
+            local_source_url,
+            control: ControlLimits::from_env()?,
             telemetry,
             database_url: required("DATABASE_URL")?,
             http_bind: env::var("ARTIFACTORY_HTTP_BIND")

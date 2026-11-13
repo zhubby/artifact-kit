@@ -11,6 +11,13 @@ metadata:
   labels:
     {{- include "artifactory.labels" . | nindent 4 }}
 data:
+  ARTIFACTORY_DB_MAX_CONNECTIONS: {{ .Values.control.databaseConnections | quote }}
+  ARTIFACTORY_ARTIFACT_VERIFY_CONCURRENCY: {{ .Values.control.artifactVerifications | quote }}
+  ARTIFACTORY_SCHEDULER_BATCH_SIZE: {{ .Values.control.schedulerBatch | quote }}
+  ARTIFACTORY_CONTROL_DRAIN_SECONDS: {{ .Values.control.drainSeconds | quote }}
+  {{- if .Values.localSource.enabled }}
+  ARTIFACTORY_LOCAL_SOURCE_URL: {{ printf "https://%s-local-source:8080" (include "artifactory.fullname" .) | quote }}
+  {{- end }}
   ARTIFACTORY_HTTP_BIND: 0.0.0.0:8080
   ARTIFACTORY_GRPC_BIND: 0.0.0.0:8443
   ARTIFACTORY_PUBLIC_URL: {{ .Values.console.publicUrl | trimSuffix "/" | quote }}
@@ -41,7 +48,17 @@ data:
       auto_https off
     }
     :8080 {
-      @control path /api/* /healthz
+      {{- if .Values.localSource.enabled }}
+      handle /api/v1/source/* {
+        reverse_proxy https://{{ include "artifactory.fullname" . }}-local-source:8080 {
+          transport http {
+            tls_trust_pool file /run/pki/ca.pem
+          }
+          flush_interval -1
+        }
+      }
+      {{- end }}
+      @control path /api/* /healthz /readyz
       handle @control {
         reverse_proxy {{ include "artifactory.fullname" . }}-control:8080 {
           flush_interval -1

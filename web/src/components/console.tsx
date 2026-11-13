@@ -97,7 +97,10 @@ export function Console() {
   const user = userRemote.data;
   const projects = useRemote<Project[]>(user ? "/projects" : null);
   const builds = useRemote<Build[]>(user ? "/builds" : null, 5000);
-  const nodes = useRemote<Node[]>(user ? "/nodes" : null);
+  const [search, setSearch] = useState("");
+  const [nodeOffset, setNodeOffset] = useState(0);
+  const nodeSearch = pieces[0] === "nodes" ? search : "";
+  const nodes = useRemote<Node[]>(user ? `/nodes?limit=100&offset=${nodeOffset}&q=${encodeURIComponent(nodeSearch)}` : null);
   const emissaryReleases = useRemote<EmissaryRelease[]>(user ? "/emissary-releases" : null);
   const emissaryUpdates = useRemote<EmissaryUpdate[]>(user ? "/emissary-updates" : null, 3000);
   const overview = useRemote<Overview>(user ? "/overview" : null);
@@ -109,7 +112,6 @@ export function Console() {
   const credentials = useRemote<Credential[]>(
     user?.role === "admin" ? "/credentials" : null,
   );
-  const [search, setSearch] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
   const [mobile, setMobile] = useState(false);
   const [newProject, setNewProject] = useState(false);
@@ -119,6 +121,7 @@ export function Console() {
   const [secret, setSecret] = useState<string>();
   const [revoke, setRevoke] = useState<Node>();
   const [error, setError] = useState<Error>();
+  useEffect(() => { setNodeOffset(0); }, [nodeSearch, pathname]);
   useEffect(() => {
     setSearch("");
     setMobile(false);
@@ -353,7 +356,7 @@ export function Console() {
                     value: overview.data?.nodes_online,
                     icon: Server,
                     foot: nodes.data
-                      ? t("overview.registered", { count: nodes.data.length })
+                      ? t("overview.registered", { count: overview.data?.nodes_registered ?? nodes.data.length })
                       : t("common.awaitingData"),
                   },
                   {
@@ -700,11 +703,7 @@ export function Console() {
                 </section>
               ) : (
                 <div className="node-grid">
-                  {nodes.data
-                    .filter((node) =>
-                      contains(node.name, node.os, node.pool_name),
-                    )
-                    .map((node) => (
+                  {nodes.data.map((node) => (
                       <SpotlightCard
                         as="article"
                         className="node-card"
@@ -850,6 +849,11 @@ export function Console() {
                     ))}
                 </div>
               )}
+              <nav className="flex items-center justify-end gap-3" aria-label={t("nodes.pages")}>
+                <Button variant="secondary" disabled={nodeOffset === 0 || !nodes.data} onClick={() => setNodeOffset((offset) => Math.max(0, offset - 100))}>{t("nodes.previous")}</Button>
+                <span className="text-sm text-muted-foreground">{t("nodes.page", { page: nodeOffset / 100 + 1 })}</span>
+                <Button variant="secondary" disabled={!nodes.data || nodes.data.length < 100} onClick={() => setNodeOffset((offset) => offset + 100)}>{t("nodes.next")}</Button>
+              </nav>
             </>
           ) : pieces[0] === "artifacts" ? (
             <>

@@ -1,28 +1,55 @@
+{{- if and (gt (int .Values.control.replicas) 1) (not .Values.localSource.enabled) }}
+{{- fail "control.replicas > 1 requires localSource.enabled=true to retain legacy source data on its own volume" }}
+{{- end }}
+{{- $root := . }}
+{{- $components := list "control" }}
+{{- if .Values.localSource.enabled }}{{- $components = append $components "local-source" }}{{- end }}
+{{- range $component := $components }}
+{{- with $root }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "artifactory.fullname" . }}-control
+  name: {{ include "artifactory.fullname" . }}-{{ $component }}
   labels:
     {{- include "artifactory.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ ternary .Values.control.replicas 1 (eq $component "control") }}
   strategy:
+    {{- if and (eq $component "control") .Values.localSource.enabled }}
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+    {{- else }}
     type: Recreate
+    {{- end }}
   selector:
     matchLabels:
       {{- include "artifactory.selector" . | nindent 6 }}
-      app.kubernetes.io/component: control
+      app.kubernetes.io/component: {{ $component }}
   template:
     metadata:
       labels:
         {{- include "artifactory.selector" . | nindent 8 }}
-        app.kubernetes.io/component: control
+        app.kubernetes.io/component: {{ $component }}
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/config.yaml") . | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      terminationGracePeriodSeconds: 45
+      {{- if and (eq $component "control") (gt (int .Values.control.replicas) 1) }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: {{ .Release.Name }}
+                    app.kubernetes.io/component: control
+      {{- end }}
       automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -35,11 +62,14 @@ spec:
         fsGroup: 10001
         seccompProfile: {type: RuntimeDefault}
       containers:
-        - name: control
+        - name: {{ $component }}
           image: "{{ .Values.images.control.repository }}:{{ .Values.images.control.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.images.control.pullPolicy }}
           securityContext:
             {{- include "artifactory.containerSecurity" . | nindent 12 }}
+          {{- if eq $component "local-source" }}
+          command: [artifactory-control, serve-source]
+          {{- end }}
           ports:
             - {name: http, containerPort: 8080}
             - {name: grpc, containerPort: 8443}
@@ -51,6 +81,13 @@ spec:
                 name: {{ required "planning.serviceSecretName is required with Runtime" .Values.planning.serviceSecretName }}
             {{- end }}
           env:
+            {{- if eq $component "local-source" }}
+            - {name: ARTIFACTORY_SERVICE_TLS_CERT, value: /run/artifactory-pki/server.pem}
+            - {name: ARTIFACTORY_SERVICE_TLS_KEY, value: /run/artifactory-pki/server.key}
+            {{- end }}
+            {{- if .Values.control.releaseSourceConfigMap }}
+            - {name: ARTIFACTORY_EMISSARY_RELEASE_SOURCE, value: /etc/artifactory/emissary-releases.json}
+            {{- end }}
             {{- $secret := include "artifactory.credentials" . }}
             {{- if .Values.telemetry.enabled }}
             - name: ARTIFACTORY_TELEMETRY_TOKEN
@@ -65,17 +102,20 @@ spec:
                   key: {{ $key }}
             {{- end }}
           startupProbe:
-            httpGet: {path: /healthz, port: http}
+            httpGet: {path: /healthz, port: http, scheme: {{ ternary "HTTPS" "HTTP" (eq $component "local-source") }}}
             periodSeconds: 5
             failureThreshold: 60
           readinessProbe:
-            httpGet: {path: /healthz, port: http}
+            httpGet: {path: /readyz, port: http, scheme: {{ ternary "HTTPS" "HTTP" (eq $component "local-source") }}}
           livenessProbe:
-            httpGet: {path: /healthz, port: http}
+            httpGet: {path: /healthz, port: http, scheme: {{ ternary "HTTPS" "HTTP" (eq $component "local-source") }}}
             periodSeconds: 15
           resources:
             {{- toYaml .Values.resources.control | nindent 12 }}
           volumeMounts:
+            {{- if .Values.control.releaseSourceConfigMap }}
+            - {name: release-source, mountPath: /etc/artifactory, readOnly: true}
+            {{- end }}
             - {name: data, mountPath: /var/lib/artifactory}
             - {name: pki, mountPath: /run/artifactory-pki, readOnly: true}
             - {name: tmp, mountPath: /tmp}
@@ -89,12 +129,38 @@ spec:
             secretName: {{ .Values.planning.serviceCaSecretName }}
             items: [{key: ca.crt, path: ca.crt}]
         {{- end }}
+        {{- if .Values.control.releaseSourceConfigMap }}
+        - name: release-source
+          configMap:
+            name: {{ .Values.control.releaseSourceConfigMap }}
+            items: [{key: emissary-releases.json, path: emissary-releases.json}]
+        {{- end }}
         - name: data
+          {{- if and (eq $component "control") .Values.localSource.enabled }}
+          emptyDir: {sizeLimit: {{ .Values.control.temporaryStorage }}}
+          {{- else }}
           persistentVolumeClaim:
             claimName: {{ include "artifactory.fullname" . }}-control
+          {{- end }}
         - name: pki
           secret:
             secretName: {{ include "artifactory.pki" . }}
             defaultMode: 0440
         - name: tmp
           emptyDir: {sizeLimit: 1Gi}
+
+{{- end }}
+{{- end }}
+{{- if gt (int .Values.control.replicas) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "artifactory.fullname" . }}-control
+spec:
+  minAvailable: {{ sub (int .Values.control.replicas) 1 }}
+  selector:
+    matchLabels:
+      {{- include "artifactory.selector" . | nindent 6 }}
+      app.kubernetes.io/component: control
+{{- end }}

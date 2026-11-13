@@ -1,4 +1,6 @@
-{{- $components := list "control" "postgres" "s3" }}
+{{- $components := list "control" }}
+{{- if .Values.postgres.enabled }}{{- $components = append $components "postgres" }}{{- end }}
+{{- if .Values.s3.enabled }}{{- $components = append $components "s3" }}{{- end }}
 {{- if .Values.aiWorker.enabled }}{{- $components = append $components "ai-worker" }}{{- end }}
 {{- range $component := $components }}
 ---

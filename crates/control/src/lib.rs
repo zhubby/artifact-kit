@@ -1,9 +1,12 @@
 pub mod api;
 pub mod auth;
+pub mod coordination;
 pub mod crypto;
+pub mod dispatch;
 pub mod error;
 pub mod execution_plan;
 pub mod grpc;
+pub mod local_source;
 pub mod ota;
 pub mod pki;
 pub mod planning;

@@ -111,9 +111,13 @@ fn github_api() -> String {
 impl ReleaseSource {
     pub async fn load(state: &AppState) -> Result<Self> {
         let c: Self = serde_json::from_slice(
-            &tokio::fs::read(state.settings.data_dir.join("emissary-releases.json"))
-                .await
-                .context("Emissary release source is not configured")?,
+            &tokio::fs::read(
+                std::env::var_os("ARTIFACTORY_EMISSARY_RELEASE_SOURCE")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| state.settings.data_dir.join("emissary-releases.json")),
+            )
+            .await
+            .context("Emissary release source is not configured")?,
         )?;
         let parts: Vec<_> = c.repository.split('/').collect();
         ensure!(
@@ -415,15 +419,39 @@ pub async fn report(state: &AppState, node: Uuid, session: Uuid, payload: &Value
     let Some(status) = payload.get("ota").filter(|s| s.is_object()) else {
         return Ok(false);
     };
-    let pool: Uuid = sqlx::query_scalar("SELECT pool_id FROM nodes WHERE id=$1")
-        .bind(node)
-        .fetch_one(&state.pool)
-        .await?;
+    let update_id = status["update_id"]
+        .as_str()
+        .and_then(|id| Uuid::parse_str(id).ok());
+    let runtime = payload["diagnostics"]["emissary_version"]
+        .as_str()
+        .unwrap_or("");
+    if update_id.is_none() {
+        // No rollout state is changed. One conditional UPDATE both authorizes
+        // the current session and records health, without a separate transaction
+        // and repeated node reads on every idle device heartbeat.
+        let updated=sqlx::query("UPDATE nodes SET emissary_current_version=$3,emissary_launcher_version=$4,emissary_ota_status=$5 WHERE id=$1 AND active_session=$2 AND NOT revoked AND certificate_expires_at>clock_timestamp()")
+            .bind(node).bind(session).bind(runtime).bind(status["launcher_version"].as_str()).bind(status)
+            .execute(&state.pool).await?;
+        ensure!(
+            updated.rows_affected() == 1,
+            "node session revoked or superseded"
+        );
+        return Ok(true);
+    }
     let mut tx = state.pool.begin().await?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,57))")
-        .bind(pool.to_string())
-        .execute(&mut *tx)
-        .await?;
+    // Ordinary health reports do not change rollout admission. Serialize with
+    // pool admission only when reporting a specific update, rather than making
+    // every idle device heartbeat wait on the same pool-wide lock.
+    if update_id.is_some() {
+        let pool: Uuid = sqlx::query_scalar("SELECT pool_id FROM nodes WHERE id=$1")
+            .bind(node)
+            .fetch_one(&mut *tx)
+            .await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,57))")
+            .bind(pool.to_string())
+            .execute(&mut *tx)
+            .await?;
+    }
     let valid:Option<Uuid>=sqlx::query_scalar("SELECT id FROM nodes WHERE id=$1 AND active_session=$2 AND NOT revoked AND certificate_expires_at>clock_timestamp() FOR UPDATE").bind(node).bind(session).fetch_optional(&mut *tx).await?;
     ensure!(valid.is_some(), "node session revoked or superseded");
     let still_valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM nodes WHERE id=$1 AND active_session=$2 AND NOT revoked AND certificate_expires_at>clock_timestamp())").bind(node).bind(session).fetch_one(&mut *tx).await?;
@@ -431,14 +459,9 @@ pub async fn report(state: &AppState, node: Uuid, session: Uuid, payload: &Value
         still_valid,
         "node certificate expired while waiting for its lock"
     );
-    let runtime = payload["diagnostics"]["emissary_version"]
-        .as_str()
-        .unwrap_or("");
     sqlx::query("UPDATE nodes SET emissary_current_version=$2,emissary_launcher_version=$3,emissary_ota_status=$4 WHERE id=$1").bind(node).bind(runtime).bind(status["launcher_version"].as_str()).bind(status).execute(&mut *tx).await?;
     let mut health = true;
-    if let Some(id) = status["update_id"]
-        .as_str()
-        .and_then(|s| Uuid::parse_str(s).ok())
+    if let Some(id) = update_id
         && let Some(u)=sqlx::query("SELECT u.*,r.version FROM emissary_updates u JOIN emissary_releases r ON r.id=u.release_id WHERE u.id=$1 AND u.node_id=$2 AND u.finished_at IS NULL").bind(id).bind(node).fetch_optional(&mut *tx).await? {
             let phase=status["phase"].as_str().unwrap_or("");
             let terminal=["succeeded","failed","rolled_back","canceled"].contains(&phase);

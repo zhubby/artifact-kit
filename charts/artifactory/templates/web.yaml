@@ -71,9 +71,18 @@ spec:
           resources:
             {{- toYaml .Values.resources.gateway | nindent 12 }}
           volumeMounts:
+            {{- if .Values.localSource.enabled }}
+            - {name: pki, mountPath: /run/pki, readOnly: true}
+            {{- end }}
             - {name: config, mountPath: /etc/caddy, readOnly: true}
             - {name: gateway-tmp, mountPath: /tmp}
       volumes:
+        {{- if .Values.localSource.enabled }}
+        - name: pki
+          secret:
+            secretName: {{ include "artifactory.pki" . }}
+            items: [{key: ca.pem, path: ca.pem}]
+        {{- end }}
         - name: config
           configMap:
             name: {{ include "artifactory.fullname" . }}-config

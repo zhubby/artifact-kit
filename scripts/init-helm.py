@@ -59,6 +59,8 @@ def main():
             "-out", "server.csr", "-subj", "/CN=artifactory Control")
     hosts = args.grpc_host + ["DNS:" + prefix + "-grpc",
                              f"DNS:{prefix}-grpc.{args.namespace}.svc",
+                             "DNS:" + prefix + "-local-source",
+                             f"DNS:{prefix}-local-source.{args.namespace}.svc",
                              "DNS:" + prefix + "-telemetry",
                              f"DNS:{prefix}-telemetry.{args.namespace}.svc"]
     (pki / "server.ext").write_text(

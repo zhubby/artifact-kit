@@ -1,3 +1,4 @@
+{{- if .Values.s3.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -67,3 +68,5 @@ spec:
             items:
               - {key: s3.json, path: s3.json}
         - {name: tmp, emptyDir: {sizeLimit: 128Mi}}
+
+{{- end }}

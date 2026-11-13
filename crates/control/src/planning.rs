@@ -104,8 +104,39 @@ pub async fn nodes(state: &AppState, build: Uuid) -> Result<Vec<Value>> {
         .await?;
     let pools: Vec<Uuid> =
         serde_json::from_value(context.get("pool_ids").cloned().unwrap_or(json!([])))?;
-    Ok(sqlx::query_scalar("SELECT jsonb_build_object('name',n.name,'os',os,'arch',arch,'labels',labels,'capabilities',capabilities,'signing_profiles',signing_profiles,'tools',diagnostics->'tools','online',last_seen>now()-interval '30 seconds') FROM nodes n WHERE NOT revoked AND pool_id=ANY($1)")
-        .bind(pools).fetch_all(&state.pool).await?)
+    let groups: Vec<Value> = sqlx::query_scalar("WITH groups AS (SELECT pool_id,os,arch,labels,capabilities,signing_profiles,diagnostics->'tools' AS tools,min(name) AS name,count(*) AS nodes,bool_or(last_seen>now()-interval '30 seconds' AND connection_owner IS NOT NULL) AS online,count(*) FILTER (WHERE last_seen>now()-interval '30 seconds' AND connection_owner IS NOT NULL) AS online_count FROM nodes WHERE NOT revoked AND pool_id=ANY($1) GROUP BY pool_id,os,arch,labels,capabilities,signing_profiles,diagnostics->'tools') SELECT jsonb_build_object('name',name,'pool_id',pool_id,'os',os,'arch',arch,'labels',labels,'capabilities',capabilities,'signing_profiles',signing_profiles,'tools',tools,'count',nodes,'online',online,'online_count',online_count,'summary',true,'total_groups',count(*) OVER (),'truncated',count(*) OVER ()>128) FROM groups ORDER BY nodes DESC,pool_id,os,arch,labels::text,capabilities::text,signing_profiles,tools::text LIMIT 128")
+        .bind(pools).fetch_all(&state.pool).await?;
+    // Keep room for source evidence and tool history in both planning protocols.
+    const MAX_SUMMARY_BYTES: usize = 128 * 1024;
+    const MAX_GROUP_BYTES: usize = 8 * 1024;
+    let mut summary = Vec::with_capacity(groups.len());
+    let mut bytes = 2;
+    let mut truncated = false;
+    for mut group in groups {
+        if serde_json::to_vec(&group)?.len() > MAX_GROUP_BYTES {
+            for field in ["labels", "capabilities", "signing_profiles", "tools"] {
+                group
+                    .as_object_mut()
+                    .expect("database returns a JSON object")
+                    .remove(field);
+            }
+            group["details_omitted"] = json!(true);
+            truncated = true;
+        }
+        let size = serde_json::to_vec(&group)?.len() + 1;
+        if bytes + size > MAX_SUMMARY_BYTES {
+            truncated = true;
+            break;
+        }
+        bytes += size;
+        summary.push(group);
+    }
+    if truncated {
+        for group in &mut summary {
+            group["truncated"] = json!(true);
+        }
+    }
+    Ok(summary)
 }
 
 #[tonic::async_trait]

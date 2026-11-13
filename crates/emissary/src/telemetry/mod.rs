@@ -71,7 +71,8 @@ impl Handle {
             let Ok(mut collector) = tokio::task::spawn_blocking(Collector::new).await else {
                 return;
             };
-            let mut tick = tokio::time::interval(Duration::from_secs(10));
+            let start = tokio::time::Instant::now() + crate::client::retry_delay(10);
+            let mut tick = tokio::time::interval_at(start, Duration::from_secs(10));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut index = 0u64;
             let mut cards = Vec::new();
@@ -258,7 +259,7 @@ impl Handle {
                     })
                     .await;
                 } else {
-                    tokio::select! {_=upload_cancel.cancelled()=>break,_=tokio::time::sleep(Duration::from_secs(backoff))=>{}}
+                    tokio::select! {_=upload_cancel.cancelled()=>break,_=tokio::time::sleep(crate::client::retry_delay(backoff))=>{}}
                     backoff = (backoff * 2).min(30);
                 }
             }

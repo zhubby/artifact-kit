@@ -24,7 +24,7 @@ kind: Deployment
 metadata:
   name: {{ include "artifactory.fullname" . }}-telemetry
 spec:
-  replicas: 1
+  replicas: {{ .Values.telemetry.replicas }}
   selector:
     matchLabels:
       {{- include "artifactory.selector" . | nindent 6 }}
@@ -50,6 +50,9 @@ spec:
             {{- include "artifactory.containerSecurity" . | nindent 12 }}
           ports: [{name: query, containerPort: 8093}, {name: ingest, containerPort: 8444}]
           env:
+            - {name: ARTIFACTORY_TELEMETRY_WRITE_CONNECTIONS, value: {{ .Values.telemetry.writeConnections | quote }}}
+            - {name: ARTIFACTORY_TELEMETRY_READ_CONNECTIONS, value: {{ .Values.telemetry.readConnections | quote }}}
+            - {name: ARTIFACTORY_TELEMETRY_AUTH_CONNECTIONS, value: {{ .Values.telemetry.authorizationConnections | quote }}}
             {{- $secret := include "artifactory.credentials" . }}
             {{- range $env,$key := dict "DATABASE_URL" "telemetry-database-url" "ARTIFACTORY_BUSINESS_DATABASE_URL" "database-url" "ARTIFACTORY_TELEMETRY_TOKEN" "telemetry-token" }}
             - name: {{ $env }}

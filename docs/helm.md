@@ -1,6 +1,6 @@
 # Helm / Kubernetes 部署
 
-Chart 位于 `charts/artifactory`，包含单实例 control、Next.js / Caddy 网关、TimescaleDB 2.32 / PostgreSQL 17、私有 SeaweedFS S3、独立 Pi AI worker 和 Rust Telemetry 服务，以及四个独立 PVC。control、数据库、S3 使用 Recreate 升级，避免双调度器或两个写进程同时挂载同一数据目录；升级存在短暂停机。
+Chart 位于 `charts/artifactory`，包含可配置副本数的 control、Next.js / Caddy 网关、TimescaleDB 2.32 / PostgreSQL 17、私有 SeaweedFS S3、独立 Pi AI worker 和 Rust Telemetry 服务，以及四个独立 PVC。默认 control、数据库、S3 使用 Recreate 升级。Control 多副本使用独立临时目录，并由独立 Source 持有原数据卷；迁移步骤和数据库连接预算见 [Control 多副本](control-ha.md)。
 
 `auth.registrationEnabled` 默认 `true`，访客可自助注册为全实例只读用户，查看和下载全部项目的构建与产物。仅允许管理员分配账号的部署应在安装或升级时设置 `--set auth.registrationEnabled=false`；该开关映射到 control 的 `ARTIFACTORY_REGISTRATION_ENABLED`，不会停用已有账号或会话。
 
@@ -129,7 +129,7 @@ helm --kube-context YOUR_CONTEXT -n artifactory history artifactory
 
 健康检查成功后，仍需验证真实登录、CSRF、Agent mTLS 注册/心跳、SSE 和一次制品构建/下载。HTTP kind 联测不代表公网 TLS、真实业务应用、实体机启动恢复、发行签名或生产备份恢复已验收。
 
-升级使用同一命名空间、release 名、Secret 和 PVC，显式指定新镜像 tag。保持 control 副本数为一；升级前排空 Agent，协调备份数据库、对象存储、control 数据、主密钥与 CA。Secret 更新后容器环境变量不会自动刷新，需要安排相关 Deployment 重启；数据库用户密码也不会因更改初始化环境变量而自动更新。
+升级使用同一命名空间、release 名、Secret 和 PVC，显式指定新镜像 tag。默认单副本升级前排空 Agent；启用多副本需先按 [迁移步骤](control-ha.md#helm-部署与已有-pvc-迁移) 分离源码卷。升级前协调备份数据库、对象存储、control 数据、主密钥与 CA。Secret 更新后容器环境变量不会自动刷新，需要安排相关 Deployment 重启；数据库用户密码也不会因更改初始化环境变量而自动更新。
 
 三个 PVC 带有 `helm.sh/resource-policy: keep`，`helm uninstall` 会保留它们；外部 Secret 同样保留。**删除命名空间仍会删除这些资源**。不要将卸载、删除命名空间或重建 kind 集群用作升级流程。
 
