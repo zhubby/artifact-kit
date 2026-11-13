@@ -79,6 +79,9 @@ pub fn private_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 pub fn private_write(path: &Path, bytes: &[u8], executable: bool, exclusive: bool) -> Result<()> {
+    // Windows has no Unix execute permission bit.
+    #[cfg(windows)]
+    let _ = executable;
     let mut options = fs::OpenOptions::new();
     options
         .write(true)
@@ -99,6 +102,8 @@ pub fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     atomic_bytes(path, &serde_json::to_vec(value)?, false)
 }
 pub fn atomic_bytes(path: &Path, bytes: &[u8], executable: bool) -> Result<()> {
+    #[cfg(windows)]
+    let _ = executable;
     let parent = path.parent().context("path requires parent")?;
     private_dir(parent)?;
     let mut file = tempfile::NamedTempFile::new_in(parent)?;

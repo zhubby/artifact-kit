@@ -33,6 +33,7 @@ fn main() -> Result<()> {
         ("darwin", "amd64"),
         ("darwin", "arm64"),
         ("windows", "amd64"),
+        ("windows", "arm64"),
     ] {
         let bytes = fs::read(args.directory.join(ota::asset_name(os, arch)))?;
         let asset = Asset::from_bytes(os, arch, &bytes);
@@ -55,6 +56,6 @@ fn main() -> Result<()> {
         args.directory.join("emissary-manifest.sig"),
         STANDARD.encode(key.sign(&raw).to_bytes()),
     )?;
-    println!("signed Emissary manifest for five platforms");
+    println!("signed Emissary manifest for six platforms");
     Ok(())
 }

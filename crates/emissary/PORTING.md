@@ -27,7 +27,7 @@ that suite were opt-in; this baseline does not claim they ran.
 | ota.MaxBinarySize, Asset, Manifest, Verify, VerifyBytes | ota::{MAX_BINARY_SIZE,Asset,Manifest,verify,verify_bytes} | signed manifest and exact size/hash verification |
 | ota.Initialize, Supervise | ota::{initialize,supervise} | signed executable replacement and rollback |
 | cmd/artifactory-agent | main, service::{manage,launchd,systemd} | CLI, foreground, systemd / launchd / SCM lifecycle |
-| cmd/agent-release | bin/emissary-release | five-platform Ed25519 release manifest |
+| cmd/agent-release | bin/emissary-release | six-platform Ed25519 release manifest |
 
 ## Test mapping
 
@@ -55,7 +55,7 @@ and retain separate scenario functions; native service acceptance remains opt-in
 | TestLaunchdAllowsSupervisorCleanup | service::tests::launchd_allows_supervisor_cleanup |
 | TestForegroundAgentStopsActiveProcessTree | runtime::foreground_and_ota_shutdown_stop_authenticated_worker_tree; business native acceptance also kills the parent |
 | TestServiceStopsAuthenticatedAgent | native_service::native_service_lifecycle |
-| TestNativeServiceLifecycle | native_service::native_service_lifecycle (disposable GitHub-hosted machine) |
+| TestNativeServiceLifecycle | native_service::native_service_lifecycle (explicit disposable runner or dedicated test host) |
 | TestOTASupervisorMTLSUpgradeAndRollback | runtime::ota_supervisor_mtls_upgrade_and_rollback |
 | TestOTASupervisorStopsActiveWorker | runtime::foreground_and_ota_shutdown_stop_authenticated_worker_tree |
 | TestLiveRustGoProtocol | live_protocol::live_emissary_protocol → basic, storage_stalls |
@@ -103,7 +103,9 @@ Ordinary macOS arm64 Rust tests include real foreground workers, process cleanup
 Git/LFS, signed OTA replacement/rollback and strict TLS. Live protocol acceptance
 uses real Control, PostgreSQL and private S3, including actual storage pauses.
 
-Native system services on Linux/macOS/Windows require the five-platform CI matrix;
-they were not installed on the developer host. Historical Go service runs do not
-prove the new Rust implementation passed those native environments. OTA uses test
-keys and executable bytes, not a formally published or OS-signed release.
+The [six-platform acceptance record](../../docs/acceptance/emissary/2026-11-13-six-platforms.md)
+tracks actual host, VM and Rosetta execution separately from the six-platform CI
+matrix. Native services use explicitly enabled disposable runners or dedicated
+test hosts; they are not installed on the developer host. Historical Go service
+runs do not prove Rust acceptance. OTA validation uses test keys and executable
+bytes, not a formally published or OS-signed release.

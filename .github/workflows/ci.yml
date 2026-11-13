@@ -191,6 +191,8 @@ jobs:
             platform: darwin/amd64
           - os: windows-latest
             platform: windows/amd64
+          - os: windows-11-arm
+            platform: windows/arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

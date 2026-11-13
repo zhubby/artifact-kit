@@ -26,6 +26,8 @@ jobs:
             platform: darwin/amd64
           - os: windows-latest
             platform: windows/amd64
+          - os: windows-11-arm
+            platform: windows/arm64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     defaults:
@@ -44,11 +46,17 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then choco install protoc --no-progress -y; fi
       - run: cargo test --locked -p artifactory-emissary --all-targets
       - run: cargo clippy --locked -p artifactory-emissary --all-targets -- -D warnings
+      - name: Verify native service lifecycle before publishing
+        env:
+          ARTIFACTORY_NATIVE_SERVICE_TESTS: '1'
+          ARTIFACTORY_NATIVE_EXPECTED_PLATFORM: ${{ matrix.platform }}
+        run: cargo test --locked -p artifactory-emissary --test native_service -- --ignored --nocapture
       - name: Build versioned native executable
         env:
           ARTIFACTORY_BUILD_VERSION: ${{ inputs.tag || github.ref_name }}
         run: |
-          export ARTIFACTORY_BUILD_COMMIT=$(git rev-parse HEAD)
+          ARTIFACTORY_BUILD_COMMIT=$(git rev-parse HEAD)
+          export ARTIFACTORY_BUILD_COMMIT
           sh scripts/cross-build-emissary.sh
       - uses: actions/upload-artifact@v4
         with:

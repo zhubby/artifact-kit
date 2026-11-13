@@ -37,7 +37,10 @@ pub async fn output(
     cancel: &CancellationToken,
     timeout: Duration,
 ) -> Result<(ExitStatus, Vec<u8>)> {
-    command.stdout(Stdio::piped()).stderr(Stdio::null());
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
     let mut child = spawn(command)?;
     let stdout = child.stdout().take();
     let reader = tokio::spawn(async move {
@@ -72,7 +75,10 @@ pub async fn read_log(
     }
 }
 pub async fn probe(mut command: Command, timeout: Duration) -> Result<(ExitStatus, Vec<u8>)> {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = spawn(command)?;
     let stdout = child.stdout().take();
     let stderr = child.stderr().take();

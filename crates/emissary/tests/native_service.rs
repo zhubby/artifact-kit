@@ -1,4 +1,4 @@
-//! Opt-in system service acceptance on disposable GitHub-hosted machines only.
+//! Opt-in system service acceptance on disposable runners or dedicated test hosts.
 mod support;
 use artifactory_emissary::{ota, platform, protocol as pb, service};
 use std::{
@@ -208,35 +208,43 @@ impl Drop for Machine {
     }
 }
 
-#[tokio::test]
-#[ignore = "changes services and accounts; requires explicitly enabled disposable GitHub VM"]
+// Service stop/restart commands block until the daemon exits. Keep the loopback
+// peer running so it can acknowledge logs and terminal events during shutdown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "changes services and accounts; requires an explicitly enabled disposable runner or dedicated test host"]
 async fn native_service_lifecycle() {
     assert_eq!(
         std::env::var("ARTIFACTORY_NATIVE_SERVICE_TESTS").as_deref(),
         Ok("1")
     );
-    assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
-    assert_eq!(
-        std::env::var("RUNNER_ENVIRONMENT").as_deref(),
-        Ok("github-hosted")
-    );
+    let dedicated =
+        std::env::var("ARTIFACTORY_NATIVE_SERVICE_SCOPE").as_deref() == Ok("dedicated-host");
+    if !dedicated {
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+        assert_eq!(
+            std::env::var("RUNNER_ENVIRONMENT").as_deref(),
+            Ok("github-hosted")
+        );
+    }
     let (os, arch) = platform();
     assert_eq!(
         std::env::var("ARTIFACTORY_NATIVE_EXPECTED_PLATFORM").unwrap(),
         format!("{os}/{arch}")
     );
-    assert_eq!(
-        std::env::var("RUNNER_ARCH").unwrap(),
-        if arch == "amd64" { "X64" } else { "ARM64" }
-    );
-    assert_eq!(
-        std::env::var("RUNNER_OS").unwrap(),
-        match os {
-            "linux" => "Linux",
-            "darwin" => "macOS",
-            _ => "Windows",
-        }
-    );
+    if !dedicated {
+        assert_eq!(
+            std::env::var("RUNNER_ARCH").unwrap(),
+            if arch == "amd64" { "X64" } else { "ARM64" }
+        );
+        assert_eq!(
+            std::env::var("RUNNER_OS").unwrap(),
+            match os {
+                "linux" => "Linux",
+                "darwin" => "macOS",
+                _ => "Windows",
+            }
+        );
+    }
     let base = if cfg!(windows) {
         PathBuf::from(std::env::var_os("ProgramData").expect("ProgramData required"))
     } else {
@@ -246,9 +254,11 @@ async fn native_service_lifecycle() {
         .prefix("emissary-service-")
         .tempdir_in(base)
         .unwrap()
-        .keep()
-        .canonicalize()
-        .unwrap();
+        .keep();
+    // Resolve macOS /tmp before changing ownership. Git for Windows rejects
+    // the device namespace prefix that Windows canonicalize would introduce.
+    #[cfg(unix)]
+    let directory = directory.canonicalize().unwrap();
     let private = directory.join("private data %n $HOME");
     let bin = directory.join("emissary bin %i $HOME");
     fs::create_dir(&private).unwrap();
@@ -267,6 +277,21 @@ async fn native_service_lifecycle() {
     );
     fs::copy(env!("CARGO_BIN_EXE_artifactory-emissary"), &machine.binary).unwrap();
     let mut fixture = support::Fixture::start(&private, &[&rustls::version::TLS13]).await;
+    // Service managers have a different PATH. Use the installed test toolchain,
+    // including on Rosetta hosts whose Apple Git shim lacks an Intel libxcrun.
+    for name in if cfg!(windows) {
+        &["git", "pwsh"][..]
+    } else {
+        &["git"][..]
+    } {
+        fixture.cfg.tools.insert(
+            (*name).into(),
+            which::which(name)
+                .expect("native acceptance tool is not installed")
+                .to_string_lossy()
+                .into(),
+        );
+    }
     fixture.cfg.save(&machine.config).unwrap();
     let repo = private.join("repository");
     fs::create_dir(&repo).unwrap();
@@ -407,20 +432,24 @@ async fn native_service_lifecycle() {
             .join("source/child.pid");
         let pid = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
-                let output = if cfg!(unix) {
-                    machine.command(true, "cat", &[marker.as_os_str()])
+                let contents = if cfg!(unix) {
+                    let output = machine.command(true, "cat", &[marker.as_os_str()]);
+                    output.status.success().then_some(output.stdout)
                 } else {
-                    Command::new("cmd")
-                        .args([OsStr::new("/c"), OsStr::new("type"), marker.as_os_str()])
-                        .output()
-                        .unwrap()
+                    // Win32 accepts mixed separators; cmd's type command does not.
+                    fs::read(&marker).ok()
                 };
-                if output.status.success()
-                    && let Ok(pid) = String::from_utf8_lossy(&output.stdout)
-                        .trim()
-                        .parse::<u32>()
+                if let Some(contents) = contents
+                    && let Ok(pid) = String::from_utf8_lossy(&contents).trim().parse::<u32>()
                 {
                     break pid;
+                }
+                while let Ok(event) = first.events.try_recv() {
+                    assert_ne!(
+                        event.kind, "finished",
+                        "native Worker finished before creating its child: {}",
+                        event.payload_json
+                    );
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }

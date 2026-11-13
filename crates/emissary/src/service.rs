@@ -135,6 +135,17 @@ fn platform_manage(action: &str, config: &Path, user: Option<&str>) -> Result<()
                 // Removing the loaded job prevents KeepAlive from respawning it.
                 // bootout gives the supervisor ExitTimeOut to stop its workers.
                 run("launchctl", &[OsStr::new("bootout"), OsStr::new(&target)])?;
+                // bootout returns before launchd removes the terminating job.
+                // Starting it during that interval can kick the old instance,
+                // leaving no job after it exits. Wait beyond ExitTimeOut (15s).
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                while loaded()? {
+                    ensure!(
+                        std::time::Instant::now() < deadline,
+                        "launchd service did not finish stopping: {target}"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
             }
             Ok(())
         };
@@ -215,7 +226,8 @@ mod tests {
         .unwrap();
         assert!(text.contains("<key>ExitTimeOut</key><integer>15</integer>"));
         assert!(text.contains("emissary &amp; runtime"));
-        assert!(text.contains("/private/user/emissary.log"));
+        let log = Path::new("/private/user").join("emissary.log");
+        assert!(text.contains(log.to_str().unwrap()));
         assert!(text.contains("<key>WorkingDirectory</key><string>/private/user</string>"));
         assert!(text.contains("<key>HOME</key><string>/private/user</string>"));
     }

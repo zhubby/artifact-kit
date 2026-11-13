@@ -92,7 +92,7 @@ pub fn verify(raw: &[u8], signature: &str, keys: &[String], os: &str, arch: &str
             && manifest.protocol_min == 1
             && manifest.protocol_max >= 1
             && !manifest.assets.is_empty()
-            && manifest.assets.len() <= 5,
+            && manifest.assets.len() <= 6,
         "incompatible release manifest"
     );
     let mut seen = std::collections::HashSet::new();
@@ -102,7 +102,12 @@ pub fn verify(raw: &[u8], signature: &str, keys: &[String], os: &str, arch: &str
         ensure!(
             matches!(
                 platform.as_str(),
-                "linux/amd64" | "linux/arm64" | "darwin/amd64" | "darwin/arm64" | "windows/amd64"
+                "linux/amd64"
+                    | "linux/arm64"
+                    | "darwin/amd64"
+                    | "darwin/arm64"
+                    | "windows/amd64"
+                    | "windows/arm64"
             ) && seen.insert(platform)
                 && asset.name == asset_name(&asset.os, &asset.arch)
                 && asset.size > 0
