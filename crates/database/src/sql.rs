@@ -299,6 +299,78 @@ pub async fn scalars<T: Decode>(
         .map(|row| T::decode(&exactly_one(fields(row)?)?))
         .collect()
 }
+
+/// A single statement snapshot, decoded in pages of at most 128 rows.
+///
+/// Owns the physical connection until completion. Abandoning the reader on a
+/// response limit, error or cancellation closes that connection rather than
+/// draining the rest of a potentially large response in the background.
+pub struct ScalarPages<T> {
+    connection: Option<toasty::Connection>,
+    stream: Option<toasty_core::stmt::ValueStream>,
+    value: std::marker::PhantomData<fn() -> T>,
+}
+
+pub async fn scalar_pages<T: Decode>(
+    db: &toasty::Db,
+    text: &str,
+    parameters: Parameters,
+) -> Result<ScalarPages<T>> {
+    let mut query = toasty::sql::query(text).column_types([T::value_type()]);
+    for parameter in parameters {
+        let parameter = parameter?;
+        query = query.bind_typed(parameter.value, parameter.ty);
+    }
+    // Install the drop guard before awaiting the driver, including prepare and
+    // the first row, so cancellation there also closes the physical connection.
+    let mut pages = ScalarPages {
+        connection: Some(db.connection().await?),
+        stream: None,
+        value: std::marker::PhantomData,
+    };
+    pages.stream = Some(
+        query
+            .stream(
+                pages
+                    .connection
+                    .as_mut()
+                    .expect("connection is held until EOF"),
+            )
+            .await?,
+    );
+    Ok(pages)
+}
+
+impl<T: Decode> ScalarPages<T> {
+    pub async fn next_page(&mut self) -> Result<Vec<T>> {
+        let mut page = Vec::with_capacity(128);
+        if let Some(stream) = &mut self.stream {
+            for _ in 0..128 {
+                match stream.next().await {
+                    Some(row) => page.push(T::decode(&exactly_one(fields(row?)?)?)?),
+                    None => {
+                        self.stream = None;
+                        // EOF includes PostgreSQL's command completion. This
+                        // connection can now be safely returned to the pool.
+                        self.connection = None;
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(page)
+    }
+}
+
+impl<T> Drop for ScalarPages<T> {
+    fn drop(&mut self) {
+        self.stream = None;
+        if let Some(connection) = self.connection.take() {
+            connection.discard();
+        }
+    }
+}
+
 pub async fn scalar<T: Decode>(
     executor: &mut dyn Executor,
     text: &str,

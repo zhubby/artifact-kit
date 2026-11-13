@@ -31,6 +31,14 @@ pub struct Connection {
 }
 
 impl Connection {
+    /// Remove this connection from the pool and stop its worker immediately.
+    ///
+    /// Use when a native result stream is abandoned, so an unfinished query is
+    /// never returned to another caller. The PostgreSQL driver closes its socket.
+    pub fn discard(self) {
+        deadpool::managed::Object::take(self.inner).abort();
+    }
+
     /// Access the underlying connection handle.
     pub(crate) fn handle(&self) -> &ConnectionHandle {
         &self.inner
@@ -62,7 +70,9 @@ impl Connection {
             })
             .map_err(|_| worker_stopped())?;
 
-        rx.instrument(span).await.map_err(crate::Error::connection_lost)?
+        rx.instrument(span)
+            .await
+            .map_err(crate::Error::connection_lost)?
     }
 
     pub(crate) async fn exec_operation(&self, operation: Operation) -> crate::Result<ExecResponse> {
@@ -94,7 +104,9 @@ impl Connection {
             })
             .map_err(|_| worker_stopped())?;
 
-        rx.instrument(span).await.map_err(crate::Error::connection_lost)?
+        rx.instrument(span)
+            .await
+            .map_err(crate::Error::connection_lost)?
     }
 
     /// Begin a transaction on this connection.

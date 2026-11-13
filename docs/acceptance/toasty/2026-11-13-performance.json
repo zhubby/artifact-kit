@@ -1,0 +1,147 @@
+{
+  "method": "Alternating SQLx/Toasty; same host/database; 32 warmup and 256 measured samples per action per round; median of per-round p95",
+  "rounds": [
+    {
+      "round": 1,
+      "backend": "sqlx",
+      "event_us": 114325,
+      "heartbeat_us": 116922,
+      "samples": 256,
+      "scheduling_us": 99993,
+      "telemetry_read_us": 33221,
+      "telemetry_write_us": 78964
+    },
+    {
+      "round": 1,
+      "backend": "toasty",
+      "event_us": 76710,
+      "heartbeat_us": 83357,
+      "samples": 256,
+      "scheduling_us": 60329,
+      "telemetry_read_us": 39394,
+      "telemetry_write_us": 62484
+    },
+    {
+      "round": 2,
+      "backend": "toasty",
+      "event_us": 115086,
+      "heartbeat_us": 92444,
+      "samples": 256,
+      "scheduling_us": 96940,
+      "telemetry_read_us": 38367,
+      "telemetry_write_us": 76582
+    },
+    {
+      "round": 2,
+      "backend": "sqlx",
+      "event_us": 84740,
+      "heartbeat_us": 81558,
+      "samples": 256,
+      "scheduling_us": 67433,
+      "telemetry_read_us": 34507,
+      "telemetry_write_us": 71588
+    },
+    {
+      "round": 3,
+      "backend": "sqlx",
+      "event_us": 111272,
+      "heartbeat_us": 105359,
+      "samples": 256,
+      "scheduling_us": 81983,
+      "telemetry_read_us": 46397,
+      "telemetry_write_us": 115901
+    },
+    {
+      "round": 3,
+      "backend": "toasty",
+      "event_us": 82824,
+      "heartbeat_us": 99928,
+      "samples": 256,
+      "scheduling_us": 84451,
+      "telemetry_read_us": 36403,
+      "telemetry_write_us": 64790
+    },
+    {
+      "round": 4,
+      "backend": "toasty",
+      "event_us": 104786,
+      "heartbeat_us": 102395,
+      "samples": 256,
+      "scheduling_us": 94528,
+      "telemetry_read_us": 31131,
+      "telemetry_write_us": 66542
+    },
+    {
+      "round": 4,
+      "backend": "sqlx",
+      "event_us": 71084,
+      "heartbeat_us": 78742,
+      "samples": 256,
+      "scheduling_us": 61020,
+      "telemetry_read_us": 40012,
+      "telemetry_write_us": 173115
+    },
+    {
+      "round": 5,
+      "backend": "sqlx",
+      "event_us": 114288,
+      "heartbeat_us": 144666,
+      "samples": 256,
+      "scheduling_us": 101118,
+      "telemetry_read_us": 35142,
+      "telemetry_write_us": 121558
+    },
+    {
+      "round": 5,
+      "backend": "toasty",
+      "event_us": 95968,
+      "heartbeat_us": 93490,
+      "samples": 256,
+      "scheduling_us": 86200,
+      "telemetry_read_us": 27838,
+      "telemetry_write_us": 72305
+    }
+  ],
+  "comparison": {
+    "event_us": {
+      "sqlx_median_p95_us": 111272,
+      "toasty_median_p95_us": 95968,
+      "regression_pct": -13.75,
+      "passed": true
+    },
+    "heartbeat_us": {
+      "sqlx_median_p95_us": 105359,
+      "toasty_median_p95_us": 93490,
+      "regression_pct": -11.27,
+      "passed": true
+    },
+    "scheduling_us": {
+      "sqlx_median_p95_us": 81983,
+      "toasty_median_p95_us": 86200,
+      "regression_pct": 5.14,
+      "passed": true
+    },
+    "telemetry_read_us": {
+      "sqlx_median_p95_us": 35142,
+      "toasty_median_p95_us": 36403,
+      "regression_pct": 3.59,
+      "passed": true
+    },
+    "telemetry_write_us": {
+      "sqlx_median_p95_us": 115901,
+      "toasty_median_p95_us": 66542,
+      "regression_pct": -42.59,
+      "passed": true
+    }
+  },
+  "baseline_commit": "409b1a4529f91e493cbfd54fddd30a3524b1c91f",
+  "toasty_version": "0.11.0 with local recovery and native-stream patches",
+  "platform": {
+    "system": "Darwin",
+    "machine": "arm64"
+  },
+  "baseline_executables_sha256": {
+    "control": "b5dd99eb559f7e2290e9d0d88c198f902528119b798fdfb5586e9ceaadd4cf75",
+    "telemetry": "d0716c73caac6df0047fdbe5d3f8817da69b88e4bfe0abb92261790cb7148302"
+  }
+}

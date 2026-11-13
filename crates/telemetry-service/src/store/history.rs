@@ -22,31 +22,14 @@ async fn bounded(
     pool: &toasty::Db,
     limit: usize,
 ) -> Result<HistoryPage> {
-    // A server cursor holds one repeatable-read snapshot while each fetch buffers
-    // at most 128 rows. Dropping the transaction also closes the cursor.
-    let mut db = pool.clone();
-    let mut tx = db
-        .transaction_builder()
-        .read_only(true)
-        .isolation(artifactory_database::IsolationLevel::RepeatableRead)
-        .begin()
-        .await?;
-    sql::execute(
-        &mut tx,
-        &format!("DECLARE telemetry_history NO SCROLL CURSOR FOR {statement}"),
-        parameters,
-    )
-    .await?;
+    // PostgreSQL holds a fixed MVCC snapshot for the single SELECT. Decode at
+    // most 128 rows per page, without an extra round trip for every page.
+    let mut pages = sql::scalar_pages::<Value>(pool, statement, parameters).await?;
     let mut samples = Vec::new();
     let mut bytes = 0;
     let mut truncated = false;
     'pages: loop {
-        let page: Vec<Value> = sql::scalars(
-            &mut tx,
-            "FETCH FORWARD 128 FROM telemetry_history",
-            params![],
-        )
-        .await?;
+        let page = pages.next_page().await?;
         let done = page.len() < 128;
         for value in page {
             bytes += serde_json::to_vec(&value)?.len();
@@ -60,7 +43,6 @@ async fn bounded(
             break;
         }
     }
-    tx.commit().await?;
     Ok(HistoryPage { samples, truncated })
 }
 
@@ -191,7 +173,7 @@ mod tests {
         });
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                let waiting: bool = sql::scalar(&mut admin.clone(), "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE wait_event='advisory' AND query LIKE 'FETCH FORWARD 128%')", params![]).await.unwrap();
+                let waiting: bool = sql::scalar(&mut admin.clone(), "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE wait_event='advisory' AND query LIKE 'SELECT jsonb_build_object%')", params![]).await.unwrap();
                 if waiting { break; }
                 tokio::task::yield_now().await;
             }

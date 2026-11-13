@@ -20,7 +20,7 @@ HTTP、gRPC、调度和后台任务通过业务服务调用 store。连接、模
 
 数据库时间使用 jiff，在 store 边界转换为 chrono UTC，精度固定到 PostgreSQL 微秒。JSON null 与 SQL NULL、空 UUID 数组与 NULL 数组分别编码。约束错误通过驱动的 SQLSTATE 分类，保留 400/404/409 和现有 gRPC 状态码，不匹配错误文本。
 
-Toasty 固定为 0.11.0。连接丢失与异步回滚的本地修订见 `vendor/toasty/PATCH.md`，原始发布包的校验和与逐文件来源见 `vendor/toasty/upstream.json`。
+Toasty 固定为 0.11.0。连接丢失、异步回滚和原生结果流的本地修订见 `vendor/toasty/PATCH.md` 与 `vendor/toasty-driver-postgresql/PATCH.md`，原始发布包的校验和与逐文件来源见各目录中的 `upstream.json`。
 
 ## 数据库初始化
 
@@ -55,7 +55,7 @@ cargo test --locked --workspace --all-targets -- --include-ignored \
 
 数据库测试显式配置隔离的 `ARTIFACTORY_TEST_DATABASE_URL` 和测试 S3。真实协议、浏览器、Compose、Operator 及恢复测试的命令沿用 `docs/acceptance.md`、`docs/operator-operations.md` 和 CI。不要把本地数据库测试当作实际服务切换验收。
 
-遥测历史查询持有 repeatable-read 只读快照，每次 FETCH 最多 128 条，保留原有排序、6000 条及 2 MiB 样本上限。取消和异常退出会回滚并关闭游标。测试覆盖分页之间的并发修改、两个截断边界及完整结果集翻倍后的客户端内存峰值。
+遥测历史查询使用单条 SELECT 的固定 MVCC 快照，通过 Toasty 原生结果流每批解码最多 128 条，保留原有排序、6000 条及 2 MiB 样本上限。读取期间独占只读连接；完整消费后归还，截断、异常和取消时丢弃连接并关闭物理查询，避免后台继续读取完整结果。测试覆盖分页之间的并发修改、两个截断边界、取消后的连接释放及完整候选结果翻倍后的客户端内存峰值。
 
 性能使用相同主机、数据库、样本数和计时边界交替运行迁移前后测试。保留每轮原始 p95；调度、心跳续租、事件提交、遥测写入/读取任何一项退化超过 10% 都不得开放入口。恢复演练必须包含数据库版本记录、业务数据、序列、TimescaleDB 策略/列存、对象和密钥，并在恢复后的服务上重新执行流程。
 

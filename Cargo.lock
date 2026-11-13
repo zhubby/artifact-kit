@@ -4082,8 +4082,6 @@ dependencies = [
 [[package]]
 name = "toasty-driver-postgresql"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6cdb083715b23faddc3b667151cfda8b02feac02e0066acd933d8f8028fce4c"
 dependencies = [
  "async-trait",
  "fallible-iterator",
@@ -4101,6 +4099,7 @@ dependencies = [
  "tokio",
  "tokio-postgres",
  "tokio-postgres-rustls",
+ "tokio-stream",
  "tracing",
  "uuid",
 ]

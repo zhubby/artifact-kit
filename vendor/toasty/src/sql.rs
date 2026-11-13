@@ -53,7 +53,7 @@ use crate::{Executor, Result};
 use toasty_core::{
     Error,
     driver::{
-        Capability,
+        Capability, Rows,
         operation::{RawSql, RawSqlRet, TypedValue},
     },
     schema::db,
@@ -180,6 +180,21 @@ impl Statement {
 }
 
 impl Query {
+    /// Execute without collecting the driver's result stream.
+    ///
+    /// Keep the dedicated connection checked out until the stream is exhausted.
+    /// If consumption stops early (including cancellation), discard the connection
+    /// with [`Connection::discard`](crate::Connection::discard) to stop the query.
+    pub async fn stream(self, connection: &mut crate::Connection) -> Result<stmt::ValueStream> {
+        let raw = into_raw_sql(self.sql, self.params, self.ret, connection.capability())?;
+        let response = connection.exec_raw_sql(raw).await?;
+        match response.values {
+            Rows::Stream(stream) => Ok(stream),
+            Rows::Value(Value::List(values)) => Ok(stmt::ValueStream::from_vec(values)),
+            _ => Err(Error::invalid_result("raw SQL query expected rows")),
+        }
+    }
+
     /// Bind a value using the executor driver's default database type for
     /// that value.
     ///

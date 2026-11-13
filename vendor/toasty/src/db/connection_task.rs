@@ -93,6 +93,10 @@ pub(crate) struct ConnectionHandle {
 }
 
 impl ConnectionHandle {
+    pub(crate) fn abort(self) {
+        self.join_handle.abort();
+    }
+
     /// Spawn a worker task that owns `connection` and serializes
     /// operations against it. `sweep_waker` is woken whenever the task
     /// observes that the connection went bad so the pool's health-check

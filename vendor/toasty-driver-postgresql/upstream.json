@@ -1,0 +1,25 @@
+{
+  "package": "toasty-driver-postgresql",
+  "version": "0.11.0",
+  "registry_checksum": "b6cdb083715b23faddc3b667151cfda8b02feac02e0066acd933d8f8028fce4c",
+  "vcs": {
+    "git": {
+      "sha1": "d71114e4101ce33ee5272ef2bd69ac6d5a6d749a"
+    },
+    "path_in_vcs": "crates/toasty-driver-postgresql"
+  },
+  "files": {
+    "Cargo.toml": "7000315dfc91ce6bd262ad2a547cbe62bd1ba1b70b40e4dc8ad3d373b6620d4b",
+    "CHANGELOG.md": "ce0ffdbd735373a1251aa821a48cedb65da4015d39144e65a0de3c70221dd0eb",
+    "README.md": "2bde0395a079ace70d3afdf6d3dd890830d3fa0227c8306a2922704a612db9b2",
+    ".cargo_vcs_info.json": "2e160dc1e3d526bdd44a463ac74b4cb7457999e800504c439fcdcce78774e4a2",
+    "Cargo.toml.orig": "ef1ed07f6244304c48fd807bfe1a8a4207c9a7010e73d1cbd367b4813294a139",
+    "src/statement_cache.rs": "8630749d5ce6e45abf8faa8d7b03c589b1c3bb7ff2dc9146bd3a33850c7b8449",
+    "src/type.rs": "43ebd8af54a42af9d7f0326ab0e3c05be4417ab29c31775c494147dcf8000e22",
+    "src/lib.rs": "6c4aaa7f4cc7d7c952e0310571654f3be7b49b84d685bf04a125dd87e892b8fd",
+    "src/oid_cache.rs": "50aa13ad29e53103e6c80e34692624cc64c6761e28a0d2fcf8eb423a648ca926",
+    "src/value.rs": "2a73642db4aebdbe56c1b6d4e040fa4f7d3acb436fd69b0161b61ca6349d4581",
+    "src/tls/config.rs": "dea6e337cf818549ce59e53c26bfb455ffaa5b84ef93c73867b63817de844371",
+    "src/tls/mod.rs": "d6eaa92ea1a72dd9dfbac2b87a01876e1ac6e091e27bcdd788319abfbaaf0cea"
+  }
+}
