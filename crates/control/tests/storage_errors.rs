@@ -98,6 +98,7 @@ async fn storage_error_probe_helper() {
             s3_region: "us-east-1".into(),
             s3_access_key: ACCESS_KEY.into(),
             s3_secret_key: SECRET_KEY.into(),
+            telemetry: None,
         })
         .unwrap();
         let result = tokio::time::timeout(Duration::from_secs(5), async {

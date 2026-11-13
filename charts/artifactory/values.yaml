@@ -21,8 +21,8 @@ images:
     tag: 2-alpine
     pullPolicy: IfNotPresent
   postgres:
-    repository: postgres
-    tag: 17-alpine
+    repository: timescale/timescaledb
+    tag: 2.32.0-pg17
     pullPolicy: IfNotPresent
   s3:
     repository: chrislusf/seaweedfs
@@ -48,6 +48,17 @@ grpc:
   service:
     type: ClusterIP
     nodePort: null
+
+telemetry:
+  enabled: true
+  # Device-reachable TLS endpoint. Include this host in init-helm.py --grpc-host.
+  endpoint: https://build.example.com:8444
+  service:
+    type: ClusterIP
+    nodePort: null
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: '2', memory: 512Mi}
 
 s3:
   # Production uses the reachable HTTPS endpoint, including from control pods.
@@ -106,3 +117,12 @@ resources:
   s3:
     requests: {cpu: 100m, memory: 256Mi}
     limits: {cpu: "1", memory: 768Mi}
+
+# Runtime/Source are installed by the separate artifactory-operator release.
+# Opt in per project using planner_backend=kubernetes after verification.
+planning:
+  runtimeUrl: ""
+  sourceUrls: ""
+  agentPool: default
+  serviceSecretName: ""
+  serviceCaSecretName: ""

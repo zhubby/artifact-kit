@@ -36,7 +36,7 @@ def main():
     parser.add_argument("--release", type=dns_label, default="artifactory")
     parser.add_argument("--resource-prefix", type=dns_label, help="match Helm fullnameOverride, if used")
     parser.add_argument("--grpc-host", type=san, action="append", required=True,
-                        help="Agent-visible host, without port; repeat for multiple SANs")
+                        help="Emissary-visible host, without port; repeat for multiple SANs")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     prefix = (args.resource_prefix or args.release)[:50].rstrip("-")
@@ -54,11 +54,13 @@ def main():
                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
     openssl("req", "-x509", "-newkey", "rsa:3072", "-nodes", "-keyout", "ca.key",
-            "-out", "ca.pem", "-sha256", "-days", "3650", "-subj", "/CN=artifactory Agent Issuer")
+            "-out", "ca.pem", "-sha256", "-days", "3650", "-subj", "/CN=artifactory Emissary Issuer")
     openssl("req", "-newkey", "rsa:3072", "-nodes", "-keyout", "server.key",
             "-out", "server.csr", "-subj", "/CN=artifactory Control")
     hosts = args.grpc_host + ["DNS:" + prefix + "-grpc",
-                             f"DNS:{prefix}-grpc.{args.namespace}.svc"]
+                             f"DNS:{prefix}-grpc.{args.namespace}.svc",
+                             "DNS:" + prefix + "-telemetry",
+                             f"DNS:{prefix}-telemetry.{args.namespace}.svc"]
     (pki / "server.ext").write_text(
         "subjectAltName=" + ",".join(dict.fromkeys(hosts)) + "\n"
         "extendedKeyUsage=serverAuth\nkeyUsage=critical,digitalSignature,keyEncipherment\n"
@@ -68,11 +70,15 @@ def main():
             "-extfile", "server.ext")
 
     password = secrets.token_hex(24)
+    telemetry_password = secrets.token_hex(24)
     s3_access = "artifactory"
     s3_secret = secrets.token_hex(32)
     credentials = {
         "database-password": password,
         "database-url": f"postgres://artifactory:{password}@{prefix}-postgres:5432/artifactory",
+        "telemetry-database-password": telemetry_password,
+        "telemetry-database-url": f"postgres://artifactory_telemetry:{telemetry_password}@{prefix}-postgres:5432/artifactory_telemetry",
+        "telemetry-token": secrets.token_hex(32),
         "master-key": base64.b64encode(secrets.token_bytes(32)).decode(),
         "s3-access-key": s3_access,
         "s3-secret-key": s3_secret,

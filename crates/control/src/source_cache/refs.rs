@@ -1,11 +1,11 @@
 use super::{authentication, valid_commit};
 use crate::{source, state::AppState};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, process::Stdio, time::Duration};
 use tokio::{io::AsyncReadExt, process::Command};
 use uuid::Uuid;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GitRef {
     pub name: String,
     #[serde(rename = "ref")]
@@ -13,7 +13,7 @@ pub struct GitRef {
     pub oid: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RepositoryRefs {
     pub default_ref: Option<String>,
     pub branches: Vec<GitRef>,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run real API / Agent traffic inside the isolated Compose acceptance network."""
+"""Run real API / Emissary traffic inside the isolated Compose acceptance network."""
 
 import base64
 import hashlib
@@ -189,7 +189,7 @@ targets:
     server.socket = git_context.wrap_socket(server.socket, server_side=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    agent = None
+    emissary = None
     try:
         def ready():
             with client.open(base + '/', timeout=3) as response:
@@ -212,19 +212,19 @@ targets:
         check('Git credentials are redacted from API responses', password not in json.dumps(api('/credentials')))
         pool = '00000000-0000-0000-0000-000000000001'
         enrollment = api('/enrollment-tokens', {'pool_id': pool})['token']
-        config_file = DIRECTORY / 'agent.json'
+        config_file = DIRECTORY / 'emissary.json'
         environment = {key: value for key, value in os.environ.items() if not key.startswith('ARTIFACTORY_')}
-        command([str(DIRECTORY / 'artifactory-agent'), 'register', '--config', str(config_file), '--endpoint', 'control:8443', '--ca', str(DIRECTORY / 'grpc-ca.pem'), '--root', str(DIRECTORY / 'agent-data'), '--name', 'compose-tls-probe'], env=dict(environment, ARTIFACTORY_ENROLLMENT_TOKEN=enrollment))
+        command([str(DIRECTORY / 'artifactory-emissary'), 'register', '--config', str(config_file), '--endpoint', 'control:8443', '--ca', str(DIRECTORY / 'grpc-ca.pem'), '--root', str(DIRECTORY / 'emissary-data'), '--name', 'compose-tls-probe'], env=dict(environment, ARTIFACTORY_ENROLLMENT_TOKEN=enrollment))
         config = json.loads(config_file.read_text())
         config['git_ca_file'] = str(DIRECTORY / 'grpc-ca.pem')
         config['log_buffer_bytes'] = 1024 * 1024
         config_file.write_text(json.dumps(config))
-        check('Agent keeps HTTPS-only artifact uploads enabled', not config.get('allow_http_uploads', False))
-        with (DIRECTORY / 'agent.log').open('ab') as log:
-            agent = subprocess.Popen([str(DIRECTORY / 'artifactory-agent'), 'run', '--config', str(config_file)], env=environment, stdout=log, stderr=log)
-        node_id = config['agent_id']
+        check('Emissary keeps HTTPS-only artifact uploads enabled', not config.get('allow_http_uploads', False))
+        with (DIRECTORY / 'emissary.log').open('ab') as log:
+            emissary = subprocess.Popen([str(DIRECTORY / 'artifactory-emissary'), 'run', '--config', str(config_file)], env=environment, stdout=log, stderr=log)
+        node_id = config['emissary_id']
         wait(lambda: next((node for node in api('/nodes') if node['id'] == node_id and node['online'] and 'cc' in node['capabilities']), None))
-        check('real Go Agent authenticates with mTLS and reports its compiler', True)
+        check('real Rust Emissary authenticates with mTLS and reports its compiler', True)
         project = api('/projects', {'name': 'Compose TLS acceptance', 'repository_url': 'https://probe:19443/fixture.git', 'credential_id': credential, 'pool_ids': [pool]})['id']
         build_id = api(f'/projects/{project}/builds', {'ref': 'main', 'targets': ['native'], 'release_version': 'compose-tls'})['id']
         wait(lambda: api('/builds/' + build_id)['status'] == 'running', 60)
@@ -244,7 +244,7 @@ targets:
             check('SSE delivers real build output through web and Caddy before completion', found and api('/builds/' + build_id)['status'] == 'running')
         (DIRECTORY / 'finish-build').touch()
         result = build_result(build_id)
-        check('Rust and Go build the same immutable HTTPS Git commit', result['commit_sha'] == commit)
+        check('Control and Rust Emissary build the same immutable HTTPS Git commit', result['commit_sha'] == commit)
         check('native compilation and verification stages succeed', all(step['status'] == 'succeeded' for step in result['jobs'][0]['attempts'][-1]['steps']))
         wait(lambda: api('/builds/' + build_id)['publish_status'] == 'succeeded')
         release = api('/builds/' + build_id + '/publish', {})
@@ -286,7 +286,7 @@ targets:
         wait(lambda: (DIRECTORY / 'control-restarted').is_file(), 90)
         wait(ready, 60)
         wait(lambda: next((item for item in api('/nodes') if item['id'] == node_id and item['online'] and item['last_seen'] > previous_seen), None), 60)
-        check('Agent reconnects with its existing certificate after center restart', agent.poll() is None)
+        check('Emissary reconnects with its existing certificate after center restart', emissary.poll() is None)
         check('session and immutable release survive center restart', api('/releases/' + release['id'])['build_id'] == build_id)
         download()
         (DIRECTORY / 'finish-build').touch()
@@ -315,19 +315,19 @@ targets:
                 return True
 
         wait(descendant_stopped, 30)
-        wait(lambda: not (DIRECTORY / 'agent-data/work' / overflow_attempt).exists(), 10)
+        wait(lambda: not (DIRECTORY / 'emissary-data/work' / overflow_attempt).exists(), 10)
         check('log-buffer exhaustion terminates the real Worker descendant before storage recovery', True)
-        spool = DIRECTORY / 'agent-data/spool' / overflow_attempt
+        spool = DIRECTORY / 'emissary-data/spool' / overflow_attempt
         files = sorted(spool.glob('*.json'))
         records = [json.loads(path.read_text()) for path in files]
         buffered_bytes = sum(path.stat().st_size for path in files)
         check('actual on-disk log buffer stays within its configured bound', config['log_buffer_bytes'] * 3 // 4 < buffered_bytes <= config['log_buffer_bytes'])
         sequences = [record['sequence'] for record in records]
         check('overflow retains consecutive unacknowledged log sequences', sequences == list(range(sequences[0], sequences[-1] + 1)))
-        tail = [{'sequence': record['sequence'], 'size': len(base64.b64decode(record['data'])), 'sha256': hashlib.sha256(base64.b64decode(record['data'])).hexdigest()} for record in records]
+        tail = [{'sequence': record['sequence'], 'size': len(bytes(record['data'])), 'sha256': hashlib.sha256(bytes(record['data'])).hexdigest()} for record in records]
         previous_seen = next(node for node in api('/nodes') if node['id'] == node_id)['last_seen']
         wait(lambda: next((node for node in api('/nodes') if node['id'] == node_id and node['last_seen'] > previous_seen and node['online']), None), 20)
-        check('independent Agent heartbeat continues while S3 and log delivery are stopped', agent.poll() is None and api('/builds/' + overflow)['status'] == 'running')
+        check('independent Emissary heartbeat continues while S3 and log delivery are stopped', emissary.poll() is None and api('/builds/' + overflow)['status'] == 'running')
         evidence['log_buffer_fault'] = {'build_id': overflow, 'attempt_id': overflow_attempt, 'buffer_limit': config['log_buffer_bytes'], 'buffered_bytes': buffered_bytes, 'retained_chunks': tail}
         (DIRECTORY / 'resume-log-storage').touch()
         wait(lambda: (DIRECTORY / 'log-storage-resumed').is_file(), 30)
@@ -352,21 +352,21 @@ targets:
         recovered = replayed[sequences[0] - 1:]
         check('HTTPS SSE replays every retained log chunk with its original bytes and order', len(replayed) == sequences[-1] and [(len(value), hashlib.sha256(value).hexdigest()) for value in recovered] == [(item['size'], item['sha256']) for item in tail])
         recovery = api(f'/projects/{project}/builds', {'ref': 'main', 'targets': ['native']})['id']
-        check('same Agent builds successfully after recovering from log-buffer exhaustion', agent.poll() is None and build_result(recovery)['commit_sha'] == commit)
+        check('same Emissary builds successfully after recovering from log-buffer exhaustion', emissary.poll() is None and build_result(recovery)['commit_sha'] == commit)
         evidence['log_buffer_fault']['recovery_build_id'] = recovery
         evidence.update({'project_id': project, 'node_id': node_id, 'build_id': build_id, 'restart_build_id': second, 'post_restart_build_id': third, 'release_id': release['id'], 'fixture_commit': commit, 'artifact_sha256': artifact['sha256']})
     except BaseException as error:
         evidence['failure'] = str(error)
         raise
     finally:
-        if agent is not None:
-            if agent.poll() is None:
-                agent.send_signal(signal.SIGTERM)
+        if emissary is not None:
+            if emissary.poll() is None:
+                emissary.send_signal(signal.SIGTERM)
             try:
-                agent.wait(timeout=10)
+                emissary.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                agent.kill()
-                agent.wait(timeout=5)
+                emissary.kill()
+                emissary.wait(timeout=5)
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)

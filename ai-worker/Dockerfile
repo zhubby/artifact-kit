@@ -12,7 +12,7 @@ WORKDIR /app/ai-worker
 COPY --from=builder /app/ai-worker/package.json ./
 COPY --from=builder /app/ai-worker/node_modules ./node_modules
 COPY --from=builder /app/ai-worker/dist ./dist
-COPY proto /app/proto
+COPY --chown=10001:10001 proto /app/proto
 USER 10001:10001
 ENV ARTIFACTORY_AI_CONFIG=/var/lib/artifactory-ai-worker/worker.json
 ENTRYPOINT ["node", "dist/main.js"]

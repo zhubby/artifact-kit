@@ -46,7 +46,7 @@ def wait_ready(container, probe, timeout):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--postgres', default='artifactory-postgres-test')
+    parser.add_argument('--postgres', default='artifactory-timescaledb-test')
     parser.add_argument('--s3', default='artifactory-s3-test')
     parser.add_argument('--s3-url', default=os.environ.get('ARTIFACTORY_S3_ENDPOINT', 'http://127.0.0.1:19000'))
     parser.add_argument('--timeout', type=float, default=60)

@@ -21,7 +21,10 @@ import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BASE = 'http://127.0.0.1:8080'
+BASE = os.environ.get('ARTIFACTORY_ACCEPTANCE_HTTP_URL', 'http://127.0.0.1:8080')
+GRPC_ENDPOINT = os.environ.get('ARTIFACTORY_ACCEPTANCE_GRPC_ENDPOINT', 'localhost:8443')
+GIT_PORT = int(os.environ.get('ARTIFACTORY_ACCEPTANCE_GIT_PORT', '19443'))
+GIT_ORIGIN = f'https://localhost:{GIT_PORT}'
 PKI = Path(os.environ.get('ARTIFACTORY_PKI_DIR', str(ROOT / '.local/pki')))
 FIXTURE_DATABASE_URL = None
 RUN_ID = uuid.uuid4().hex[:12]
@@ -182,7 +185,7 @@ targets:
             self.end_headers()
             self.wfile.write(content)
 
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 19443), GitHandler)
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', GIT_PORT), GitHandler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(PKI / 'server.pem', PKI / 'server.key')
     server.socket = context.wrap_socket(server.socket, server_side=True)
@@ -261,7 +264,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--keep-alive', action='store_true')
     options = parser.parse_args()
-    server = control = agent = agent_log = None
+    server = control = emissary = emissary_log = None
     try:
         server, git_password, commit, signing = create_fixture()
         control = start_control()
@@ -270,13 +273,13 @@ def main():
         check('credential response redacts secret', git_password not in json.dumps(api('/credentials')))
         pool = '00000000-0000-0000-0000-000000000001'
         enrollment = api('/enrollment-tokens', {'pool_id': pool})['token']
-        config_file = DIRECTORY / 'agent.json'
-        agent_binary = DIRECTORY / 'bin with spaces' / 'artifactory agent'
-        agent_binary.parent.mkdir()
-        shutil.copy2(ROOT / 'agent/bin/artifactory-agent', agent_binary)
-        arguments = [str(agent_binary), 'register', '--config', str(config_file), '--endpoint', 'localhost:8443', '--ca', str(PKI / 'ca.pem'), '--root', str(DIRECTORY / 'agent-data'), '--name', 'acceptance-' + RUN_ID, '--allow-http-uploads']
-        agent_environment = {key: value for key, value in os.environ.items() if not key.startswith('ARTIFACTORY_') and key != 'DATABASE_URL'}
-        environment = dict(agent_environment, ARTIFACTORY_ENROLLMENT_TOKEN=enrollment)
+        config_file = DIRECTORY / 'emissary.json'
+        emissary_binary = DIRECTORY / 'bin with spaces' / 'artifactory emissary'
+        emissary_binary.parent.mkdir()
+        shutil.copy2(ROOT / 'target/debug/artifactory-emissary', emissary_binary)
+        arguments = [str(emissary_binary), 'register', '--config', str(config_file), '--endpoint', GRPC_ENDPOINT, '--ca', str(PKI / 'ca.pem'), '--root', str(DIRECTORY / 'emissary-data'), '--name', 'acceptance-' + RUN_ID, '--allow-http-uploads']
+        emissary_environment = {key: value for key, value in os.environ.items() if not key.startswith('ARTIFACTORY_') and key != 'DATABASE_URL'}
+        environment = dict(emissary_environment, ARTIFACTORY_ENROLLMENT_TOKEN=enrollment)
         command(arguments, env=environment)
         reused = subprocess.run(arguments + ['--config', str(DIRECTORY / 'reused.json'), '--root', str(DIRECTORY / 'reused-data')], env=environment, capture_output=True)
         check('enrollment token single use', reused.returncode != 0 and not (DIRECTORY / 'reused.json').exists())
@@ -284,9 +287,9 @@ def main():
         config['git_ca_file'] = str(PKI / 'ca.pem')
         config['signing_profiles'] = {'adhoc-test': {}} if signing else {}
         config_file.write_text(json.dumps(config))
-        agent_log = open(DIRECTORY / 'agent.log', 'ab')
-        agent = subprocess.Popen([str(agent_binary), 'run', '--config', str(config_file)], env=agent_environment, stdout=agent_log, stderr=agent_log)
-        node_id = config['agent_id']
+        emissary_log = open(DIRECTORY / 'emissary.log', 'ab')
+        emissary = subprocess.Popen([str(emissary_binary), 'run', '--config', str(config_file)], env=emissary_environment, stdout=emissary_log, stderr=emissary_log)
+        node_id = config['emissary_id']
 
         def node_ready():
             return next((node for node in api('/nodes') if node['id'] == node_id and 'cc' in node['capabilities']), None)
@@ -295,7 +298,7 @@ def main():
         settings = {key: node[key] for key in ('draining', 'revoked', 'slots', 'labels', 'signing_profiles', 'pool_id')}
         settings['signing_profiles'] = ['adhoc-test'] if signing else []
         api('/nodes/' + node_id, settings, 'PATCH')
-        project_settings = {'name': 'Native acceptance ' + RUN_ID, 'repository_url': 'https://localhost:19443/fixture.git', 'credential_id': credential, 'pool_ids': [pool], 'signing_profiles': settings['signing_profiles']}
+        project_settings = {'name': 'Native acceptance ' + RUN_ID, 'repository_url': GIT_ORIGIN + '/fixture.git', 'credential_id': credential, 'pool_ids': [pool], 'signing_profiles': settings['signing_profiles']}
         project = api('/projects', project_settings)['id']
         success_id = build(project, version='acceptance-' + RUN_ID)
         success = terminal(success_id, 'succeeded')
@@ -343,7 +346,7 @@ def main():
         api('/nodes/' + node_id, settings, 'PATCH')
         queued_id = build(project)
         wait_for(lambda: api('/builds/' + queued_id)['status'] == 'queued')
-        api('/projects/' + project, dict(project_settings, repository_url='https://localhost:19443/not-the-source.git'), 'PATCH')
+        api('/projects/' + project, dict(project_settings, repository_url=GIT_ORIGIN + '/not-the-source.git'), 'PATCH')
         settings['draining'] = False
         api('/nodes/' + node_id, settings, 'PATCH')
         terminal(queued_id, 'succeeded')
@@ -362,7 +365,7 @@ def main():
         resumed = terminal(resumed_id, 'succeeded')
         check('center crash resumes same running attempt', len(resumed['jobs'][0]['attempts']) == 1 and resumed['jobs'][0]['attempts'][0]['id'] == attempt_id)
         partition_id = build(project, 'slow')
-        marker = wait_for(lambda: next(iter((DIRECTORY / 'agent-data/work').glob('*/source/child.pid')), None))
+        marker = wait_for(lambda: next(iter((DIRECTORY / 'emissary-data/work').glob('*/source/child.pid')), None))
         partition_child = int(marker.read_text())
         control.kill()
         control.wait(timeout=10)
@@ -379,16 +382,16 @@ def main():
         control = start_control()
         partition = terminal(partition_id, 'lost')
         check('expired running attempt is never automatically rerun', len(partition['jobs'][0]['attempts']) == 1)
-        for failure in ('cancel', 'agent-crash'):
+        for failure in ('cancel', 'emissary-crash'):
             slow_id = build(project, 'slow')
-            marker = wait_for(lambda: next(iter((DIRECTORY / 'agent-data/work').glob('*/source/child.pid')), None))
+            marker = wait_for(lambda: next(iter((DIRECTORY / 'emissary-data/work').glob('*/source/child.pid')), None))
             child_pid = int(marker.read_text())
             if failure == 'cancel':
                 api('/builds/' + slow_id + '/cancel', {})
                 terminal(slow_id, 'canceled')
             else:
-                agent.kill()
-                agent.wait(timeout=10)
+                emissary.kill()
+                emissary.wait(timeout=10)
 
             def child_exited():
                 try:
@@ -399,14 +402,14 @@ def main():
 
             wait_for(child_exited, 10)
             check(failure + ' terminates child process tree', True)
-            if failure == 'agent-crash':
+            if failure == 'emissary-crash':
                 terminal(slow_id, 'lost')
-        agent = subprocess.Popen([str(agent_binary), 'run', '--config', str(config_file)], env=agent_environment, stdout=agent_log, stderr=agent_log)
+        emissary = subprocess.Popen([str(emissary_binary), 'run', '--config', str(config_file)], env=emissary_environment, stdout=emissary_log, stderr=emissary_log)
         wait_for(node_ready, 90)
         collision = terminal(build(project, version='acceptance-' + RUN_ID), 'succeeded')
         wait_for(lambda: api('/builds/' + collision['id'])['publish_status'] == 'failed')
         check('same-name release conflicts without overwriting', api('/releases/' + release_id)['build_id'] == success_id)
-        EVIDENCE.update({'project_id': project, 'node_id': node_id, 'build_id': success_id, 'partial_build_id': partial_id, 'failed_build_id': failed_id, 'collision_build_id': collision['id'], 'release_id': release_id, 'agent_config': str(config_file), 'commit': commit, 'signing': 'macOS ad-hoc only' if signing else 'not tested', 'diagnostics': node['diagnostics']})
+        EVIDENCE.update({'project_id': project, 'node_id': node_id, 'build_id': success_id, 'partial_build_id': partial_id, 'failed_build_id': failed_id, 'collision_build_id': collision['id'], 'release_id': release_id, 'emissary_config': str(config_file), 'commit': commit, 'signing': 'macOS ad-hoc only' if signing else 'not tested', 'diagnostics': node['diagnostics']})
         (ROOT / '.local/acceptance/latest.json').write_text(json.dumps(EVIDENCE, indent=2))
         (DIRECTORY / 'evidence.json').write_text(json.dumps(EVIDENCE, indent=2))
         print('ACCEPTANCE READY', json.dumps({'checks': len(EVIDENCE['checks']), 'run_id': RUN_ID}), flush=True)
@@ -414,10 +417,10 @@ def main():
             while True:
                 time.sleep(1)
     finally:
-        for process in (agent, control):
+        for process in (emissary, control):
             stop_process(process)
-        if agent_log is not None:
-            agent_log.close()
+        if emissary_log is not None:
+            emissary_log.close()
         if server is not None:
             server.shutdown()
             server.server_close()

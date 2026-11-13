@@ -282,29 +282,29 @@ class Acceptance:
         result=self.start('worker-enroll',[self.args.node,str(ROOT/'ai-worker/dist/main.js'),'enroll','--config',str(path)],stdin=token,env=env)
         if result.wait(timeout=60)!=0:raise RuntimeError('worker enrollment failed; inspect worker-enroll.log')
         self.start('worker',[self.args.node,str(ROOT/'ai-worker/dist/main.js'),'--config',str(path)],env=env)
-        self.agent_config=self.run/'agent.json'
+        self.emissary_config=self.run/'emissary.json'
         host_os={'Darwin':'darwin','Linux':'linux','Windows':'windows'}[platform.system()]
         arch='arm64' if platform.machine() in ['arm64','aarch64'] else 'amd64'
         self.host_os,self.arch=host_os,arch
-        agent={'endpoint':self.grpc_endpoint,'name':'isolated-ai-agent','root':str(self.run/'agent'),
+        emissary={'endpoint':self.grpc_endpoint,'name':'isolated-ai-emissary','root':str(self.run/'emissary'),
             'ca_file':str(Path(self.config['ARTIFACTORY_PKI_DIR'])/'ca.pem'),'allow_http_uploads':True,
             'signing_profiles':{'adhoc-test':{}} if host_os=='darwin' else {}}
         token=self.api('/enrollment-tokens',{'pool_id':'00000000-0000-0000-0000-000000000001'})['token']
-        command([str(ROOT/'.local/ai-implementation/artifactory-agent'),'register','--config',str(self.agent_config),
-                 '--endpoint',self.grpc_endpoint,'--ca',agent['ca_file'],'--root',agent['root'],'--name',agent['name'],'--allow-http-uploads'],
+        command([str(ROOT/'target/debug/artifactory-emissary'),'register','--config',str(self.emissary_config),
+                 '--endpoint',self.grpc_endpoint,'--ca',emissary['ca_file'],'--root',emissary['root'],'--name',emissary['name'],'--allow-http-uploads'],
                 env=dict(env,ARTIFACTORY_ENROLLMENT_TOKEN=token))
-        agent=json.loads(self.agent_config.read_text());agent['signing_profiles']={'adhoc-test':{}} if host_os=='darwin' else {};agent['git_ca_file']=agent['ca_file']
-        self.agent_config.write_text(json.dumps(agent))
-        self.start('agent',[str(ROOT/'.local/ai-implementation/artifactory-agent'),'run','--config',str(self.agent_config)],env=env)
-        self.wait(lambda:any(n['name']=='isolated-ai-agent' and n['online'] for n in self.api('/nodes')))
-        node=next(n for n in self.api('/nodes') if n['name']=='isolated-ai-agent')
+        emissary=json.loads(self.emissary_config.read_text());emissary['signing_profiles']={'adhoc-test':{}} if host_os=='darwin' else {};emissary['git_ca_file']=emissary['ca_file']
+        self.emissary_config.write_text(json.dumps(emissary))
+        self.start('emissary',[str(ROOT/'target/debug/artifactory-emissary'),'run','--config',str(self.emissary_config)],env=env)
+        self.wait(lambda:any(n['name']=='isolated-ai-emissary' and n['online'] for n in self.api('/nodes')))
+        node=next(n for n in self.api('/nodes') if n['name']=='isolated-ai-emissary')
         self.api('/nodes/'+node['id'],{'pool_id':node['pool_id'],'slots':1,'labels':{},'draining':False,'revoked':False,
                                      'signing_profiles':['adhoc-test'] if host_os=='darwin' else []},'PATCH')
         self.project=self.api('/projects',{'name':'Zero intrusion AI acceptance','repository_url':self.repository_url,
             'pool_ids':['00000000-0000-0000-0000-000000000001'],'signing_profiles':['adhoc-test'] if host_os=='darwin' else []})['id']
         self.evidence.update(project_id=self.project,source_commit=self.source_commit)
         (self.run/'access.json').write_text(json.dumps({'base':self.base,'project_id':self.project,'schema':self.schema,
-            'agent_config':str(self.agent_config),'cookies':{c.name:c.value for c in self.jar}}))
+            'emissary_config':str(self.emissary_config),'cookies':{c.name:c.value for c in self.jar}}))
 
     def build(self,name,goal,parameters=None):
         build=self.api(f'/projects/{self.project}/builds',{'ref':'v-fixture-1','goal':goal,'target_requirements':[{'os':self.host_os,'arch':self.arch}],'parameters':parameters or {}})['id']
@@ -380,12 +380,12 @@ class Acceptance:
         self.check('manual retry retains original commit and plan',retried['commit_sha']==exhausted['commit_sha'] and latest['plan_revision_id']==attempts[-1]['plan_revision_id'] and len(retried['jobs'][0]['attempts'])==4)
         self.check('manual retry transfers no upstream Git or LFS payload',all(self.evidence['upstream'][k]==upstream[k] for k in ['git_bytes','lfs_bytes']))
         self.evidence['source_metrics']=self.api('/source-metrics')
-        self.check('Agent reports source cache hits',any(m.get('agent_cache_hits',0)>0 for m in self.evidence['source_metrics']))
+        self.check('Emissary reports source cache hits',any(m.get('emissary_cache_hits',0)>0 for m in self.evidence['source_metrics']))
         self.check('upstream refs remain unchanged after all scenarios',{p.name:command(['git','-C',str(p),'show-ref']) for p in self.source_root.glob('*.git')}==self.upstream_before)
         self.check('no upstream write requests in any scenario',self.evidence['upstream']['writes']==0)
         key=os.environ.get('ARTIFACTORY_ACCEPTANCE_MODEL_KEY') or os.environ.get('ANTHROPIC_AUTH_TOKEN') or os.environ.get('ANTHROPIC_API_KEY')
         leaked=[]
-        for root in [self.run/'agent',self.run/'control']:
+        for root in [self.run/'emissary',self.run/'control']:
             for path in root.rglob('*'):
                 if path.is_file() and path.stat().st_size<8*1024*1024 and key.encode() in path.read_bytes():leaked.append(str(path.relative_to(self.run)))
         for path in self.run.glob('*.log'):

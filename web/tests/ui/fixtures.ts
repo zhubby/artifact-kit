@@ -131,12 +131,12 @@ export const nodes: Node[] = [
     last_seen: created,
     certificate_expires_at: "2027-11-10T08:30:00Z",
     diagnostics: {
-      agent_version: "0.1.0",
+      emissary_version: "0.1.0",
       buffered_log_bytes: 1024,
       metrics: {
         logical_cpus: 12,
         managed_free_bytes: 73014444032,
-        agent_heap_bytes: 2500000,
+        emissary_rss_bytes: 2500000,
       },
       tools: {
         xcode: {
@@ -165,7 +165,7 @@ export const nodes: Node[] = [
     last_seen: created,
     certificate_expires_at: "2027-11-10T08:30:00Z",
     diagnostics: {
-      agent_version: "0.1.0",
+      emissary_version: "0.1.0",
       metrics: { logical_cpus: 8, managed_free_bytes: 42949672960 },
     },
   },
@@ -220,8 +220,8 @@ export async function fixtureAPI(page: Page, role: User["role"] = "admin") {
       ],
       [`/builds/${build.id}`]: build,
       "/nodes": nodes,
-      "/agent-releases": [],
-      "/agent-updates": [],
+      "/emissary-releases": [],
+      "/emissary-updates": [],
       "/overview": {
         projects: 1,
         nodes_online: 1,

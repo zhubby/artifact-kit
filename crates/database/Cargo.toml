@@ -1,0 +1,12 @@
+[package]
+name = "artifactory-database"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = "1"
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+uuid = { version = "1", features = ["v4"] }

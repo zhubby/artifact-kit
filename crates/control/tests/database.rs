@@ -19,6 +19,8 @@ use uuid::Uuid;
 
 #[path = "database/registration.rs"]
 mod registration;
+#[path = "database/runtime.rs"]
+mod runtime;
 #[path = "database/source_refs.rs"]
 mod source_refs;
 
@@ -670,7 +672,7 @@ async fn revision_budget_excludes_source_authorization_and_transport_failures() 
         "source",
         "authorization",
         "artifact_transport",
-        "agent",
+        "emissary",
     ] {
         let (project, build, job) = database.fixture().await;
         let repo = Uuid::new_v4();
@@ -785,6 +787,7 @@ impl Database {
             s3_region: "us-east-1".into(),
             s3_access_key: "test".into(),
             s3_secret_key: "test".into(),
+            telemetry: None,
         };
         let storage = Arc::new(Storage::new(&settings).unwrap());
         Self {
@@ -1170,10 +1173,10 @@ async fn ota_uses_node_lock_and_pool_limit_and_never_changes_admin_drain() {
     let first = database.node().await;
     let second = database.node().await;
     let release = Uuid::new_v4();
-    sqlx::query("INSERT INTO agent_releases(id,version,manifest,signature,manifest_hash) VALUES($1,'v-next',$2,'test','hash')")
-        .bind(release).bind(serde_json::json!({"assets":[{"os":"linux","arch":"amd64","name":"artifactory-agent-linux-amd64"}]}).to_string()).execute(&database.state.pool).await.unwrap();
-    sqlx::query("UPDATE nodes SET capabilities=capabilities || '[\"agent-ota-v1\"]'::jsonb,agent_current_version='v-old',agent_launcher_version='v-old',draining=true").execute(&database.state.pool).await.unwrap();
-    sqlx::query("UPDATE node_pools SET agent_target_release=$1")
+    sqlx::query("INSERT INTO emissary_releases(id,version,manifest,signature,manifest_hash) VALUES($1,'v-next',$2,'test','hash')")
+        .bind(release).bind(serde_json::json!({"assets":[{"os":"linux","arch":"amd64","name":"artifactory-emissary-linux-amd64"}]}).to_string()).execute(&database.state.pool).await.unwrap();
+    sqlx::query("UPDATE nodes SET capabilities=capabilities || '[\"emissary-ota-v1\"]'::jsonb,emissary_current_version='v-old',emissary_launcher_version='v-old',draining=true").execute(&database.state.pool).await.unwrap();
+    sqlx::query("UPDATE node_pools SET emissary_target_release=$1")
         .bind(release)
         .execute(&database.state.pool)
         .await
@@ -1185,7 +1188,7 @@ async fn ota_uses_node_lock_and_pool_limit_and_never_changes_admin_drain() {
     a.unwrap();
     b.unwrap();
     let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM agent_updates WHERE status='offered'")
+        sqlx::query_scalar("SELECT count(*) FROM emissary_updates WHERE status='offered'")
             .fetch_one(&database.state.pool)
             .await
             .unwrap();
@@ -1193,7 +1196,7 @@ async fn ota_uses_node_lock_and_pool_limit_and_never_changes_admin_drain() {
         count, 1,
         "pool concurrency must be one across racing schedulers"
     );
-    let updates: Vec<Uuid> = sqlx::query_scalar("SELECT node_id FROM agent_updates")
+    let updates: Vec<Uuid> = sqlx::query_scalar("SELECT node_id FROM emissary_updates")
         .fetch_all(&database.state.pool)
         .await
         .unwrap();
@@ -1229,27 +1232,27 @@ async fn ota_management_rejects_operator_and_project_tokens() {
     for (method, path, body) in [
         (
             "POST",
-            "/api/v1/agent-releases".to_string(),
+            "/api/v1/emissary-releases".to_string(),
             r#"{"tag":"v-next"}"#.to_string(),
         ),
         (
             "PATCH",
-            format!("/api/v1/nodes/{}/agent-update", Uuid::new_v4()),
+            format!("/api/v1/nodes/{}/emissary-update", Uuid::new_v4()),
             r#"{"release_id":null}"#.to_string(),
         ),
         (
             "PATCH",
-            "/api/v1/pools/00000000-0000-0000-0000-000000000001/agent-update".into(),
+            "/api/v1/pools/00000000-0000-0000-0000-000000000001/emissary-update".into(),
             r#"{"release_id":null}"#.into(),
         ),
         (
             "POST",
-            format!("/api/v1/agent-updates/{}/retry", Uuid::new_v4()),
+            format!("/api/v1/emissary-updates/{}/retry", Uuid::new_v4()),
             "{}".into(),
         ),
         (
             "POST",
-            format!("/api/v1/agent-updates/{}/cancel", Uuid::new_v4()),
+            format!("/api/v1/emissary-updates/{}/cancel", Uuid::new_v4()),
             "{}".into(),
         ),
     ] {
@@ -1286,28 +1289,28 @@ async fn ota_failed_activation_pauses_pool_and_fences_stale_sessions() {
     let database = Database::new().await;
     let node = database.node().await;
     let release = Uuid::new_v4();
-    sqlx::query("INSERT INTO agent_releases(id,version,manifest,signature,manifest_hash) VALUES($1,'v-next',$2,'test','hash')").bind(release).bind(serde_json::json!({"assets":[{"os":"linux","arch":"amd64","name":"artifactory-agent-linux-amd64"}]}).to_string()).execute(&database.state.pool).await.unwrap();
-    sqlx::query("UPDATE nodes SET capabilities=capabilities || '[\"agent-ota-v1\"]'::jsonb,agent_current_version='v-old',agent_target_release=$1,draining=true WHERE id=$2").bind(release).bind(node).execute(&database.state.pool).await.unwrap();
+    sqlx::query("INSERT INTO emissary_releases(id,version,manifest,signature,manifest_hash) VALUES($1,'v-next',$2,'test','hash')").bind(release).bind(serde_json::json!({"assets":[{"os":"linux","arch":"amd64","name":"artifactory-emissary-linux-amd64"}]}).to_string()).execute(&database.state.pool).await.unwrap();
+    sqlx::query("UPDATE nodes SET capabilities=capabilities || '[\"emissary-ota-v1\"]'::jsonb,emissary_current_version='v-old',emissary_target_release=$1,draining=true WHERE id=$2").bind(release).bind(node).execute(&database.state.pool).await.unwrap();
     scheduler::tick(&database.state).await.unwrap();
-    let id: Uuid = sqlx::query_scalar("SELECT id FROM agent_updates WHERE node_id=$1")
+    let id: Uuid = sqlx::query_scalar("SELECT id FROM emissary_updates WHERE node_id=$1")
         .bind(node)
         .fetch_one(&database.state.pool)
         .await
         .unwrap();
     let session = database.state.connections.read().await[&node].session;
-    let payload = serde_json::json!({"diagnostics":{"agent_version":"v-old"},"ota":{"update_id":id,"phase":"rolled_back","launcher_version":"v-old","error":"candidate crashed"}});
+    let payload = serde_json::json!({"diagnostics":{"emissary_version":"v-old"},"ota":{"update_id":id,"phase":"rolled_back","launcher_version":"v-old","error":"candidate crashed"}});
     assert!(
         artifactory_control::ota::report(&database.state, node, Uuid::new_v4(), &payload)
             .await
             .is_err()
     );
-    let status: String = sqlx::query_scalar("SELECT status FROM agent_updates WHERE id=$1")
+    let status: String = sqlx::query_scalar("SELECT status FROM emissary_updates WHERE id=$1")
         .bind(id)
         .fetch_one(&database.state.pool)
         .await
         .unwrap();
     assert_eq!(status, "offered");
-    let preparing = serde_json::json!({"diagnostics":{"agent_version":"v-old"},"ota":{"update_id":id,"phase":"activating","activation_pending":true,"launcher_version":"v-old"}});
+    let preparing = serde_json::json!({"diagnostics":{"emissary_version":"v-old"},"ota":{"update_id":id,"phase":"activating","activation_pending":true,"launcher_version":"v-old"}});
     assert!(
         artifactory_control::ota::report(&database.state, node, session, &preparing)
             .await
@@ -1319,10 +1322,10 @@ async fn ota_failed_activation_pauses_pool_and_fences_stale_sessions() {
             .await
             .unwrap()
     );
-    let flags:(bool,bool,bool)=sqlx::query_as("SELECT n.draining,n.ota_draining,p.agent_updates_paused FROM nodes n JOIN node_pools p ON p.id=n.pool_id WHERE n.id=$1").bind(node).fetch_one(&database.state.pool).await.unwrap();
+    let flags:(bool,bool,bool)=sqlx::query_as("SELECT n.draining,n.ota_draining,p.emissary_updates_paused FROM nodes n JOIN node_pools p ON p.id=n.pool_id WHERE n.id=$1").bind(node).fetch_one(&database.state.pool).await.unwrap();
     assert_eq!(flags, (true, false, true));
     scheduler::tick(&database.state).await.unwrap();
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM agent_updates")
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM emissary_updates")
         .fetch_one(&database.state.pool)
         .await
         .unwrap();
@@ -1356,8 +1359,8 @@ async fn ota_retry_after_pool_move_respects_new_pool_capacity() {
     let release = Uuid::new_v4();
     let prior = Uuid::new_v4();
     let new_pool = Uuid::new_v4();
-    sqlx::query("INSERT INTO agent_releases(id,version,manifest,signature,manifest_hash) VALUES($1,'v-next','{}','test','hash')").bind(release).execute(&database.state.pool).await.unwrap();
-    sqlx::query("INSERT INTO agent_updates(id,node_id,pool_id,release_id,status,finished_at) VALUES($1,$2,'00000000-0000-0000-0000-000000000001',$3,'failed',now())").bind(prior).bind(node).bind(release).execute(&database.state.pool).await.unwrap();
+    sqlx::query("INSERT INTO emissary_releases(id,version,manifest,signature,manifest_hash) VALUES($1,'v-next','{}','test','hash')").bind(release).execute(&database.state.pool).await.unwrap();
+    sqlx::query("INSERT INTO emissary_updates(id,node_id,pool_id,release_id,status,finished_at) VALUES($1,$2,'00000000-0000-0000-0000-000000000001',$3,'failed',now())").bind(prior).bind(node).bind(release).execute(&database.state.pool).await.unwrap();
     sqlx::query("INSERT INTO node_pools(id,name) VALUES($1,'new pool')")
         .bind(new_pool)
         .execute(&database.state.pool)
@@ -1368,7 +1371,7 @@ async fn ota_retry_after_pool_move_respects_new_pool_capacity() {
         .execute(&database.state.pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO agent_updates(id,node_id,pool_id,release_id) VALUES($1,$2,$3,$4)")
+    sqlx::query("INSERT INTO emissary_updates(id,node_id,pool_id,release_id) VALUES($1,$2,$3,$4)")
         .bind(Uuid::new_v4())
         .bind(other)
         .bind(new_pool)
@@ -1392,7 +1395,7 @@ async fn ota_retry_after_pool_move_respects_new_pool_capacity() {
         .unwrap();
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/api/v1/agent-updates/{prior}/retry"))
+        .uri(format!("/api/v1/emissary-updates/{prior}/retry"))
         .header("content-type", "application/json")
         .header("cookie", "artifactory_session=admin-session")
         .header("x-artifactory-csrf", "1")

@@ -1,0 +1,147 @@
+{{- if and (not .Values.development.insecureHttp) (or (not (hasPrefix "https://" .Values.runtime.url)) (not (hasPrefix "https://" .Values.runtime.grpcUrl)) (not (hasPrefix "https://" .Values.controlUrl))) }}
+{{- fail "Runtime and control URLs require HTTPS outside explicit development mode" }}
+{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: artifactory-operator
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: artifactory-runtime
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: artifactory-pi
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-operator
+spec:
+  replicas: {{ .Values.operator.replicas }}
+  selector:
+    matchLabels: {app.kubernetes.io/name: artifactory-operator}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: artifactory-operator}
+    spec:
+      serviceAccountName: artifactory-operator
+      securityContext: {runAsUser: 10001, runAsNonRoot: true}
+      containers:
+        - name: operator
+          image: '{{ .Values.image.repository }}:{{ .Values.image.tag }}'
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [operator]
+          env:
+            - {name: RUST_LOG, value: info}
+            - name: ARTIFACTORY_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.runtime.secretName }}, key: ARTIFACTORY_SERVICE_TOKEN}
+            - {name: ARTIFACTORY_NAMESPACE, value: {{ .Release.Namespace | quote }}}
+            - {name: POD_UID, valueFrom: {fieldRef: {fieldPath: metadata.uid}}}
+            - {name: ARTIFACTORY_RUNTIME_URL, value: {{ .Values.runtime.url | quote }}}
+            - {name: ARTIFACTORY_RUNTIME_GRPC_URL, value: {{ .Values.runtime.grpcUrl | quote }}}
+            - {name: ARTIFACTORY_INSECURE_DEV, value: {{ .Values.development.insecureHttp | toString | quote }}}
+            {{- if not .Values.development.insecureHttp }}
+            - {name: ARTIFACTORY_SERVICE_CA, value: /run/service-tls/ca.crt}
+            {{- end }}
+          resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {cpu: '1', memory: 512Mi}}
+          {{- if not .Values.development.insecureHttp }}
+          volumeMounts: [{name: tls, mountPath: /run/service-tls, readOnly: true}]
+          {{- end }}
+      {{- if not .Values.development.insecureHttp }}
+      volumes:
+        - name: tls
+          secret: {secretName: {{ .Values.tls.secretName }}, items: [{key: ca.crt, path: ca.crt}]}
+      {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-runtime
+spec:
+  replicas: {{ .Values.runtime.replicas }}
+  selector:
+    matchLabels: {app.kubernetes.io/name: artifactory-runtime}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: artifactory-runtime}
+    spec:
+      serviceAccountName: artifactory-runtime
+      securityContext: {runAsUser: 10001, runAsNonRoot: true}
+      containers:
+        - name: runtime
+          image: '{{ .Values.image.repository }}:{{ .Values.image.tag }}'
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [runtime]
+          ports: [{name: http, containerPort: 8091}, {name: grpc, containerPort: 8092}]
+          envFrom:
+            - secretRef: {name: {{ .Values.runtime.secretName }}}
+          env:
+            - {name: ARTIFACTORY_RUNTIME_URL, value: {{ .Values.runtime.url | quote }}}
+            - {name: ARTIFACTORY_CONTROL_URL, value: {{ .Values.controlUrl | quote }}}
+            - {name: ARTIFACTORY_INSECURE_DEV, value: {{ .Values.development.insecureHttp | toString | quote }}}
+            {{- if not .Values.development.insecureHttp }}
+            - {name: ARTIFACTORY_SERVICE_TLS_CERT, value: /run/service-tls/tls.crt}
+            - {name: ARTIFACTORY_SERVICE_TLS_KEY, value: /run/service-tls/tls.key}
+            - {name: ARTIFACTORY_SERVICE_CA, value: /run/service-tls/ca.crt}
+            {{- end }}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http, scheme: {{ ternary "HTTP" "HTTPS" .Values.development.insecureHttp }}}
+            initialDelaySeconds: 3
+          resources: {requests: {cpu: 250m, memory: 256Mi}, limits: {cpu: '2', memory: 1Gi}}
+          {{- if not .Values.development.insecureHttp }}
+          volumeMounts: [{name: tls, mountPath: /run/service-tls, readOnly: true}]
+          {{- end }}
+      {{- if not .Values.development.insecureHttp }}
+      volumes:
+        - name: tls
+          secret: {secretName: {{ .Values.tls.secretName }}}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: artifactory-runtime
+spec:
+  selector: {app.kubernetes.io/name: artifactory-runtime}
+  ports: [{name: http, port: 8091, targetPort: 8091}, {name: grpc, port: 8092, targetPort: 8092}]
+---
+apiVersion: agents.artifactory.dev/v1alpha1
+kind: AgentPool
+metadata:
+  name: {{ .Values.agentPool.name }}
+spec:
+  maxActive: {{ .Values.agentPool.maxActive }}
+  maxPerProject: {{ .Values.agentPool.maxPerProject }}
+  image: {{ .Values.agentPool.image | quote }}
+  imagePullPolicy: {{ .Values.image.pullPolicy }}
+  runtimeUrl: {{ .Values.runtime.url | quote }}
+  sourcePool: {{ .Values.sourcePool.name | quote }}
+  cpu: {{ .Values.agentPool.cpu | quote }}
+  memory: {{ .Values.agentPool.memory | quote }}
+  tlsSecretName: {{ ternary "" .Values.tls.secretName .Values.development.insecureHttp | quote }}
+---
+apiVersion: agents.artifactory.dev/v1alpha1
+kind: SourcePool
+metadata:
+  name: {{ .Values.sourcePool.name }}
+spec:
+  shards: {{ .Values.sourcePool.shards }}
+  image: '{{ .Values.image.repository }}:{{ .Values.image.tag }}'
+  imagePullPolicy: {{ .Values.image.pullPolicy }}
+  runtimeUrl: {{ .Values.runtime.url | quote }}
+  controlUrl: {{ .Values.controlUrl | quote }}
+  secretName: {{ .Values.sourcePool.secretName | quote }}
+  storageClass: {{ .Values.sourcePool.storageClass | quote }}
+  storageSize: {{ .Values.sourcePool.storageSize | quote }}
+  cpu: {{ .Values.sourcePool.cpu | quote }}
+  memory: {{ .Values.sourcePool.memory | quote }}
+  {{- with .Values.sourcePool.publicUrlTemplate }}
+  publicUrlTemplate: {{ . | quote }}
+  {{- end }}
+  tlsSecretName: {{ ternary "" .Values.tls.secretName .Values.development.insecureHttp | quote }}

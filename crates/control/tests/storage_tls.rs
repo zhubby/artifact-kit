@@ -46,6 +46,7 @@ async fn storage_tls_probe_helper() {
         s3_region: "us-east-1".into(),
         s3_access_key: "non-secret-fixture".into(),
         s3_secret_key: "non-secret-fixture".into(),
+        telemetry: None,
     };
     if let Err(error) = Storage::new(&settings).unwrap().initialize().await {
         panic!("actual Storage initialization failed: {error:#}");

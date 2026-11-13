@@ -2,6 +2,14 @@
 
 记录日期：2026-11-10，Asia/Shanghai。此记录区分源代码实现、实际自动化结果、运行环境和外部验收；**不是三类实体宿主、五种应用目标的最终验收证明**。
 
+2026-11-13 新增 [Rust Emissary 链路真实供应商复验](acceptance/provider/2026-11-13.md)：修复 sh 能力误判后，最新链路以真实 Qwen 完成 7 个 Build、29 项检查，覆盖流式工具、受控 429 恢复、共享限流、规划 / 设备取消和调用 / 期限预算。
+
+2026-11-13 新增 [TimescaleDB 与 Emissary 遥测验收](acceptance/telemetry/2026-11-13.md)：后端数据库统一为 TimescaleDB，独立 Rust 遥测接收、持久缓存补报、时序查询、列存 / 聚合 / 保留策略及四库恢复已实测。具体平台与运行范围以该记录为准。
+
+2026-11-13 新增 [Rust Artifactory Emissary 验收](acceptance/emissary/2026-11-13.md)：设备执行器完整替换为 Rust 并更名，不提供 Go 兼容或迁移层。下文 Go 结果属于历史实现，不作为 Rust 原生平台验收证据。
+
+2026-11-12 新增 [Rust Operator / Kubernetes Pi 验收](acceptance/operator/2026-11-12.md)：独立 Rust Source/Runtime、四个 CRD、真实模型规划、现有 Go Agent 构建、故障恢复及删除保留已实测。默认保留 Poll；大规模活动 Pod、定量卸压与各 OS 的新路径原生/发行签名验收分别记录。
+
 ## 结论与里程碑
 
 | 阶段 | 本次交付 | 状态 |

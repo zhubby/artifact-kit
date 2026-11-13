@@ -1,0 +1,47 @@
+image:
+  repository: ghcr.io/zhubby/artifactory-operator
+  tag: '0.1.0'
+  pullPolicy: IfNotPresent
+operator:
+  replicas: 2
+telemetry:
+  enabled: true
+  replicas: 1
+  # DATABASE_URL (dedicated telemetry DB), ARTIFACTORY_BUSINESS_DATABASE_URL,
+  # ARTIFACTORY_TELEMETRY_TOKEN. Business access should be read-only.
+  secretName: artifactory-telemetry
+  # Existing device CA and server identity: ca.pem, server.pem, server.key.
+  pkiSecretName: artifactory-pki
+runtime:
+  replicas: 1
+  # Contains DATABASE_URL, ARTIFACTORY_SERVICE_KEY and ARTIFACTORY_SERVICE_TOKEN.
+  secretName: artifactory-runtime
+  url: https://artifactory-runtime:8091
+  grpcUrl: https://artifactory-runtime:8092
+controlUrl: https://artifactory-control
+tls:
+  # tls.crt, tls.key, ca.crt. SANs cover Runtime and all Source shard endpoints.
+  secretName: artifactory-services-tls
+development:
+  insecureHttp: false
+agentPool:
+  name: default
+  maxActive: 8
+  maxPerProject: 4
+  image: ghcr.io/zhubby/artifactory-ai-worker:0.1.0
+  cpu: 250m
+  memory: 512Mi
+sourcePool:
+  name: sources
+  shards: 1
+  # Independent database/role; also S3 settings and the shared service token.
+  secretName: artifactory-source
+  storageClass: standard
+  storageSize: 20Gi
+  # Device-reachable shard endpoint; supports {pod}, {pool}, {namespace}.
+  # Empty uses the internal shard URL (suitable only for in-cluster devices).
+  publicUrlTemplate: ''
+  cpu: 250m
+  memory: 1Gi
+networkPolicy:
+  enabled: true

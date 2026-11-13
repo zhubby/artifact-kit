@@ -1,14 +1,17 @@
 name: artifactory
 services:
   postgres:
-    image: postgres:17-alpine
+    image: timescale/timescaledb:2.32.0-pg17
     restart: unless-stopped
     environment:
       POSTGRES_DB: artifactory
       POSTGRES_USER: artifactory
       POSTGRES_PASSWORD: ${ARTIFACTORY_DATABASE_PASSWORD:?run scripts/init-deploy.sh}
+      TIMESCALEDB_TELEMETRY: 'off'
+      ARTIFACTORY_TELEMETRY_DATABASE_PASSWORD: ${ARTIFACTORY_TELEMETRY_DATABASE_PASSWORD:?run scripts/init-deploy.sh}
     volumes:
       - postgres:/var/lib/postgresql/data
+      - ./deploy/timescale-init.sh:/docker-entrypoint-initdb.d/100_artifactory.sh:ro
     healthcheck:
       test: [CMD-SHELL, pg_isready -U artifactory -d artifactory]
       interval: 5s
@@ -49,6 +52,9 @@ services:
       ARTIFACTORY_S3_SECRET_KEY: ${ARTIFACTORY_S3_SECRET_KEY}
       ARTIFACTORY_BOOTSTRAP_USERNAME: ${ARTIFACTORY_BOOTSTRAP_USERNAME:-admin}
       ARTIFACTORY_BOOTSTRAP_PASSWORD: ${ARTIFACTORY_BOOTSTRAP_PASSWORD:?run scripts/init-deploy.sh}
+      ARTIFACTORY_TELEMETRY_ENDPOINT: https://${ARTIFACTORY_GRPC_HOST}:8444
+      ARTIFACTORY_TELEMETRY_URL: https://telemetry:8093
+      ARTIFACTORY_TELEMETRY_TOKEN: ${ARTIFACTORY_TELEMETRY_TOKEN}
     volumes:
       - ./.deploy/pki:/run/artifactory-pki:ro
       - ./.deploy/control:/var/lib/artifactory
@@ -58,6 +64,34 @@ services:
     cap_drop: [ALL]
     read_only: true
     tmpfs: ["/tmp:size=1g,mode=1777"]
+  telemetry:
+    build: .
+    restart: unless-stopped
+    entrypoint: [artifactory-telemetry-service]
+    user: ${ARTIFACTORY_UID:-10001}:${ARTIFACTORY_GID:-10001}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      control:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgres://artifactory_telemetry:${ARTIFACTORY_TELEMETRY_DATABASE_PASSWORD}@postgres:5432/artifactory_telemetry
+      ARTIFACTORY_BUSINESS_DATABASE_URL: postgres://artifactory:${ARTIFACTORY_DATABASE_PASSWORD}@postgres:5432/artifactory
+      ARTIFACTORY_TELEMETRY_TOKEN: ${ARTIFACTORY_TELEMETRY_TOKEN}
+      ARTIFACTORY_TELEMETRY_HTTP_BIND: 0.0.0.0:8093
+      ARTIFACTORY_TELEMETRY_GRPC_BIND: 0.0.0.0:8444
+      ARTIFACTORY_PKI_DIR: /run/artifactory-pki
+      ARTIFACTORY_SERVICE_TLS_CERT: /run/artifactory-pki/server.pem
+      ARTIFACTORY_SERVICE_TLS_KEY: /run/artifactory-pki/server.key
+    volumes:
+      - ./.deploy/pki/ca.pem:/run/artifactory-pki/ca.pem:ro
+      - ./.deploy/pki/server.pem:/run/artifactory-pki/server.pem:ro
+      - ./.deploy/pki/server.key:/run/artifactory-pki/server.key:ro
+    ports:
+      - ${ARTIFACTORY_GRPC_LISTEN:-0.0.0.0}:8444:8444
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
   web:
     build: ./web
     restart: unless-stopped

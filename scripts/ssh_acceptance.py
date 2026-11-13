@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise real SSH Git through the running local acceptance control plane and agent."""
+"""Exercise real SSH Git through the running local acceptance control plane and emissary."""
 
 import argparse
 import getpass

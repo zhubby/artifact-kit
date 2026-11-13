@@ -360,7 +360,7 @@ export function SecretDialog({
         <CopyButton value={value || ""} />
       </div>
       <div className="mt-5 text-xs leading-6 text-muted-foreground">
-        {hint || t("secrets.agentHint")}
+        {hint || t("secrets.emissaryHint")}
       </div>
       <Button className="mt-6 w-full" onClick={close}>
         {t("secrets.saved")}

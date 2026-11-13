@@ -1,0 +1,305 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: agentpools.agents.artifactory.dev
+spec:
+  group: agents.artifactory.dev
+  names:
+    kind: AgentPool
+    plural: agentpools
+    singular: agentpool
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for AgentPoolSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              cpu:
+                default: 250m
+                type: string
+              image:
+                type: string
+              imagePullPolicy:
+                default: IfNotPresent
+                type: string
+              maxActive:
+                format: uint32
+                maximum: 1000.0
+                minimum: 0.0
+                type: integer
+              maxPerProject:
+                format: uint32
+                maximum: 1000.0
+                minimum: 1.0
+                type: integer
+              memory:
+                default: 512Mi
+                type: string
+              runtimeUrl:
+                type: string
+              sourcePool:
+                type: string
+              tlsSecretName:
+                default: ''
+                type: string
+            required:
+            - image
+            - maxActive
+            - maxPerProject
+            - runtimeUrl
+            - sourcePool
+            type: object
+          status:
+            nullable: true
+            properties:
+              message:
+                nullable: true
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                type: string
+              podUid:
+                nullable: true
+                type: string
+            required:
+            - observedGeneration
+            - phase
+            type: object
+        required:
+        - spec
+        title: AgentPool
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: sourcepools.agents.artifactory.dev
+spec:
+  group: agents.artifactory.dev
+  names:
+    kind: SourcePool
+    plural: sourcepools
+    singular: sourcepool
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for SourcePoolSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              controlUrl:
+                type: string
+              cpu:
+                default: 250m
+                type: string
+              image:
+                type: string
+              imagePullPolicy:
+                default: IfNotPresent
+                type: string
+              memory:
+                default: 1Gi
+                type: string
+              publicUrlTemplate:
+                description: |-
+                  Device-reachable download base. Supports {pod}, {pool} and {namespace}.
+                  Internal RPCs continue to use the shard's Kubernetes service address.
+                nullable: true
+                type: string
+              runtimeUrl:
+                type: string
+              secretName:
+                type: string
+              shards:
+                format: int32
+                maximum: 32.0
+                minimum: 1.0
+                type: integer
+              storageClass:
+                type: string
+              storageSize:
+                type: string
+              tlsSecretName:
+                default: ''
+                type: string
+            required:
+            - controlUrl
+            - image
+            - runtimeUrl
+            - secretName
+            - shards
+            - storageClass
+            - storageSize
+            type: object
+            x-kubernetes-validations:
+            - message: source shard removal and PVC changes require an explicit data migration
+              rule: self.shards >= oldSelf.shards && self.storageClass == oldSelf.storageClass && self.storageSize == oldSelf.storageSize
+          status:
+            nullable: true
+            properties:
+              message:
+                nullable: true
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                type: string
+              podUid:
+                nullable: true
+                type: string
+            required:
+            - observedGeneration
+            - phase
+            type: object
+        required:
+        - spec
+        title: SourcePool
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: sourcesnapshots.agents.artifactory.dev
+spec:
+  group: agents.artifactory.dev
+  names:
+    kind: SourceSnapshot
+    plural: sourcesnapshots
+    singular: sourcesnapshot
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for SourceSnapshotSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              digest:
+                type: string
+              snapshotId:
+                type: string
+              sourcePool:
+                type: string
+              sourceUrl:
+                type: string
+            required:
+            - digest
+            - snapshotId
+            - sourcePool
+            - sourceUrl
+            type: object
+            x-kubernetes-validations:
+            - message: execution and snapshot context are immutable
+              rule: self == oldSelf
+          status:
+            nullable: true
+            properties:
+              message:
+                nullable: true
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                type: string
+              podUid:
+                nullable: true
+                type: string
+            required:
+            - observedGeneration
+            - phase
+            type: object
+        required:
+        - spec
+        title: SourceSnapshot
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: agentruns.agents.artifactory.dev
+spec:
+  group: agents.artifactory.dev
+  names:
+    kind: AgentRun
+    plural: agentruns
+    singular: agentrun
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for AgentRunSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              generation:
+                format: int64
+                minimum: 1.0
+                type: integer
+              pool:
+                type: string
+              runId:
+                type: string
+              snapshotDigest:
+                type: string
+              snapshotId:
+                type: string
+            required:
+            - generation
+            - pool
+            - runId
+            - snapshotDigest
+            - snapshotId
+            type: object
+            x-kubernetes-validations:
+            - message: execution and snapshot context are immutable
+              rule: self == oldSelf
+          status:
+            nullable: true
+            properties:
+              message:
+                nullable: true
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                type: string
+              podUid:
+                nullable: true
+                type: string
+            required:
+            - observedGeneration
+            - phase
+            type: object
+        required:
+        - spec
+        title: AgentRun
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

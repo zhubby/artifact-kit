@@ -1,0 +1,84 @@
+name: Emissary Release
+on:
+  push:
+    tags: ['emissary-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing Git tag to publish
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux/amd64
+          - os: ubuntu-24.04-arm
+            platform: linux/arm64
+          - os: macos-latest
+            platform: darwin/arm64
+          - os: macos-15-intel
+            platform: darwin/amd64
+          - os: windows-latest
+            platform: windows/amd64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - name: Install Rust and Protobuf
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy
+          rustup default 1.95.0
+          if [ "$RUNNER_OS" = Linux ]; then sudo apt-get update && sudo apt-get install -y protobuf-compiler; fi
+          if [ "$RUNNER_OS" = macOS ]; then brew install protobuf; fi
+          if [ "$RUNNER_OS" = Windows ]; then choco install protoc --no-progress -y; fi
+      - run: cargo test --locked -p artifactory-emissary --all-targets
+      - run: cargo clippy --locked -p artifactory-emissary --all-targets -- -D warnings
+      - name: Build versioned native executable
+        env:
+          ARTIFACTORY_BUILD_VERSION: ${{ inputs.tag || github.ref_name }}
+        run: |
+          export ARTIFACTORY_BUILD_COMMIT=$(git rev-parse HEAD)
+          sh scripts/cross-build-emissary.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emissary-${{ strategy.job-index }}
+          path: .local/emissary-bin/artifactory-emissary-*
+          include-hidden-files: true
+  publish:
+    needs: native
+    runs-on: ubuntu-latest
+    environment: emissary-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - run: rustup toolchain install 1.95.0 --profile minimal && rustup default 1.95.0
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: emissary-*
+          merge-multiple: true
+          path: .local/emissary-bin
+      - name: Sign manifest and publish immutable assets
+        env:
+          EMISSARY_TAG: ${{ inputs.tag || github.ref_name }}
+          ARTIFACTORY_EMISSARY_RELEASE_SIGNING_SEED: ${{ secrets.EMISSARY_RELEASE_SIGNING_SEED }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          revision=$(git rev-parse HEAD)
+          cargo run --locked --bin emissary-release -- --directory .local/emissary-bin --version "$EMISSARY_TAG" --commit "$revision"
+          gh release create "$EMISSARY_TAG" --verify-tag --title "Emissary $EMISSARY_TAG" --generate-notes .local/emissary-bin/artifactory-emissary-* .local/emissary-bin/emissary-manifest.json .local/emissary-bin/emissary-manifest.sig

@@ -705,6 +705,12 @@ async fn recover_object(repo: &Path, url: &str, oid: &str, auth: &Authentication
 }
 
 pub async fn ensure_available(state: &AppState, snapshot: &Snapshot) -> Result<()> {
+    if let Some(origin) = crate::runtime_bridge::source_origin(state, snapshot.id).await? {
+        let _: Value = crate::runtime_bridge::source(origin)?
+            .post("/v1/metadata", &json!({"snapshot_id":snapshot.id}))
+            .await?;
+        return Ok(());
+    }
     for entry in &snapshot.repositories {
         let row = sqlx::query(
             "SELECT repository_url,credential_id,cache_key FROM source_repositories WHERE id=$1",
@@ -880,7 +886,10 @@ pub async fn descriptor(
     let token = crypto::token();
     sqlx::query("INSERT INTO source_tokens(token_hash,snapshot_id,attempt_id,expires_at) VALUES($1,$2,$3,now()+interval '1 day')")
         .bind(crypto::hash(&token)).bind(snapshot_id).bind(attempt).execute(&state.pool).await?;
-    let root = format!("{}/api/v1/source/{snapshot_id}", state.settings.public_url);
+    let origin = crate::runtime_bridge::source_download_origin(state, snapshot_id)
+        .await?
+        .unwrap_or_else(|| state.settings.public_url.clone());
+    let root = format!("{origin}/api/v1/source/{snapshot_id}");
     Ok(crate::protocol::SourceDescriptor {
         snapshot_id: snapshot_id.to_string(),
         access_token: token,
@@ -906,6 +915,19 @@ pub async fn validate_evidence(
     snapshot: &Snapshot,
     paths: &[String],
 ) -> Result<()> {
+    if let Some(origin) = crate::runtime_bridge::source_origin(state, snapshot.id).await? {
+        let result: Value = crate::runtime_bridge::source(origin)?
+            .post(
+                "/v1/evidence",
+                &json!({"snapshot_id":snapshot.id,"paths":paths}),
+            )
+            .await?;
+        ensure!(
+            result["valid"] == true,
+            "evidence must reference an existing snapshot file"
+        );
+        return Ok(());
+    }
     for path in paths {
         validate_path(path)?;
         let entry = snapshot
@@ -937,6 +959,14 @@ pub async fn inspect_tool(
     name: &str,
     args: &Value,
 ) -> Result<Value> {
+    if let Some(origin) = crate::runtime_bridge::source_origin(state, snapshot_id).await? {
+        return crate::runtime_bridge::source(origin)?
+            .post(
+                "/v1/inspect",
+                &json!({"snapshot_id":snapshot_id,"name":name,"arguments":args}),
+            )
+            .await;
+    }
     let snapshot = load(state, snapshot_id).await?;
     let requested = args
         .get("path")

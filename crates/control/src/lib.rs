@@ -16,5 +16,6 @@ pub mod state;
 pub mod storage;
 
 pub mod protocol {
-    tonic::include_proto!("artifactory.agent.v1");
+    pub use artifactory_emissary_protocol::*;
 }
+pub mod runtime_bridge;

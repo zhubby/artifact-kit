@@ -11,7 +11,7 @@
 - 注册在参数校验后、密码哈希前消耗限流额度：每实例滚动 5 分钟最多受理 10 次有效格式的尝试，重复用户名和后续失败也消耗额度；额度持久化在 `registration_attempt` 审计中，通过数据库事务锁防止并发越限。超限返回 `429` 和 `Retry-After`（秒）；重启不会重置额度，其他接口和登录限流不受影响。
 - `GET /auth/me`、`POST /auth/logout`。
 - Cookie 写请求需要 `x-artifactory-csrf: 1`，有 Origin 时必须精确匹配 `ARTIFACTORY_PUBLIC_URL`。Bearer Token 不使用 cookie 身份。
-- 管理员：账户、项目授权、凭据、节点池、Agent 注册与节点管理。操作者：构建、取消、重试和内部发布。只读：查询与下载。
+- 管理员：账户、项目授权、凭据、节点池、Emissary 注册与节点管理。操作者：构建、取消、重试和内部发布。只读：查询与下载。
 - API Token 明确绑定项目 ID 列表与 `read/build/release` scopes，同时不能超过所属账户角色；不能调用管理 API 或再创建 Token。
 - session 有效期 24 小时；Token 有效期 1 到 365 天。登录失败按账号持久化限流，反向代理仍应部署连接 / IP 级保护。
 
@@ -26,6 +26,11 @@
 | `GET, POST /pools` | 创建 `{name}` |
 | `POST /enrollment-tokens` | `{pool_id}`，返回一次性令牌 |
 | `GET /nodes` | 实际能力、诊断、slots、online、active_jobs |
+| `GET /nodes/{id}/telemetry` | viewer 会话；最新主机采样、fresh 与版本化清单 |
+| `GET /nodes/{id}/inventory` | viewer 会话；最近 100 次清单观察，附 truncated |
+| `GET /nodes/{id}/telemetry/history` | viewer 会话；主机时序，显式 from / to / resolution |
+| `GET /attempts/{id}/telemetry` | 项目 read；构建资源时序，显式 from / to / resolution |
+| `GET /attempts/{id}/processes` | 项目 read；托管进程明细，显式 from / to / resolution=raw |
 | `PATCH /nodes/{id}` | `{draining,revoked,slots,labels,signing_profiles,pool_id}`；吊销不可逆 |
 | `GET, POST /credentials` | 创建 `{name,kind,username,secret,known_hosts}`；kind 为 https / ssh |
 | `GET /audit` | 最近 200 条审计事件，仅管理员 |
@@ -42,7 +47,7 @@
 | `GET /ai-workers` | 管理员；在线、排空、吊销、证书期限和活动规划任务 |
 | `POST /ai-enrollment-tokens` | 管理员；15 分钟一次性 worker 注册令牌 |
 | `PATCH /ai-workers/{id}` | `{draining,revoked}`；吊销不可逆 |
-| `GET /source-metrics` | 管理员；平台/Agent 缓存命中、磁盘占用及下载字节，fetched_bytes 是磁盘增长 |
+| `GET /source-metrics` | 管理员；平台/Emissary 缓存命中、磁盘占用及下载字节，fetched_bytes 是磁盘增长 |
 | `POST /builds/{id}/cancel` | 空对象，停止队列和在途任务 |
 | `POST /jobs/{id}/retry` | 空对象，仅失败 / lost / canceled 且尚未发布的 job |
 | `POST /builds/{id}/publish` | `{version?}`；既有版本不可更改；重试复用制品 |
@@ -53,6 +58,8 @@
 | `GET /releases/{id}` | 不可变版本与制品目录 |
 
 创建资源返回 `{id}`；Token 类创建还返回明文值；修改操作通常返回 `{ok:true}`。所有查询使用真实数据库，不返回演示对象。
+
+遥测历史使用 ISO 8601 `from/to` 左闭右开区间，`resolution=raw|minute|hour`，默认 minute；单次范围分别限 6 小时、2 天、31 天，并受数据保留期约束。历史及清单查询返回 `{"samples":[],"truncated":false}`，结果超过行数或字节预算时标记截断。采集范围、未知值、权限和保留策略见 [时序观测](telemetry.md)。
 
 ## 触发示例
 
@@ -69,6 +76,6 @@ curl --fail-with-body -X POST 'https://build.example.com/api/v1/projects/PROJECT
 
 当前列表为内部小团队规模的有界查询，并未提供全量导出、复杂分页或外部商店发布 API；Webhook / OIDC / 多实例并非隐藏开启的功能。
 
-## Agent 版本与升级
+## Emissary 版本与升级
 
-版本目录、节点 / 节点池目标、执行记录、重试及取消见 [Agent OTA 管理接口](agent-ota.md#管理接口)。这些管理写操作只允许管理员会话，项目 API Token 不获得升级权限。
+版本目录、节点 / 节点池目标、执行记录、重试及取消见 [Emissary OTA 管理接口](emissary-ota.md#管理接口)。这些管理写操作只允许管理员会话，项目 API Token 不获得升级权限。

@@ -1,4 +1,4 @@
-# Local development only. Bind browser/Agent URLs to the actual node IP when
+# Local development only. Bind browser/Emissary URLs to the actual node IP when
 # using NodePorts, or port-forward these same ports to 127.0.0.1.
 development:
   insecureHttp: true

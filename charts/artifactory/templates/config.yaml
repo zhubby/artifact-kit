@@ -23,6 +23,18 @@ data:
   ARTIFACTORY_S3_PUBLIC_ENDPOINT: {{ .Values.s3.publicEndpoint | trimSuffix "/" | quote }}
   ARTIFACTORY_S3_BUCKET: {{ .Values.s3.bucket | quote }}
   ARTIFACTORY_S3_REGION: {{ .Values.s3.region | quote }}
+  {{- if .Values.telemetry.enabled }}
+  ARTIFACTORY_TELEMETRY_ENDPOINT: {{ .Values.telemetry.endpoint | quote }}
+  ARTIFACTORY_TELEMETRY_URL: {{ printf "https://%s-telemetry:8093" (include "artifactory.fullname" .) | quote }}
+  {{- end }}
+  {{- if .Values.planning.runtimeUrl }}
+  ARTIFACTORY_RUNTIME_URL: {{ .Values.planning.runtimeUrl | quote }}
+  ARTIFACTORY_SOURCE_URLS: {{ required "planning.sourceUrls is required with Runtime" .Values.planning.sourceUrls | quote }}
+  ARTIFACTORY_AGENT_POOL: {{ .Values.planning.agentPool | quote }}
+  {{- if .Values.planning.serviceCaSecretName }}
+  ARTIFACTORY_SERVICE_CA: /run/service-ca/ca.crt
+  {{- end }}
+  {{- end }}
   Caddyfile: |
     {
       admin off

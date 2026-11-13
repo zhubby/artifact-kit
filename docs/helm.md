@@ -1,6 +1,6 @@
 # Helm / Kubernetes 部署
 
-Chart 位于 `charts/artifactory`，包含单实例 control、Next.js / Caddy 网关、PostgreSQL 17、私有 SeaweedFS S3，独立 Pi AI worker，以及四个独立 PVC。control、数据库、S3 使用 Recreate 升级，避免双调度器或两个写进程同时挂载同一数据目录；升级存在短暂停机。
+Chart 位于 `charts/artifactory`，包含单实例 control、Next.js / Caddy 网关、TimescaleDB 2.32 / PostgreSQL 17、私有 SeaweedFS S3、独立 Pi AI worker 和 Rust Telemetry 服务，以及四个独立 PVC。control、数据库、S3 使用 Recreate 升级，避免双调度器或两个写进程同时挂载同一数据目录；升级存在短暂停机。
 
 `auth.registrationEnabled` 默认 `true`，访客可自助注册为全实例只读用户，查看和下载全部项目的构建与产物。仅允许管理员分配账号的部署应在安装或升级时设置 `--set auth.registrationEnabled=false`；该开关映射到 control 的 `ARTIFACTORY_REGISTRATION_ENABLED`，不会停用已有账号或会话。
 
@@ -33,6 +33,8 @@ kubectl --context YOUR_CONTEXT apply \
 `--output` 必须是新目录；脚本拒绝覆盖。生成目录与私钥只对当前用户开放。`credentials.json` 是 Kubernetes Secret，保存数据库口令、加密主密钥、S3 身份及管理员初始口令；`pki.json` 包含签发 CA、服务器证书及私钥。`access.json` 提供初始登录信息，`pki/ca.pem` 通过可信渠道交给 Agent。均保留在 Git 忽略的 `.deploy/` 中，应离线加密备份。
 
 Chart 引用已有 Secret，**不生成或轮换任何密钥**。默认名称为 `<release>-credentials` / `<release>-pki`，也可设置 `secrets.credentials` / `secrets.pki`。使用 `fullnameOverride` 时，初始化脚本的 `--resource-prefix` 必须与之对应。凭据中的数据库 URL 使用同一资源前缀的 PostgreSQL Service。
+
+默认数据库镜像为 `timescale/timescaledb:2.32.0-pg17`。新卷自动初始化独立遥测库与非管理员应用角色；`credentials.json` 另包含 `telemetry-database-password`、`telemetry-database-url` 和 `telemetry-token`。`telemetry.endpoint` 应填写 Emissary 可访问、证书 SAN 覆盖的 HTTPS 8444 地址；8093 只供 Control 内部查询。已有 PostgreSQL 卷不自动转换，部署配置与 TimescaleDB 恢复步骤见 [时序观测](telemetry.md)。
 
 CA 有效期十年，gRPC 服务器证书一年；到期前使用原 CA 为正确 SAN 续签，更新 PKI Secret 并安排 control 重启。不要重新初始化整个目录来续签，亦不要替换已有部署的 master key。
 

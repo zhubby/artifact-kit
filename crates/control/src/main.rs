@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, ensure};
 use artifactory_control::{
     api, auth,
-    grpc::AgentService,
+    grpc::EmissaryService,
     planning::PlanningService,
     protocol::{
         control_server::ControlServer, enrollment_server::EnrollmentServer,
@@ -46,6 +46,7 @@ async fn main() -> Result<()> {
         .max_connections(20)
         .connect(&settings.database_url)
         .await?;
+    artifactory_database::require_timescale(&pool).await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
     if matches!(arguments.command, Some(Command::Migrate)) {
         return Ok(());
@@ -83,11 +84,11 @@ async fn main() -> Result<()> {
         .identity(server_identity)
         .client_ca_root(ca)
         .client_auth_optional(true);
-    let agent = AgentService(state.clone());
+    let emissary = EmissaryService(state.clone());
     let grpc = Server::builder()
         .tls_config(tls)?
-        .add_service(EnrollmentServer::new(agent.clone()).max_decoding_message_size(64 * 1024))
-        .add_service(ControlServer::new(agent).max_decoding_message_size(128 * 1024))
+        .add_service(EnrollmentServer::new(emissary.clone()).max_decoding_message_size(64 * 1024))
+        .add_service(ControlServer::new(emissary).max_decoding_message_size(128 * 1024))
         .add_service(
             PlannerEnrollmentServer::new(PlanningService(state.clone()))
                 .max_decoding_message_size(32 * 1024),

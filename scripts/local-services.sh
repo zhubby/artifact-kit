@@ -26,10 +26,10 @@ finally:
     if os.path.exists(temporary):
         os.unlink(temporary)
 PY
-if ! docker inspect artifactory-postgres-test >/dev/null 2>&1; then
-  docker run -d --name artifactory-postgres-test -p 127.0.0.1:15432:5432 -e POSTGRES_DB=artifactory -e POSTGRES_USER=artifactory -e POSTGRES_PASSWORD=local-test-only -v artifactory-postgres-test:/var/lib/postgresql/data "${ARTIFACTORY_POSTGRES_IMAGE:-postgres:17-alpine}" >/dev/null
+if ! docker inspect artifactory-timescaledb-test >/dev/null 2>&1; then
+  docker run -d --name artifactory-timescaledb-test -p 127.0.0.1:15432:5432 -e POSTGRES_DB=artifactory -e POSTGRES_USER=artifactory -e POSTGRES_PASSWORD=local-test-only -e TIMESCALEDB_TELEMETRY=off -e ARTIFACTORY_TELEMETRY_DATABASE_PASSWORD=local-telemetry-test-only -v artifactory-timescaledb-test:/var/lib/postgresql/data -v "$(pwd)/deploy/timescale-init.sh:/docker-entrypoint-initdb.d/100_artifactory.sh:ro" "${ARTIFACTORY_POSTGRES_IMAGE:-timescale/timescaledb:2.32.0-pg17}" >/dev/null
 else
-  docker start artifactory-postgres-test >/dev/null
+  docker start artifactory-timescaledb-test >/dev/null
 fi
 if ! docker inspect artifactory-s3-test >/dev/null 2>&1; then
   docker run -d --name artifactory-s3-test -p 127.0.0.1:19000:8333 -v "$(pwd)/.local/s3:/data" -v "$(pwd)/.local/s3.json:/etc/seaweed/s3.json:ro" -v "$(pwd)/deploy/seaweed-entrypoint.sh:/run/artifactory-s3-entrypoint.sh:ro" --entrypoint /bin/sh "${ARTIFACTORY_S3_IMAGE:-chrislusf/seaweedfs:4.53}" /run/artifactory-s3-entrypoint.sh mini -dir=/data -s3.port=8333 -s3.config=/run/artifactory-s3/s3.json -s3.iam.readOnly=true -admin.ui=false -ip.bind=0.0.0.0 >/dev/null
@@ -37,4 +37,4 @@ else
   docker start artifactory-s3-test >/dev/null
 fi
 python3 scripts/wait_local_services.py
-printf '%s\n' 'Local PostgreSQL: 127.0.0.1:15432; authenticated S3: 127.0.0.1:19000.'
+printf '%s\n' 'Local TimescaleDB: 127.0.0.1:15432; authenticated S3: 127.0.0.1:19000. Existing PostgreSQL containers/volumes are preserved.'

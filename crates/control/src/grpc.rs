@@ -1,6 +1,6 @@
 use crate::{
     crypto, pki,
-    protocol::{self, AgentEvent, Command},
+    protocol::{self, Command, EmissaryEvent},
     recipe::safe_relative_path,
     state::{AppState, Connection},
 };
@@ -17,12 +17,12 @@ use tonic::{
 use uuid::Uuid;
 
 #[derive(Clone)]
-pub struct AgentService(pub AppState);
+pub struct EmissaryService(pub AppState);
 
 const VALID_ATTEMPT_QUERY: &str = "SELECT EXISTS(SELECT 1 FROM attempts a JOIN nodes n ON n.id=a.node_id JOIN jobs j ON j.id=a.job_id JOIN builds b ON b.id=j.build_id WHERE a.id=$1 AND a.node_id=$2 AND a.lease_token=$3 AND a.status='running' AND a.lease_expires_at>clock_timestamp() AND NOT n.revoked AND n.certificate_expires_at>clock_timestamp() AND ($4 OR NOT b.cancel_requested))";
 
 fn internal(error: impl std::fmt::Display) -> Status {
-    tracing::error!(%error,"agent request failed");
+    tracing::error!(%error,"emissary request failed");
     Status::internal("control plane operation failed")
 }
 
@@ -118,7 +118,7 @@ async fn lock_artifact_attempt(
 }
 
 #[tonic::async_trait]
-impl protocol::enrollment_server::Enrollment for AgentService {
+impl protocol::enrollment_server::Enrollment for EmissaryService {
     async fn enroll(
         &self,
         request: Request<protocol::EnrollRequest>,
@@ -158,24 +158,30 @@ impl protocol::enrollment_server::Enrollment for AgentService {
             .await
             .map_err(internal)?;
         Ok(Response::new(protocol::EnrollReply {
-            agent_id: id.to_string(),
+            emissary_id: id.to_string(),
             certificate_pem: certificate,
             ca_pem: tokio::fs::read_to_string(state.settings.pki_dir.join("ca.pem"))
                 .await
                 .map_err(internal)?,
             heartbeat_seconds: 10,
             lease_seconds: 90,
+            telemetry_endpoint: state
+                .settings
+                .telemetry
+                .as_ref()
+                .map(|t| t.endpoint.clone())
+                .unwrap_or_default(),
         }))
     }
 }
 
 #[tonic::async_trait]
-impl protocol::control_server::Control for AgentService {
+impl protocol::control_server::Control for EmissaryService {
     type ConnectStream = ReceiverStream<Result<Command, Status>>;
 
     async fn connect(
         &self,
-        request: Request<Streaming<AgentEvent>>,
+        request: Request<Streaming<EmissaryEvent>>,
     ) -> Result<Response<Self::ConnectStream>, Status> {
         let node = identity(&self.0, &request).await?;
         let mut stream = request.into_inner();
@@ -183,7 +189,9 @@ impl protocol::control_server::Control for AgentService {
             .await
             .map_err(|_| Status::deadline_exceeded("hello required"))??
             .ok_or_else(|| Status::invalid_argument("hello required"))?;
-        if hello.kind != "hello" || hello.agent_id != node.to_string() || hello.protocol_major != 1
+        if hello.kind != "hello"
+            || hello.emissary_id != node.to_string()
+            || hello.protocol_major != 1
         {
             return Err(Status::failed_precondition(
                 "invalid hello or protocol version",
@@ -218,7 +226,7 @@ impl protocol::control_server::Control for AgentService {
                         return Ok::<(), Status>(());
                     };
                     valid_node(&state.pool, node, session).await?;
-                    if event.agent_id != node.to_string() {
+                    if event.emissary_id != node.to_string() {
                         return Err(Status::permission_denied("node ID mismatch"));
                     }
                     if event.kind == "heartbeat" {
@@ -452,7 +460,7 @@ async fn heartbeat(
     state: &AppState,
     node: Uuid,
     session: Uuid,
-    event: &AgentEvent,
+    event: &EmissaryEvent,
     sender: &mpsc::Sender<Result<Command, Status>>,
 ) -> Result<(), Status> {
     valid_node(&state.pool, node, session).await?;
@@ -521,7 +529,7 @@ async fn heartbeat(
         valid_node(&state.pool, node, session).await?;
         sender
             .send(Ok(Command {
-                kind: "agent_health".into(),
+                kind: "emissary_health".into(),
                 request_id: event.command_id.clone(),
                 ..Default::default()
             }))
@@ -535,7 +543,7 @@ async fn apply_event(
     state: &AppState,
     node: Uuid,
     session: Uuid,
-    event: &AgentEvent,
+    event: &EmissaryEvent,
     sender: &mpsc::Sender<Result<Command, Status>>,
 ) -> Result<(), Status> {
     let id = Uuid::parse_str(&event.attempt_id)
@@ -617,7 +625,7 @@ async fn apply_event(
             {
                 return Err(Status::invalid_argument("invalid source cache event"));
             }
-            let updated=sqlx::query("UPDATE source_repositories r SET agent_cache_hits=agent_cache_hits+CASE WHEN $2 THEN 1 ELSE 0 END,agent_cache_misses=agent_cache_misses+CASE WHEN $2 THEN 0 ELSE 1 END WHERE r.id IN (SELECT (entry->>'repository_id')::uuid FROM source_snapshots s CROSS JOIN LATERAL jsonb_array_elements(s.manifest->'repositories') entry JOIN attempts a ON a.source_snapshot_id=s.id WHERE a.id=$1 AND entry->>'path'=$3 AND entry->>'commit'=$4)")
+            let updated=sqlx::query("UPDATE source_repositories r SET emissary_cache_hits=emissary_cache_hits+CASE WHEN $2 THEN 1 ELSE 0 END,emissary_cache_misses=emissary_cache_misses+CASE WHEN $2 THEN 0 ELSE 1 END WHERE r.id IN (SELECT (entry->>'repository_id')::uuid FROM source_snapshots s CROSS JOIN LATERAL jsonb_array_elements(s.manifest->'repositories') entry JOIN attempts a ON a.source_snapshot_id=s.id WHERE a.id=$1 AND entry->>'path'=$3 AND entry->>'commit'=$4)")
                 .bind(id).bind(payload["hit"].as_bool().unwrap()).bind(payload["path"].as_str().unwrap()).bind(payload["commit"].as_str().unwrap()).execute(&mut *transaction).await.map_err(internal)?;
             if updated.rows_affected() != 1 {
                 return Err(Status::invalid_argument(
@@ -702,7 +710,7 @@ async fn apply_event(
                 "source",
                 "authorization",
                 "artifact_transport",
-                "agent",
+                "emissary",
             ]
             .contains(&failure)
             {

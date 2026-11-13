@@ -10,9 +10,9 @@ import { setTimeout as delay } from "node:timers/promises";
 interface Configuration { endpoint: string; ca_file: string; certificate_file: string; key_file: string; server_name?: string; worker_id?: string; name?: string }
 interface LeasedTask { run_id: string; lease_token: string; context_json: string; model_config_json: string; timeout_seconds: number; max_calls: number }
 const here = dirname(fileURLToPath(import.meta.url));
-const schema = loader.loadSync(resolve(here, "../../proto/artifactory/agent/v1/agent.proto"), { keepCase: true, defaults: true, longs: Number });
-const definitions = grpc.loadPackageDefinition(schema) as unknown as { artifactory: { agent: { v1: Record<string, grpc.ServiceClientConstructor> } } };
-const services = definitions.artifactory.agent.v1;
+const schema = loader.loadSync(resolve(here, "../../proto/artifactory/emissary/v1/emissary.proto"), { keepCase: true, defaults: true, longs: Number });
+const definitions = grpc.loadPackageDefinition(schema) as unknown as { artifactory: { emissary: { v1: Record<string, grpc.ServiceClientConstructor> } } };
+const services = definitions.artifactory.emissary.v1;
 
 function call(client: grpc.Client, method: string, payload: unknown): Promise<Record<string, any>> {
   return new Promise((accept, reject) => {
@@ -49,7 +49,7 @@ async function enroll(config: Configuration, path: string) {
     const temporaryCertificate = `${config.certificate_file}.enroll-${process.pid}`;
     await writeFile(temporaryCertificate, response.certificate_pem, { mode: 0o600, flag: "wx" });
     await rename(temporaryKey, config.key_file); await rename(temporaryCertificate, config.certificate_file);
-    config.worker_id = response.agent_id;
+    config.worker_id = response.worker_id;
     const temporary = `${path}.tmp-${process.pid}`;
     await writeFile(temporary, JSON.stringify(config, null, 2), { mode: 0o600 }); await rename(temporary, path);
     console.log(`AI worker enrolled: ${config.worker_id}`);

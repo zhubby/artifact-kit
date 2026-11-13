@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a candidate Agent on an isolated Mac mini identity, using only control.
+"""Run a candidate Emissary on an isolated Mac mini identity, using only control.
 
 The isolated Tailnet ingress exposes control, never the upstream Git/LFS fixture.
 The existing native service, config and identity are left in place for preflight.
@@ -48,7 +48,7 @@ def main():
         return value.stdout.decode().strip()
     stage='/Users/codehub/.config/artifactory-ai-acceptance/'+run.name+'-'+time.strftime('%H%M%S')
     remote('from pathlib import Path;import os;os.umask(0o077);Path('+repr(stage)+').mkdir(parents=True,exist_ok=False)')
-    binary=ROOT/'.local/ai-implementation/artifactory-agent'
+    binary=ROOT/'target/debug/artifactory-emissary'
     scp=['scp','-q','-i',str(args.identity.resolve()),'-o','IdentitiesOnly=yes','-o','BatchMode=yes']
     subprocess.run(scp+[str(binary),str(ca),args.ssh_host+':'+stage+'/'],check=True,timeout=90)
     node=pool=project=pid=None
@@ -62,14 +62,14 @@ def main():
         payload={'stage':stage,'token':token,'endpoint':endpoint}
         result=json.loads(remote('''import os,json,subprocess
 from pathlib import Path
-os.umask(0o077);p=json.load(__import__('sys').stdin);stage=Path(p['stage']);binary=stage/'artifactory-agent';binary.chmod(0o700)
+os.umask(0o077);p=json.load(__import__('sys').stdin);stage=Path(p['stage']);binary=stage/'artifactory-emissary';binary.chmod(0o700)
 env={'PATH':'/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin','HOME':str(stage),'LANG':'en_US.UTF-8','ARTIFACTORY_ENROLLMENT_TOKEN':p['token']}
-subprocess.run([str(binary),'register','--config',str(stage/'agent.json'),'--endpoint',p['endpoint'],'--ca',str(stage/'ca.pem'),'--root',str(stage/'data'),'--name','isolated-macmini-ai','--allow-http-uploads'],env=env,stdout=subprocess.DEVNULL,check=True)
-config=json.loads((stage/'agent.json').read_text());config['signing_profiles']={'adhoc-test':{}};config['git_ca_file']=str(stage/'ca.pem');(stage/'agent.json').write_text(json.dumps(config));env.pop('ARTIFACTORY_ENROLLMENT_TOKEN')
-with (stage/'agent.log').open('ab') as log:process=subprocess.Popen([str(binary),'run','--config',str(stage/'agent.json')],env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
-(stage/'agent.pid').write_text(str(process.pid));print(json.dumps({'node_id':config['agent_id'],'pid':process.pid}))
+subprocess.run([str(binary),'register','--config',str(stage/'emissary.json'),'--endpoint',p['endpoint'],'--ca',str(stage/'ca.pem'),'--root',str(stage/'data'),'--name','isolated-macmini-ai','--allow-http-uploads'],env=env,stdout=subprocess.DEVNULL,check=True)
+config=json.loads((stage/'emissary.json').read_text());config['signing_profiles']={'adhoc-test':{}};config['git_ca_file']=str(stage/'ca.pem');(stage/'emissary.json').write_text(json.dumps(config));env.pop('ARTIFACTORY_ENROLLMENT_TOKEN')
+with (stage/'emissary.log').open('ab') as log:process=subprocess.Popen([str(binary),'run','--config',str(stage/'emissary.json')],env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
+(stage/'emissary.pid').write_text(str(process.pid));print(json.dumps({'node_id':config['emissary_id'],'pid':process.pid}))
 ''',payload))
-        node,pid=result['node_id'],result['pid'];evidence.update(node_id=node,remote_stage=stage,agent_sha256=hashlib.sha256(binary.read_bytes()).hexdigest())
+        node,pid=result['node_id'],result['pid'];evidence.update(node_id=node,remote_stage=stage,emissary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest())
         api('/nodes/'+node,{'pool_id':pool,'slots':1,'labels':{},'draining':False,'revoked':False,'signing_profiles':['adhoc-test']},'PATCH')
         for _ in range(120):
             detail=next(n for n in api('/nodes') if n['id']==node)
@@ -102,7 +102,7 @@ with (stage/'agent.log').open('ab') as log:process=subprocess.Popen([str(binary)
         if pid:
             remote('import os,signal;os.kill('+str(pid)+',signal.SIGTERM)')
             time.sleep(2)
-            subprocess.run(scp+[args.ssh_host+':'+stage+'/agent.log',str(run/'macmini-agent.log')],check=False,timeout=30)
+            subprocess.run(scp+[args.ssh_host+':'+stage+'/emissary.log',str(run/'macmini-emissary.log')],check=False,timeout=30)
         if node:
             settings=next(n for n in api('/nodes') if n['id']==node)
             api('/nodes/'+node,{**{k:settings[k] for k in ['pool_id','slots','labels','signing_profiles']},'draining':True,'revoked':True},'PATCH')

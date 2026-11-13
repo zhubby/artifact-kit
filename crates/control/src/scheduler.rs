@@ -12,6 +12,29 @@ use std::time::Duration;
 use uuid::Uuid;
 
 pub fn start(state: AppState) {
+    if std::env::var("ARTIFACTORY_RUNTIME_URL").is_ok() {
+        let bridge = state.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Err(error) = crate::runtime_bridge::deliver_intents(&bridge).await {
+                    tracing::warn!(%error,"runtime intent delivery deferred");
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        });
+        for _ in 0..8 {
+            let resolver = state.clone();
+            tokio::spawn(async move {
+                loop {
+                    if let Err(error) = crate::runtime_bridge::resolve_remote_next(&resolver).await
+                    {
+                        tracing::warn!(%error,"remote source resolution deferred");
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            });
+        }
+    }
     let cache = state.clone();
     tokio::spawn(async move {
         let quota = std::env::var("ARTIFACTORY_SOURCE_CACHE_BYTES")
@@ -54,7 +77,7 @@ async fn resolve_next(state: &AppState) -> Result<()> {
     if !acquired {
         return Ok(());
     }
-    let Some(row) = sqlx::query("SELECT b.id,b.project_id,b.requested_ref,b.parameters,b.selected_targets,b.release_version,b.goal,b.planning_context,b.model_config_snapshot,b.source_repository_url AS repository_url,b.source_credential_id AS credential_id,p.signing_profiles FROM builds b JOIN projects p ON p.id=b.project_id WHERE b.status='resolving' AND NOT b.cancel_requested ORDER BY b.created_at LIMIT 1").fetch_optional(&state.pool).await? else { return Ok(()); };
+    let Some(row) = sqlx::query("SELECT b.id,b.project_id,b.requested_ref,b.parameters,b.selected_targets,b.release_version,b.goal,b.planning_context,b.model_config_snapshot,b.source_repository_url AS repository_url,b.source_credential_id AS credential_id,p.signing_profiles FROM builds b JOIN projects p ON p.id=b.project_id WHERE b.status='resolving' AND b.planner_backend='poll' AND NOT b.cancel_requested ORDER BY b.created_at LIMIT 1").fetch_optional(&state.pool).await? else { return Ok(()); };
     let id: Uuid = row.get("id");
     let result = async {
         if row.get::<Option<String>,_>("goal").is_some() {

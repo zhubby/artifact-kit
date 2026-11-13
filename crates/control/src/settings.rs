@@ -19,6 +19,14 @@ pub struct Settings {
     pub s3_region: String,
     pub s3_access_key: String,
     pub s3_secret_key: String,
+    pub telemetry: Option<TelemetrySettings>,
+}
+
+#[derive(Clone)]
+pub struct TelemetrySettings {
+    pub endpoint: String,
+    pub query_url: String,
+    pub token: String,
 }
 
 impl Settings {
@@ -48,10 +56,39 @@ impl Settings {
             );
         }
         let decoded = STANDARD.decode(required("ARTIFACTORY_MASTER_KEY")?)?;
+        let telemetry = match env::var("ARTIFACTORY_TELEMETRY_ENDPOINT") {
+            Ok(endpoint) if !endpoint.is_empty() => {
+                let address = url::Url::parse(&endpoint)?;
+                ensure!(
+                    address.scheme() == "https"
+                        && address.host_str().is_some()
+                        && address.username().is_empty()
+                        && address.password().is_none()
+                        && address.path() == "/"
+                        && address.query().is_none()
+                        && address.fragment().is_none(),
+                    "telemetry endpoint requires an HTTPS host and port"
+                );
+                let query_url = required("ARTIFACTORY_TELEMETRY_URL")?;
+                artifactory_runtime_protocol::service::endpoint(&query_url)?;
+                let token = required("ARTIFACTORY_TELEMETRY_TOKEN")?;
+                ensure!(
+                    token.len() >= 32,
+                    "telemetry service token must contain at least 32 characters"
+                );
+                Some(TelemetrySettings {
+                    endpoint,
+                    query_url,
+                    token,
+                })
+            }
+            _ => None,
+        };
         let master_key: [u8; 32] = decoded.try_into().map_err(|_| {
             anyhow::anyhow!("ARTIFACTORY_MASTER_KEY must contain 32 base64-encoded bytes")
         })?;
         Ok(Self {
+            telemetry,
             database_url: required("DATABASE_URL")?,
             http_bind: env::var("ARTIFACTORY_HTTP_BIND")
                 .unwrap_or_else(|_| "127.0.0.1:8080".into()),

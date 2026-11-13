@@ -70,7 +70,7 @@ impl Storage {
             .to_string()
     }
 
-    pub fn agent_download_url(&self, key: &str) -> String {
+    pub fn emissary_download_url(&self, key: &str) -> String {
         self.public_bucket
             .get_object(Some(&self.credentials), key)
             .sign(Duration::from_secs(900))

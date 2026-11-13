@@ -17,16 +17,14 @@ jobs:
         run: |
           helm lint charts/artifactory --strict
           helm lint charts/artifactory --strict -f charts/artifactory/values-kind.yaml
+          helm lint charts/artifactory-operator --strict
+          helm template native charts/artifactory-operator > /dev/null
           helm template artifactory charts/artifactory --set ingress.enabled=true > /dev/null
           helm template artifactory charts/artifactory -f charts/artifactory/values-kind.yaml > /dev/null
           if helm template artifactory charts/artifactory --set console.publicUrl=http://build.example.com > /dev/null 2>&1; then
             echo 'Production HTTP must be rejected' >&2
             exit 1
           fi
-      - uses: actions/setup-go@v5
-        with:
-          go-version: 1.27.x
-          cache-dependency-path: agent/go.sum
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -39,10 +37,17 @@ jobs:
       - run: sh scripts/local-services.sh
       - run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
       - run: cargo fmt --all --check && cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked --all-targets -- --include-ignored
-      - run: go vet ./... && go test -race ./... && CGO_ENABLED=0 go build -o bin/artifactory-agent ./cmd/artifactory-agent
-        working-directory: agent
-      - run: sh scripts/cross-build-agent.sh
+      - name: Rust unit, Runtime/Source, business and Timescale telemetry regressions
+        run: |
+          set -a; source .local/env; set +a
+          cargo test --locked --workspace --all-targets -- --include-ignored --skip live_emissary_protocol --skip native_service_lifecycle
+      - name: Generated CRDs match both release manifests
+        run: |
+          cargo run --locked -q -p artifactory-operator --bin crdgen > /tmp/artifactory-crds.yaml
+          diff -u operator/config/crd/resources.yaml /tmp/artifactory-crds.yaml
+          diff -u charts/artifactory-operator/crds/resources.yaml /tmp/artifactory-crds.yaml
+      - run: cargo build --locked --bin artifactory-emissary
+      - run: sh scripts/cross-build-emissary.sh
       - run: npm ci && npm run typecheck && npm run build && npx playwright install --with-deps chromium
         working-directory: web
       - name: Frontend locales, themes and motion
@@ -51,7 +56,7 @@ jobs:
         env:
           ARTIFACTORY_UI_PRODUCTION: '1'
       - run: cargo build --locked --bin artifactory-control
-      - name: Real Rust / Go / PostgreSQL / private S3 / browser
+      - name: Real Rust Control / Emissary / TimescaleDB / private S3 / browser
         shell: bash
         run: |
           set -euo pipefail
@@ -76,10 +81,10 @@ jobs:
           test -f .local/acceptance/latest.json
           export ARTIFACTORY_LIVE_TESTS=1
           export ARTIFACTORY_LIVE_S3_CONTAINER=artifactory-s3-test
-          ARTIFACTORY_LIVE_AGENT_CONFIG="$(python3 -c 'import json; print(json.load(open(".local/acceptance/latest.json"))["agent_config"])')"
+          ARTIFACTORY_LIVE_EMISSARY_CONFIG="$(python3 -c 'import json; print(json.load(open(".local/acceptance/latest.json"))["emissary_config"])')"
           ARTIFACTORY_LIVE_PROJECT_ID="$(python3 -c 'import json; print(json.load(open(".local/acceptance/latest.json"))["project_id"])')"
-          export ARTIFACTORY_LIVE_AGENT_CONFIG ARTIFACTORY_LIVE_PROJECT_ID
-          (cd agent && go test -race -v ./internal/client -run TestLiveRustGoProtocol | tee ../.local/protocol-live.log)
+          export ARTIFACTORY_LIVE_EMISSARY_CONFIG ARTIFACTORY_LIVE_PROJECT_ID
+          cargo test --locked -p artifactory-emissary --test live_protocol -- --ignored --nocapture | tee .local/protocol-live.log
           (cd web && npm test)
           python3 -u scripts/ssh_acceptance.py --sudo-sshd
           cleanup
@@ -97,15 +102,81 @@ jobs:
             .local/protocol-live.log
             .local/web.log
             .local/acceptance/*/control.log
-            .local/acceptance/*/agent.log
+            .local/acceptance/*/emissary.log
             .local/acceptance/*/sshd.log
             .local/acceptance/*/evidence.json
             web/test-results/
             web/playwright-report/
             .local/frontend-evidence/
-  native-agent:
-    name: native-agent (${{ matrix.os }})
-    timeout-minutes: 15
+  kubernetes-pi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.27.x
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: operator
+          node_image: kindest/node:v1.37.0
+          config: tests/operator/acceptance/kind-cilium.yaml
+          kubectl_version: v1.37.0
+          wait: 0s
+      - name: Install Cilium with policy enforcement during Pod creation
+        run: |
+          helm upgrade --install cilium cilium --repo https://helm.cilium.io --version 1.20.4 -n kube-system \
+            --set operator.replicas=1 --set envoy.enabled=false --set l7Proxy=false --set hubble.enabled=false \
+            --set kubeProxyReplacement=false --set ipam.mode=kubernetes \
+            --set cgroup.autoMount.enabled=false --set cgroup.hostRoot=/sys/fs/cgroup --wait --timeout 5m
+          kubectl wait nodes --all --for=condition=Ready --timeout=180s
+      - name: PostgreSQL 17 restore tools and object verification
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-common rclone git-lfs
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-client-17
+          echo '/usr/lib/postgresql/17/bin' >> "$GITHUB_PATH"
+      - name: Build Linux images for the disposable cluster
+        run: python3 -u tests/operator/acceptance/prepare.py --platform linux/amd64 --kind operator
+      - name: Pi planning, validation correction and Rust Emissary execution
+        run: python3 -u tests/operator/acceptance/run.py --context kind-operator --namespace artifact-operator-ci --pull-policy IfNotPresent
+      - name: TimescaleDB host and managed build telemetry, outage and durable replay
+        run: python3 -u tests/operator/acceptance/telemetry.py --context kind-operator --namespace artifact-operator-ci
+      - name: Cancellation retains cleanup state while kubelet is unreachable
+        run: python3 -u tests/operator/acceptance/cleanup.py --context kind-operator --namespace artifact-operator-ci --node-container operator-control-plane
+      - name: Real Pi admission, steady CRD writes, restart and concurrent cancellation
+        run: python3 -u tests/operator/load/active.py --context kind-operator --namespace artifact-operator-ci --active 8 --queued 4 --hold-seconds 30 --memory 64Mi
+      - name: Cold-Pod network isolation and allowed business chain
+        run: python3 -u tests/operator/acceptance/network.py --context kind-operator --namespace artifact-operator-ci --controller 'Cilium 1.20.4'
+      - name: Databases, S3, keys and route restore on fresh data services
+        run: python3 -u tests/operator/acceptance/recovery.py --context kind-operator --namespace artifact-operator-ci
+      - name: Kubernetes Pi to external host-native Linux Emissary with Git/LFS
+        run: python3 -u tests/operator/acceptance/native.py --context kind-operator --namespace artifact-operator-ci
+      - name: Preserve sanitized Kubernetes evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubernetes-pi-diagnostics
+          include-hidden-files: true
+          retention-days: 7
+          path: |
+            .local/operator-acceptance/*/evidence.json
+            .local/operator-acceptance/*/build.json
+            .local/operator-acceptance/*/control.log
+            .local/operator-acceptance/*/native-operator.log
+            .local/operator-acceptance/*/native-runtime.log
+            .local/operator-acceptance/*/native-telemetry.log
+            .local/operator-acceptance/*/device.log
+            .local/operator-load/*/evidence.json
+            .local/operator-load/*/runtime-before-restart.log
+            .local/operator-load/*/runtime-failure.log
+            .local/operator-load/*/operator-failure.log
+  native-emissary:
+    name: native-emissary (${{ matrix.os }})
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -123,29 +194,27 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: 1.27.x
-          cache-dependency-path: agent/go.sum
-      - run: go vet ./...
-        working-directory: agent
-      - run: go test -race ./...
-        working-directory: agent
-      - name: Native service lifecycle on a disposable VM
-        run: go test -race ./cmd/artifactory-agent -run '^TestNativeServiceLifecycle$' -count=1 -v -timeout=10m
-        working-directory: agent
+      - name: Rust native runtime and process tree contracts
+        shell: bash
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component clippy
+          rustup default 1.95.0
+          if [ "$RUNNER_OS" = Linux ]; then sudo apt-get update && sudo apt-get install -y protobuf-compiler; fi
+          if [ "$RUNNER_OS" = macOS ]; then brew install protobuf; fi
+          if [ "$RUNNER_OS" = Windows ]; then choco install protoc --no-progress -y; fi
+          cargo test --locked -p artifactory-emissary --all-targets
+          cargo clippy --locked -p artifactory-emissary --all-targets -- -D warnings
+      - name: Disposable native service lifecycle under a dedicated account
+        shell: bash
         env:
           ARTIFACTORY_NATIVE_SERVICE_TESTS: '1'
           ARTIFACTORY_NATIVE_EXPECTED_PLATFORM: ${{ matrix.platform }}
+        run: cargo test --locked -p artifactory-emissary --test native_service -- --ignored --nocapture
   compose-tls:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: 1.27.x
-          cache-dependency-path: agent/go.sum
       - name: Real production Compose with isolated HTTPS trust
         run: python3 -u scripts/compose_acceptance.py
       - name: Preserve Compose diagnostics without private deployment files
@@ -163,4 +232,4 @@ jobs:
             .local/compose-tls/*/cleanup.log
             .local/compose-tls/*/*-build.log
             .local/compose-tls/*/probe/probe-evidence.json
-            .local/compose-tls/*/probe/agent.log
+            .local/compose-tls/*/probe/emissary.log

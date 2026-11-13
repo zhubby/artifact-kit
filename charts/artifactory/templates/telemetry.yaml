@@ -1,0 +1,98 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "artifactory.fullname" . }}-timescale-init
+data:
+  init.sh: |
+    #!/bin/sh
+    (
+    set -eu
+    psql --username "$POSTGRES_USER" --dbname postgres --set ON_ERROR_STOP=1 <<'SQL'
+    \getenv telemetry_password ARTIFACTORY_TELEMETRY_DATABASE_PASSWORD
+    SELECT format('CREATE ROLE artifactory_telemetry LOGIN PASSWORD %L', :'telemetry_password')
+    WHERE NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='artifactory_telemetry') \gexec
+    SELECT 'CREATE DATABASE artifactory_telemetry OWNER artifactory_telemetry'
+    WHERE NOT EXISTS(SELECT 1 FROM pg_database WHERE datname='artifactory_telemetry') \gexec
+    \connect artifactory_telemetry
+    CREATE EXTENSION IF NOT EXISTS timescaledb;
+    SQL
+    )
+{{- if .Values.telemetry.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "artifactory.fullname" . }}-telemetry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "artifactory.selector" . | nindent 6 }}
+      app.kubernetes.io/component: telemetry
+  template:
+    metadata:
+      labels:
+        {{- include "artifactory.selector" . | nindent 8 }}
+        app.kubernetes.io/component: telemetry
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: telemetry
+          image: "{{ .Values.images.control.repository }}:{{ .Values.images.control.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.images.control.pullPolicy }}
+          command: [artifactory-telemetry-service]
+          securityContext:
+            {{- include "artifactory.containerSecurity" . | nindent 12 }}
+          ports: [{name: query, containerPort: 8093}, {name: ingest, containerPort: 8444}]
+          env:
+            {{- $secret := include "artifactory.credentials" . }}
+            {{- range $env,$key := dict "DATABASE_URL" "telemetry-database-url" "ARTIFACTORY_BUSINESS_DATABASE_URL" "database-url" "ARTIFACTORY_TELEMETRY_TOKEN" "telemetry-token" }}
+            - name: {{ $env }}
+              valueFrom:
+                secretKeyRef: {name: {{ $secret }}, key: {{ $key }}}
+            {{- end }}
+            - {name: ARTIFACTORY_PKI_DIR, value: /run/pki}
+            - {name: ARTIFACTORY_SERVICE_TLS_CERT, value: /run/pki/server.pem}
+            - {name: ARTIFACTORY_SERVICE_TLS_KEY, value: /run/pki/server.key}
+            - {name: ARTIFACTORY_TELEMETRY_HTTP_BIND, value: '0.0.0.0:8093'}
+            - {name: ARTIFACTORY_TELEMETRY_GRPC_BIND, value: '0.0.0.0:8444'}
+          startupProbe: {tcpSocket: {port: ingest}, periodSeconds: 3, failureThreshold: 60}
+          readinessProbe: {tcpSocket: {port: ingest}}
+          livenessProbe: {tcpSocket: {port: ingest}, periodSeconds: 15}
+          resources:
+            {{- toYaml .Values.telemetry.resources | nindent 12 }}
+          volumeMounts: [{name: pki, mountPath: /run/pki, readOnly: true}]
+      volumes:
+        - name: pki
+          secret:
+            secretName: {{ include "artifactory.pki" . }}
+            defaultMode: 0440
+            items: [{key: ca.pem, path: ca.pem}, {key: server.pem, path: server.pem}, {key: server.key, path: server.key}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "artifactory.fullname" . }}-telemetry
+spec:
+  selector:
+    {{- include "artifactory.selector" . | nindent 4 }}
+    app.kubernetes.io/component: telemetry
+  ports: [{name: query, port: 8093, targetPort: query}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "artifactory.fullname" . }}-telemetry-grpc
+spec:
+  type: {{ .Values.telemetry.service.type }}
+  selector:
+    {{- include "artifactory.selector" . | nindent 4 }}
+    app.kubernetes.io/component: telemetry
+  ports:
+    - {name: ingest, port: 8444, targetPort: ingest{{ if and (eq .Values.telemetry.service.type "NodePort") .Values.telemetry.service.nodePort }}, nodePort: {{ .Values.telemetry.service.nodePort }}{{ end }}}
+{{- end }}

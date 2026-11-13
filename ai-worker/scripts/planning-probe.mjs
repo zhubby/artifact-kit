@@ -41,7 +41,7 @@ async function blocked(backend,count){
   }
   throw new Error("expected real database lock wait");
 }
-const definitions=grpc.loadPackageDefinition(loader.loadSync(resolve(import.meta.dirname,"../../proto/artifactory/agent/v1/agent.proto"),{keepCase:true,defaults:true,longs:Number})).artifactory.agent.v1;
+const definitions=grpc.loadPackageDefinition(loader.loadSync(resolve(import.meta.dirname,"../../proto/artifactory/emissary/v1/emissary.proto"),{keepCase:true,defaults:true,longs:Number})).artifactory.emissary.v1;
 const directory=resolve(run,"protocol-worker-"+Date.now());mkdirSync(directory,{mode:0o700});
 const config={...sourceWorker,worker_id:undefined,certificate_file:resolve(directory,"worker.pem"),key_file:resolve(directory,"worker.key"),name:"planning-boundary-probe"};
 const path=resolve(directory,"worker.json");writeFileSync(path,JSON.stringify(config),{mode:0o600});

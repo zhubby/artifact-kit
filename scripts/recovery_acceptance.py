@@ -93,7 +93,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--ssh-evidence', type=Path, default=acceptance.ROOT / '.local/acceptance/latest-ssh.json')
     parser.add_argument('--env-file', type=Path, default=acceptance.ROOT / '.local/env')
-    parser.add_argument('--postgres-container', default='artifactory-postgres-test')
+    parser.add_argument('--postgres-container', default='artifactory-timescaledb-test')
     parser.add_argument('--s3-container', default='artifactory-s3-test')
     parser.add_argument('--s3-config', type=Path, default=acceptance.ROOT / '.local/s3.json')
     parser.add_argument('--sudo-sshd', action='store_true', help='run only the isolated SSH fixture with passwordless sudo on a Linux CI runner')
@@ -104,7 +104,7 @@ def main():
         parser.error('the local environment must be a regular private file')
     source = load_environment(options.env_file)
     database = urllib.parse.urlsplit(source['DATABASE_URL'])
-    custom = (options.postgres_container,options.s3_container) != ('artifactory-postgres-test','artifactory-s3-test')
+    custom = (options.postgres_container,options.s3_container) != ('artifactory-timescaledb-test','artifactory-s3-test')
     expected_pg,expected_s3 = 15432,19000
     if custom:
         containers=[json.loads(acceptance.command(['docker','inspect',name]))[0] for name in (options.postgres_container,options.s3_container)]
@@ -145,7 +145,7 @@ def main():
     restored.mkdir(mode=0o700)
     created_containers = []
     created_volumes = []
-    control = agent = ssh_server = None
+    control = emissary = ssh_server = None
     handles = []
     evidence = directory / 'evidence.json'
     cleanup_errors = []
@@ -204,8 +204,10 @@ def main():
         s3_name = service('s3', s3_inspect['Image'], ['-p', f'127.0.0.1:{s3_port}:8333', '-v', str(backup / 's3.json') + ':/etc/seaweed/s3.json:ro', '-v', str(acceptance.ROOT / 'deploy/seaweed-entrypoint.sh') + ':/run/artifactory-s3-entrypoint.sh:ro', '--entrypoint', '/bin/sh'], '/data', ['/run/artifactory-s3-entrypoint.sh', 'mini', '-dir=/data', '-s3.port=8333', '-s3.config=/run/artifactory-s3/s3.json', '-s3.iam.readOnly=true', '-admin.ui=false', '-ip.bind=0.0.0.0'])
         s3_endpoint = f'http://127.0.0.1:{s3_port}'
         execute(['python3', str(acceptance.ROOT / 'scripts/wait_local_services.py'), '--postgres', postgres, '--s3', s3_name, '--s3-url', s3_endpoint])
+        execute(['docker','exec',postgres,'psql','-v','ON_ERROR_STOP=1','-U','artifactory','-d','artifactory','-c','SELECT timescaledb_pre_restore();'],capture_output=True)
         with (backup / 'database.dump').open('rb') as archive:
             execute(['docker', 'exec', '-i', postgres, 'pg_restore', '--exit-on-error', '--no-owner', '-U', 'artifactory', '-d', 'artifactory'], stdin=archive)
+        execute(['docker','exec',postgres,'psql','-v','ON_ERROR_STOP=1','-U','artifactory','-d','artifactory','-c','SELECT timescaledb_post_restore();'],capture_output=True)
         acceptance.check('every public table and sequence matches after restore', database_inventory(postgres) == before)
         restored_objects = object_environment(saved, s3_endpoint)
         objects(['copy', str(backup / 'objects'), bucket], restored_objects)
@@ -264,16 +266,16 @@ def main():
 
         acceptance.wait_for(ssh_ready, 15)
         token = acceptance.api('/enrollment-tokens', {'pool_id': '00000000-0000-0000-0000-000000000001'})['token']
-        config_file = restored / 'agent.json'
-        agent_environment = {key: value for key, value in saved.items() if not key.startswith('ARTIFACTORY_') and key != 'DATABASE_URL'}
-        agent_binary = acceptance.ROOT / 'agent/bin/artifactory-agent'
-        execute([str(agent_binary), 'register', '--endpoint', f'localhost:{grpc_port}', '--ca', str(restored / 'pki/ca.pem'), '--config', str(config_file), '--root', str(restored / "agent's data with spaces"), '--allow-http-uploads'], env=dict(agent_environment, ARTIFACTORY_ENROLLMENT_TOKEN=token), stdout=subprocess.DEVNULL)
+        config_file = restored / 'emissary.json'
+        emissary_environment = {key: value for key, value in saved.items() if not key.startswith('ARTIFACTORY_') and key != 'DATABASE_URL'}
+        emissary_binary = acceptance.ROOT / 'target/debug/artifactory-emissary'
+        execute([str(emissary_binary), 'register', '--endpoint', f'localhost:{grpc_port}', '--ca', str(restored / 'pki/ca.pem'), '--config', str(config_file), '--root', str(restored / "emissary's data with spaces"), '--allow-http-uploads'], env=dict(emissary_environment, ARTIFACTORY_ENROLLMENT_TOKEN=token), stdout=subprocess.DEVNULL)
         config = json.loads(config_file.read_text())
-        agent_log = (directory / 'agent.log').open('ab')
-        handles.append(agent_log)
-        agent = subprocess.Popen([str(agent_binary), 'run', '--config', str(config_file)], env=agent_environment, stdout=agent_log, stderr=agent_log)
-        acceptance.wait_for(lambda: next((node for node in acceptance.api('/nodes') if node['id'] == config['agent_id'] and 'cc' in node['capabilities']), None), 90)
-        acceptance.check('restored PKI issues a usable native agent identity', True)
+        emissary_log = (directory / 'emissary.log').open('ab')
+        handles.append(emissary_log)
+        emissary = subprocess.Popen([str(emissary_binary), 'run', '--config', str(config_file)], env=emissary_environment, stdout=emissary_log, stderr=emissary_log)
+        acceptance.wait_for(lambda: next((node for node in acceptance.api('/nodes') if node['id'] == config['emissary_id'] and 'cc' in node['capabilities']), None), 90)
+        acceptance.check('restored PKI issues a usable native emissary identity', True)
         build_id = acceptance.api('/projects/' + ssh['project_id'] + '/builds', {'ref': 'main', 'release_version': 'recovery-' + acceptance.RUN_ID})['id']
         acceptance.EVIDENCE['restored_build_id'] = build_id
 
@@ -300,7 +302,7 @@ def main():
         acceptance.EVIDENCE['failure'] = str(error)
         raise
     finally:
-        for process in (agent, ssh_server, control):
+        for process in (emissary, ssh_server, control):
             try:
                 acceptance.stop_process(process)
             except Exception as error:

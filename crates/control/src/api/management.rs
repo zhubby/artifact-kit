@@ -197,7 +197,7 @@ pub async fn enrollment_token(
 
 pub async fn nodes(State(state): State<AppState>, auth: Auth) -> Result<Json<Vec<Value>>> {
     auth.session_role("viewer")?;
-    Ok(Json(sqlx::query_scalar("SELECT (to_jsonb(n)-'certificate_hash'-'active_session') || jsonb_build_object('agent_desired_release',coalesce(n.agent_target_release,p.agent_target_release),'agent_pool_paused',p.agent_updates_paused,'pool_name',p.name,'online',NOT n.revoked AND n.last_seen>now()-interval '30 seconds','active_jobs',(SELECT count(*) FROM attempts a WHERE a.node_id=n.id AND a.status IN ('leased','running') AND a.lease_expires_at>now())) FROM nodes n JOIN node_pools p ON p.id=n.pool_id ORDER BY n.created_at DESC").fetch_all(&state.pool).await?))
+    Ok(Json(sqlx::query_scalar("SELECT (to_jsonb(n)-'certificate_hash'-'active_session') || jsonb_build_object('emissary_desired_release',coalesce(n.emissary_target_release,p.emissary_target_release),'emissary_pool_paused',p.emissary_updates_paused,'pool_name',p.name,'online',NOT n.revoked AND n.last_seen>now()-interval '30 seconds','active_jobs',(SELECT count(*) FROM attempts a WHERE a.node_id=n.id AND a.status IN ('leased','running') AND a.lease_expires_at>now())) FROM nodes n JOIN node_pools p ON p.id=n.pool_id ORDER BY n.created_at DESC").fetch_all(&state.pool).await?))
 }
 
 #[derive(Deserialize)]
@@ -239,7 +239,7 @@ pub async fn update_node(
     .await?;
     if changing_pool_while_updating {
         return Err(ApiError::Conflict(
-            "wait for the active Agent update before changing its pool".into(),
+            "wait for the active Emissary update before changing its pool".into(),
         ));
     }
     let revoked=sqlx::query_scalar::<_,bool>("UPDATE nodes SET draining=$2,revoked=revoked OR $3,slots=$4,labels=$5,signing_profiles=$6,pool_id=$7 WHERE id=$1 RETURNING revoked").bind(id).bind(input.draining).bind(input.revoked).bind(input.slots).bind(input.labels).bind(input.signing_profiles).bind(input.pool_id).fetch_optional(&mut *transaction).await?.ok_or(ApiError::NotFound)?;

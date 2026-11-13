@@ -46,8 +46,17 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "artifactory.fullname" . }}-config
+            {{- if .Values.planning.runtimeUrl }}
+            - secretRef:
+                name: {{ required "planning.serviceSecretName is required with Runtime" .Values.planning.serviceSecretName }}
+            {{- end }}
           env:
             {{- $secret := include "artifactory.credentials" . }}
+            {{- if .Values.telemetry.enabled }}
+            - name: ARTIFACTORY_TELEMETRY_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ $secret }}, key: telemetry-token}
+            {{- end }}
             {{- range $env, $key := dict "DATABASE_URL" "database-url" "ARTIFACTORY_MASTER_KEY" "master-key" "ARTIFACTORY_S3_ACCESS_KEY" "s3-access-key" "ARTIFACTORY_S3_SECRET_KEY" "s3-secret-key" "ARTIFACTORY_BOOTSTRAP_USERNAME" "bootstrap-username" "ARTIFACTORY_BOOTSTRAP_PASSWORD" "bootstrap-password" }}
             - name: {{ $env }}
               valueFrom:
@@ -70,7 +79,16 @@ spec:
             - {name: data, mountPath: /var/lib/artifactory}
             - {name: pki, mountPath: /run/artifactory-pki, readOnly: true}
             - {name: tmp, mountPath: /tmp}
+            {{- if .Values.planning.serviceCaSecretName }}
+            - {name: service-ca, mountPath: /run/service-ca, readOnly: true}
+            {{- end }}
       volumes:
+        {{- if .Values.planning.serviceCaSecretName }}
+        - name: service-ca
+          secret:
+            secretName: {{ .Values.planning.serviceCaSecretName }}
+            items: [{key: ca.crt, path: ca.crt}]
+        {{- end }}
         - name: data
           persistentVolumeClaim:
             claimName: {{ include "artifactory.fullname" . }}-control

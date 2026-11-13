@@ -1,0 +1,49 @@
+{{- if .Values.telemetry.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-telemetry
+spec:
+  replicas: {{ .Values.telemetry.replicas }}
+  selector:
+    matchLabels: {app.kubernetes.io/name: artifactory-telemetry}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: artifactory-telemetry}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: telemetry
+          image: '{{ .Values.image.repository }}:{{ .Values.image.tag }}'
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [telemetry]
+          ports: [{name: query, containerPort: 8093}, {name: ingest, containerPort: 8444}]
+          securityContext: {readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          envFrom: [{secretRef: {name: {{ .Values.telemetry.secretName }}}}]
+          env:
+            - {name: ARTIFACTORY_PKI_DIR, value: /run/pki}
+            - {name: ARTIFACTORY_SERVICE_TLS_CERT, value: /run/pki/server.pem}
+            - {name: ARTIFACTORY_SERVICE_TLS_KEY, value: /run/pki/server.key}
+            - {name: ARTIFACTORY_TELEMETRY_HTTP_BIND, value: '0.0.0.0:8093'}
+            - {name: ARTIFACTORY_TELEMETRY_GRPC_BIND, value: '0.0.0.0:8444'}
+          startupProbe: {tcpSocket: {port: ingest}, periodSeconds: 3, failureThreshold: 60}
+          readinessProbe: {tcpSocket: {port: ingest}}
+          livenessProbe: {tcpSocket: {port: ingest}, periodSeconds: 15}
+          resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {cpu: '2', memory: 512Mi}}
+          volumeMounts: [{name: pki, mountPath: /run/pki, readOnly: true}]
+      volumes:
+        - name: pki
+          secret:
+            secretName: {{ .Values.telemetry.pkiSecretName }}
+            defaultMode: 0440
+            items: [{key: ca.pem, path: ca.pem}, {key: server.pem, path: server.pem}, {key: server.key, path: server.key}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: artifactory-telemetry
+spec:
+  selector: {app.kubernetes.io/name: artifactory-telemetry}
+  ports: [{name: query, port: 8093, targetPort: query}, {name: ingest, port: 8444, targetPort: ingest}]
+{{- end }}

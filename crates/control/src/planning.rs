@@ -65,7 +65,7 @@ impl planner_enrollment_server::PlannerEnrollment for PlanningService {
     async fn enroll(
         &self,
         request: Request<PlannerEnrollRequest>,
-    ) -> std::result::Result<Response<EnrollReply>, Status> {
+    ) -> std::result::Result<Response<PlannerEnrollReply>, Status> {
         let input = request.into_inner();
         if input.name.trim().is_empty() || input.name.len() > 100 || input.token.len() > 256 {
             return Err(Status::invalid_argument("invalid worker enrollment"));
@@ -85,8 +85,8 @@ impl planner_enrollment_server::PlannerEnrollment for PlanningService {
             .await
             .map_err(internal)?;
         tx.commit().await.map_err(internal)?;
-        Ok(Response::new(EnrollReply {
-            agent_id: id.to_string(),
+        Ok(Response::new(PlannerEnrollReply {
+            worker_id: id.to_string(),
             certificate_pem: certificate,
             ca_pem: tokio::fs::read_to_string(state.settings.pki_dir.join("ca.pem"))
                 .await
@@ -135,7 +135,7 @@ impl planning_server::Planning for PlanningService {
             tx.commit().await.map_err(internal)?;
             return Ok(Response::new(PlannerTask::default()));
         }
-        let Some(row)=sqlx::query("SELECT r.id,r.build_id,r.model_config,r.calls,r.usage FROM planning_runs r JOIN builds b ON b.id=r.build_id WHERE r.state='queued' AND NOT b.cancel_requested AND b.status IN ('planning','replanning') ORDER BY r.created_at FOR UPDATE OF r SKIP LOCKED LIMIT 1").fetch_optional(&mut *tx).await.map_err(internal)? else { tx.commit().await.map_err(internal)?; return Ok(Response::new(PlannerTask::default())); };
+        let Some(row)=sqlx::query("SELECT r.id,r.build_id,r.model_config,r.calls,r.usage FROM planning_runs r JOIN builds b ON b.id=r.build_id WHERE r.state='queued' AND r.authority='poll' AND NOT b.cancel_requested AND b.status IN ('planning','replanning') ORDER BY r.created_at FOR UPDATE OF r SKIP LOCKED LIMIT 1").fetch_optional(&mut *tx).await.map_err(internal)? else { tx.commit().await.map_err(internal)?; return Ok(Response::new(PlannerTask::default())); };
         let id: Uuid = row.get("id");
         let build: Uuid = row.get("build_id");
         let config: Value = row.get("model_config");
@@ -222,6 +222,7 @@ impl planning_server::Planning for PlanningService {
                     &mut savepoint,
                     &row,
                     args.get("plan").cloned().unwrap_or(args.clone()),
+                    false,
                 )
                 .await;
                 match result {
@@ -368,7 +369,7 @@ impl planning_server::Planning for PlanningService {
     }
 }
 
-async fn read_logs(state: &AppState, build: Uuid, args: &Value) -> Result<Value> {
+pub(crate) async fn read_logs(state: &AppState, build: Uuid, args: &Value) -> Result<Value> {
     let target = args.get("target").and_then(Value::as_str).unwrap_or("");
     let rows=sqlx::query("SELECT l.object_key,l.step FROM log_chunks l JOIN attempts a ON a.id=l.attempt_id JOIN jobs j ON j.id=a.job_id WHERE j.build_id=$1 AND ($2='' OR j.target=$2) ORDER BY l.id DESC LIMIT 24")
         .bind(build).bind(target).fetch_all(&state.pool).await?;
@@ -423,26 +424,29 @@ fn target_requirements(recipe: &Recipe, requirements: &Value) -> Result<()> {
     Ok(())
 }
 
-async fn submit(
+pub(crate) async fn submit(
     state: &AppState,
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     row: &PgRow,
     value: Value,
+    evidence_verified: bool,
 ) -> Result<Value> {
     let mut plan = ExecutionPlan::parse(value)?;
     let build: Uuid = row.get("build_id");
     let snapshot: Uuid = row.get("source_snapshot_id");
     let source = source_cache::load(state, snapshot).await?;
-    source_cache::validate_evidence(
-        state,
-        &source,
-        &plan
-            .evidence
-            .iter()
-            .map(|item| item.path.clone())
-            .collect::<Vec<_>>(),
-    )
-    .await?;
+    if !evidence_verified {
+        source_cache::validate_evidence(
+            state,
+            &source,
+            &plan
+                .evidence
+                .iter()
+                .map(|item| item.path.clone())
+                .collect::<Vec<_>>(),
+        )
+        .await?;
+    }
     plan.recipe
         .environment(&row.get::<Value, _>("parameters"))?;
     target_requirements(&plan.recipe, &row.get::<Value, _>("target_requirements"))?;
@@ -539,7 +543,7 @@ async fn submit(
 }
 
 pub async fn reap(state: &AppState) -> Result<()> {
-    let rows=sqlx::query("SELECT r.id,r.build_id FROM planning_runs r LEFT JOIN ai_workers w ON w.id=r.worker_id WHERE r.state='leased' AND (r.lease_expires_at<=clock_timestamp() OR r.deadline_at<=clock_timestamp() OR w.revoked OR w.certificate_expires_at<=clock_timestamp())")
+    let rows=sqlx::query("SELECT r.id,r.build_id FROM planning_runs r LEFT JOIN ai_workers w ON w.id=r.worker_id WHERE r.authority='poll' AND r.state='leased' AND (r.lease_expires_at<=clock_timestamp() OR r.deadline_at<=clock_timestamp() OR w.revoked OR w.certificate_expires_at<=clock_timestamp())")
         .fetch_all(&state.pool).await?;
     for row in rows {
         let mut tx = state.pool.begin().await?;

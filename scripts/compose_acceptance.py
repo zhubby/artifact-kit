@@ -131,12 +131,17 @@ def main():
         web_image = build('web', snapshot / 'web', (snapshot / 'web/Dockerfile').read_text(), options.web_image)
         ai_worker_image = build('ai-worker', snapshot, (snapshot / 'ai-worker/Dockerfile').read_text(), options.ai_worker_image)
         architecture = capture(['docker', 'image', 'inspect', control_image, '--format', '{{.Architecture}}'])
-        check('probe image uses a supported Agent architecture', architecture in ('amd64', 'arm64'))
+        check('probe image uses a supported Emissary architecture', architecture in ('amd64', 'arm64'))
         probe_dockerfile = f'FROM {control_image}\nUSER 0\nRUN apt-get update && apt-get install -y --no-install-recommends python3 gcc libc6-dev postgresql-client && rm -rf /var/lib/apt/lists/*\nUSER 10001:10001\n'
         probe_image = options.probe_image or build('probe', snapshot, probe_dockerfile, platform='linux/' + architecture)
         architecture = capture(['docker', 'image', 'inspect', probe_image, '--format', '{{.Architecture}}'])
-        check('test tooling supports the compiled Agent architecture', architecture in ('amd64', 'arm64'))
-        execute(['go', 'build', '-trimpath', '-o', str(probe / 'artifactory-agent'), './cmd/artifactory-agent'], cwd=snapshot / 'agent', env=dict(os.environ, GOOS='linux', GOARCH=architecture, CGO_ENABLED='0'), timeout=180)
+        check('test tooling supports the compiled Emissary architecture', architecture in ('amd64', 'arm64'))
+        emissary_image = build('emissary', snapshot, (snapshot / 'crates/emissary/Dockerfile').read_text(), platform='linux/' + architecture)
+        extract = capture(['docker', 'create', '--label', 'artifactory.acceptance=' + run_id, emissary_image])
+        try:
+            execute(['docker', 'cp', extract + ':/usr/local/bin/artifactory-emissary', str(probe / 'artifactory-emissary')])
+        finally:
+            execute(['docker', 'rm', extract])
         console = 'console-' + run_id + '.test'
         objects = 'objects-' + run_id + '.test'
         environment = {key: value for key, value in os.environ.items() if not key.startswith(('ARTIFACTORY_', 'COMPOSE_')) and key != 'DATABASE_URL'}
@@ -156,18 +161,20 @@ def main():
             source_caddy = source_caddy.replace(token, token + '\n    tls internal')
         caddy.write_text('{\n    admin off\n    auto_https disable_redirects\n    skip_install_trust\n}\n\n' + source_caddy)
         manifest = json.loads(capture(['docker', 'compose', '--project-name', project, '--project-directory', str(snapshot), '--env-file', str(snapshot / '.deploy/env'), '-f', str(snapshot / 'compose.yaml'), 'config', '--format', 'json'], env=environment))
-        check('all six production Compose services are retained', set(manifest['services']) == {'postgres', 's3', 'control', 'web', 'gateway','ai-worker'})
+        check('production Compose includes independent telemetry', set(manifest['services']) == {'postgres', 's3', 'control', 'web', 'gateway','ai-worker','telemetry'})
         manifest['services']['control']['image'] = control_image
+        manifest['services']['telemetry']['image'] = control_image
         manifest['services']['web']['image'] = web_image
         manifest['services']['ai-worker']['image'] = ai_worker_image
-        for name in ('control', 'web', 'ai-worker'):
+        for name in ('control', 'web', 'ai-worker','telemetry'):
             manifest['services'][name].pop('build', None)
         for name in ('postgres', 's3', 'gateway'):
             service = manifest['services'][name]
             service['image'] = registry(service['image'])
-        http_port, https_port, grpc_port = free_ports(3)
+        http_port, https_port, grpc_port, telemetry_port = free_ports(4)
         manifest['services']['gateway']['ports'] = [{'target': 80, 'published': str(http_port), 'host_ip': '127.0.0.1', 'protocol': 'tcp'}, {'target': 443, 'published': str(https_port), 'host_ip': '127.0.0.1', 'protocol': 'tcp'}]
         manifest['services']['control']['ports'] = [{'target': 8443, 'published': str(grpc_port), 'host_ip': '127.0.0.1', 'protocol': 'tcp'}]
+        manifest['services']['telemetry']['ports'] = [{'target':8444,'published':str(telemetry_port),'host_ip':'127.0.0.1','protocol':'tcp'}]
         manifest['services']['gateway']['networks'] = {'default': {'aliases': [console, objects]}}
         manifest['services']['control']['environment'].update({'SSL_CERT_FILE': '/run/acceptance/https-ca.pem', 'GIT_SSL_CAINFO': '/run/artifactory-pki/ca.pem'})
         manifest['services']['control']['volumes'].append({'type': 'bind', 'source': str(probe / 'https-ca.pem'), 'target': '/run/acceptance/https-ca.pem', 'read_only': True, 'bind': {'create_host_path': False}})
@@ -191,6 +198,7 @@ def main():
             evidence['image_platforms'][name] = platform
             if name in manifest['services']:
                 manifest['services'][name]['platform'] = platform
+        manifest['services']['telemetry']['platform']=manifest['services']['control']['platform']
         compose_file.write_text(json.dumps(manifest, indent=2) + '\n')
         started = True
         with (directory / 'startup.log').open('w') as log:
@@ -204,10 +212,10 @@ def main():
                 if time.monotonic() > deadline:
                     raise TimeoutError('Caddy did not create the isolated HTTPS CA')
                 time.sleep(1)
-            execute(compose + ['up', '-d', '--no-build', '--pull', 'never', 'control', 'ai-worker'], stdout=log, stderr=log, timeout=180)
+            execute(compose + ['up', '-d', '--no-build', '--pull', 'never', 'control', 'ai-worker','telemetry'], stdout=log, stderr=log, timeout=180)
         details = json.loads(capture(['docker', 'inspect', capture(compose + ['ps', '-q', 'control'])]))[0]
         check('control runs non-root with a read-only root filesystem and no capabilities', details['Config']['User'].split(':')[0] != '0' and details['HostConfig']['ReadonlyRootfs'] and 'ALL' in (details['HostConfig']['CapDrop'] or []) and 'no-new-privileges:true' in (details['HostConfig']['SecurityOpt'] or []))
-        for service in ('postgres', 's3', 'web', 'gateway', 'control', 'ai-worker'):
+        for service in ('postgres', 's3', 'web', 'gateway', 'control', 'ai-worker','telemetry'):
             details = json.loads(capture(['docker', 'inspect', capture(compose + ['ps', '-aq', service])]))[0]
             bindings = details['HostConfig'].get('PortBindings') or {}
             check(service + ' exposes no non-loopback host ports', all(binding['HostIp'] == '127.0.0.1' for values in bindings.values() for binding in values))

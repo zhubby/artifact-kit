@@ -1,0 +1,17 @@
+syntax = "proto3";
+package artifactory.runtime.v1;
+
+// Versioned control/data boundary. JSON bodies use the Rust runtime-protocol
+// types; large source/checkpoint/plan data is stored outside Kubernetes objects.
+service Runtime {
+  rpc PutIntent(JsonRequest) returns (JsonReply);
+  rpc GetRun(JsonRequest) returns (JsonReply);
+  rpc RegisterExecution(JsonRequest) returns (JsonReply);
+  rpc Acquire(JsonRequest) returns (JsonReply);
+  rpc Heartbeat(JsonRequest) returns (JsonReply);
+  rpc Tool(JsonRequest) returns (JsonReply);
+  rpc Report(JsonRequest) returns (JsonReply);
+  rpc ValidateGrant(JsonRequest) returns (JsonReply);
+}
+message JsonRequest { string json = 1; }
+message JsonReply { string json = 1; }

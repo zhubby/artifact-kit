@@ -25,6 +25,8 @@ jobs:
           - {name: control, context: ., file: Dockerfile}
           - {name: web, context: web, file: web/Dockerfile}
           - {name: ai-worker, context: ., file: ai-worker/Dockerfile}
+          - {name: operator, context: ., file: operator/Dockerfile}
+          - {name: emissary, context: ., file: crates/emissary/Dockerfile}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,7 +80,7 @@ jobs:
     timeout-minutes: 10
     strategy:
       matrix:
-        component: [control, web, ai-worker]
+        component: [control, web, ai-worker, operator, emissary]
     steps:
       - uses: actions/checkout@v4
         with:

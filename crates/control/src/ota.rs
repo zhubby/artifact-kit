@@ -79,7 +79,7 @@ pub fn verify(raw: &[u8], signature: &str, keys: &[String]) -> Result<Manifest> 
         ensure!(
             a.name
                 == format!(
-                    "artifactory-agent-{}-{}{}",
+                    "artifactory-emissary-{}-{}{}",
                     a.os,
                     a.arch,
                     if a.os == "windows" { ".exe" } else { "" }
@@ -110,9 +110,9 @@ fn github_api() -> String {
 impl ReleaseSource {
     pub async fn load(state: &AppState) -> Result<Self> {
         let c: Self = serde_json::from_slice(
-            &tokio::fs::read(state.settings.data_dir.join("agent-releases.json"))
+            &tokio::fs::read(state.settings.data_dir.join("emissary-releases.json"))
                 .await
-                .context("Agent release source is not configured")?,
+                .context("Emissary release source is not configured")?,
         )?;
         let parts: Vec<_> = c.repository.split('/').collect();
         ensure!(
@@ -182,9 +182,9 @@ pub async fn import_tag(state: &AppState, tag: &str) -> Result<Uuid> {
     let get = |url: String, accept: &str| {
         let mut r = client
             .get(url)
-            .header("User-Agent", "artifactory-agent-ota")
+            .header("User-Agent", "artifactory-emissary-ota")
             .header("Accept", accept);
-        if let Ok(token) = std::env::var("ARTIFACTORY_AGENT_GITHUB_TOKEN") {
+        if let Ok(token) = std::env::var("ARTIFACTORY_EMISSARY_GITHUB_TOKEN") {
             r = r.bearer_auth(token)
         }
         r
@@ -224,7 +224,7 @@ pub async fn import_tag(state: &AppState, tag: &str) -> Result<Uuid> {
     };
     let raw = bounded(
         get(
-            asset_url("agent-manifest.json")?,
+            asset_url("emissary-manifest.json")?,
             "application/octet-stream",
         )
         .send()
@@ -234,9 +234,12 @@ pub async fn import_tag(state: &AppState, tag: &str) -> Result<Uuid> {
     .await?;
     let signature = String::from_utf8(
         bounded(
-            get(asset_url("agent-manifest.sig")?, "application/octet-stream")
-                .send()
-                .await?,
+            get(
+                asset_url("emissary-manifest.sig")?,
+                "application/octet-stream",
+            )
+            .send()
+            .await?,
             1024,
         )
         .await?,
@@ -247,10 +250,11 @@ pub async fn import_tag(state: &AppState, tag: &str) -> Result<Uuid> {
         "manifest does not match release tag"
     );
     let hash = hex::encode(Sha256::digest(&raw));
-    if let Some(row) = sqlx::query("SELECT id,manifest_hash FROM agent_releases WHERE version=$1")
-        .bind(tag)
-        .fetch_optional(&state.pool)
-        .await?
+    if let Some(row) =
+        sqlx::query("SELECT id,manifest_hash FROM emissary_releases WHERE version=$1")
+            .bind(tag)
+            .fetch_optional(&state.pool)
+            .await?
     {
         ensure!(
             row.get::<String, _>("manifest_hash") == hash,
@@ -278,14 +282,14 @@ pub async fn import_tag(state: &AppState, tag: &str) -> Result<Uuid> {
         state
             .storage
             .put(
-                &format!("agent-releases/{hash}/{}", asset.name),
+                &format!("emissary-releases/{hash}/{}", asset.name),
                 tokio::fs::read(temp.path().join(&asset.name)).await?,
             )
             .await?;
     }
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO agent_releases(id,version,manifest,signature,manifest_hash) VALUES($1,$2,$3,$4,$5) ON CONFLICT(version) DO NOTHING").bind(id).bind(tag).bind(String::from_utf8(raw)?).bind(signature.trim()).bind(&hash).execute(&state.pool).await?;
-    let row = sqlx::query("SELECT id,manifest_hash FROM agent_releases WHERE version=$1")
+    sqlx::query("INSERT INTO emissary_releases(id,version,manifest,signature,manifest_hash) VALUES($1,$2,$3,$4,$5) ON CONFLICT(version) DO NOTHING").bind(id).bind(tag).bind(String::from_utf8(raw)?).bind(signature.trim()).bind(&hash).execute(&state.pool).await?;
+    let row = sqlx::query("SELECT id,manifest_hash FROM emissary_releases WHERE version=$1")
         .bind(tag)
         .fetch_one(&state.pool)
         .await?;
@@ -313,9 +317,9 @@ pub async fn next(state: &AppState, node: Uuid, session: Uuid) -> Result<Option<
         tx.rollback().await?;
         return Ok(None);
     }
-    let Some(n)=sqlx::query("SELECT n.*,coalesce(n.agent_target_release,p.agent_target_release) AS desired,p.agent_update_concurrency,p.agent_updates_paused FROM nodes n JOIN node_pools p ON p.id=n.pool_id WHERE n.id=$1 AND n.pool_id=$2 AND n.active_session=$3 AND NOT n.revoked AND n.certificate_expires_at>clock_timestamp() AND n.last_seen>now()-interval '30 seconds' FOR UPDATE OF n SKIP LOCKED").bind(node).bind(pool).bind(session).fetch_optional(&mut *tx).await? else{tx.rollback().await?;return Ok(None)};
+    let Some(n)=sqlx::query("SELECT n.*,coalesce(n.emissary_target_release,p.emissary_target_release) AS desired,p.emissary_update_concurrency,p.emissary_updates_paused FROM nodes n JOIN node_pools p ON p.id=n.pool_id WHERE n.id=$1 AND n.pool_id=$2 AND n.active_session=$3 AND NOT n.revoked AND n.certificate_expires_at>clock_timestamp() AND n.last_seen>now()-interval '30 seconds' FOR UPDATE OF n SKIP LOCKED").bind(node).bind(pool).bind(session).fetch_optional(&mut *tx).await? else{tx.rollback().await?;return Ok(None)};
     let mut update =
-        sqlx::query("SELECT * FROM agent_updates WHERE node_id=$1 AND finished_at IS NULL")
+        sqlx::query("SELECT * FROM emissary_updates WHERE node_id=$1 AND finished_at IS NULL")
             .bind(node)
             .fetch_optional(&mut *tx)
             .await?;
@@ -324,48 +328,49 @@ pub async fn next(state: &AppState, node: Uuid, session: Uuid) -> Result<Option<
             tx.rollback().await?;
             return Ok(None);
         };
-        if n.get::<bool, _>("agent_updates_paused")
+        if n.get::<bool, _>("emissary_updates_paused")
             || !n
                 .get::<Value, _>("capabilities")
                 .as_array()
-                .is_some_and(|a| a.contains(&json!("agent-ota-v1")))
+                .is_some_and(|a| a.contains(&json!("emissary-ota-v1")))
         {
             tx.rollback().await?;
             return Ok(None);
         }
-        let version: String = sqlx::query_scalar("SELECT version FROM agent_releases WHERE id=$1")
-            .bind(target)
-            .fetch_one(&mut *tx)
-            .await?;
-        if n.get::<Option<String>, _>("agent_current_version")
+        let version: String =
+            sqlx::query_scalar("SELECT version FROM emissary_releases WHERE id=$1")
+                .bind(target)
+                .fetch_one(&mut *tx)
+                .await?;
+        if n.get::<Option<String>, _>("emissary_current_version")
             .as_deref()
             == Some(&version)
         {
             tx.rollback().await?;
             return Ok(None);
         }
-        let blocked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM agent_updates WHERE node_id=$1 AND release_id=$2 AND status IN ('failed','rolled_back','canceled'))").bind(node).bind(target).fetch_one(&mut *tx).await?;
+        let blocked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM emissary_updates WHERE node_id=$1 AND release_id=$2 AND status IN ('failed','rolled_back','canceled'))").bind(node).bind(target).fetch_one(&mut *tx).await?;
         if blocked {
             tx.rollback().await?;
             return Ok(None);
         }
         let count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM agent_updates WHERE pool_id=$1 AND finished_at IS NULL",
+            "SELECT count(*) FROM emissary_updates WHERE pool_id=$1 AND finished_at IS NULL",
         )
         .bind(pool)
         .fetch_one(&mut *tx)
         .await?;
-        if count >= i64::from(n.get::<i32, _>("agent_update_concurrency")) {
+        if count >= i64::from(n.get::<i32, _>("emissary_update_concurrency")) {
             tx.rollback().await?;
             return Ok(None);
         }
         let id = Uuid::new_v4();
-        sqlx::query("INSERT INTO agent_updates(id,node_id,pool_id,release_id,previous_version) VALUES($1,$2,$3,$4,$5)").bind(id).bind(node).bind(pool).bind(target).bind(n.get::<Option<String>,_>("agent_current_version")).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO emissary_updates(id,node_id,pool_id,release_id,previous_version) VALUES($1,$2,$3,$4,$5)").bind(id).bind(node).bind(pool).bind(target).bind(n.get::<Option<String>,_>("emissary_current_version")).execute(&mut *tx).await?;
         sqlx::query("UPDATE nodes SET ota_draining=true WHERE id=$1")
             .bind(node)
             .execute(&mut *tx)
             .await?;
-        update = sqlx::query("SELECT * FROM agent_updates WHERE id=$1")
+        update = sqlx::query("SELECT * FROM emissary_updates WHERE id=$1")
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?;
@@ -378,7 +383,7 @@ pub async fn next(state: &AppState, node: Uuid, session: Uuid) -> Result<Option<
         return Ok(None);
     }
     let id: Uuid = u.get("id");
-    let r = sqlx::query("SELECT * FROM agent_releases WHERE id=$1")
+    let r = sqlx::query("SELECT * FROM emissary_releases WHERE id=$1")
         .bind(u.get::<Uuid, _>("release_id"))
         .fetch_one(&mut *tx)
         .await?;
@@ -393,14 +398,14 @@ pub async fn next(state: &AppState, node: Uuid, session: Uuid) -> Result<Option<
                 && a["arch"].as_str() == Some(n.get::<String, _>("arch").as_str())
         })
         .context("platform not present")?;
-    let url = state.storage.agent_download_url(&format!(
-        "agent-releases/{}/{}",
+    let url = state.storage.emissary_download_url(&format!(
+        "emissary-releases/{}/{}",
         r.get::<String, _>("manifest_hash"),
         a["name"].as_str().context("invalid asset")?
     ));
-    sqlx::query("UPDATE agent_updates SET last_command_at=now(),status=CASE WHEN status='queued' THEN 'offered' ELSE status END WHERE id=$1").bind(id).execute(&mut *tx).await?;
+    sqlx::query("UPDATE emissary_updates SET last_command_at=now(),status=CASE WHEN status='queued' THEN 'offered' ELSE status END WHERE id=$1").bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
-    Ok(Some(Command{command_id:id.to_string(),kind:"agent_update".into(),payload_json:json!({"id":id,"generation":u.get::<i64,_>("generation"),"action":if u.get::<bool,_>("cancel_requested"){"cancel"}else{"apply"},"manifest":raw,"signature":r.get::<String,_>("signature"),"url":url}).to_string(),..Default::default()}))
+    Ok(Some(Command{command_id:id.to_string(),kind:"emissary_update".into(),payload_json:json!({"id":id,"generation":u.get::<i64,_>("generation"),"action":if u.get::<bool,_>("cancel_requested"){"cancel"}else{"apply"},"manifest":raw,"signature":r.get::<String,_>("signature"),"url":url}).to_string(),..Default::default()}))
 }
 
 // Called only from the authenticated current mTLS stream. The node lock is
@@ -425,15 +430,15 @@ pub async fn report(state: &AppState, node: Uuid, session: Uuid, payload: &Value
         still_valid,
         "node certificate expired while waiting for its lock"
     );
-    let runtime = payload["diagnostics"]["agent_version"]
+    let runtime = payload["diagnostics"]["emissary_version"]
         .as_str()
         .unwrap_or("");
-    sqlx::query("UPDATE nodes SET agent_current_version=$2,agent_launcher_version=$3,agent_ota_status=$4 WHERE id=$1").bind(node).bind(runtime).bind(status["launcher_version"].as_str()).bind(status).execute(&mut *tx).await?;
+    sqlx::query("UPDATE nodes SET emissary_current_version=$2,emissary_launcher_version=$3,emissary_ota_status=$4 WHERE id=$1").bind(node).bind(runtime).bind(status["launcher_version"].as_str()).bind(status).execute(&mut *tx).await?;
     let mut health = true;
     if let Some(id) = status["update_id"]
         .as_str()
         .and_then(|s| Uuid::parse_str(s).ok())
-        && let Some(u)=sqlx::query("SELECT u.*,r.version FROM agent_updates u JOIN agent_releases r ON r.id=u.release_id WHERE u.id=$1 AND u.node_id=$2 AND u.finished_at IS NULL").bind(id).bind(node).fetch_optional(&mut *tx).await? {
+        && let Some(u)=sqlx::query("SELECT u.*,r.version FROM emissary_updates u JOIN emissary_releases r ON r.id=u.release_id WHERE u.id=$1 AND u.node_id=$2 AND u.finished_at IS NULL").bind(id).bind(node).fetch_optional(&mut *tx).await? {
             let phase=status["phase"].as_str().unwrap_or("");
             let terminal=["succeeded","failed","rolled_back","canceled"].contains(&phase);
             if phase=="activating"||phase=="succeeded" {
@@ -441,11 +446,11 @@ pub async fn report(state: &AppState, node: Uuid, session: Uuid, payload: &Value
                     || (phase=="activating"&&status["activation_pending"]==true&&Some(runtime)==u.get::<Option<String>,_>("previous_version").as_deref());
             }
             if ["downloading","draining","activating","succeeded","failed","rolled_back","canceled"].contains(&phase)&&health {
-                sqlx::query("UPDATE agent_updates SET status=$2,error=$3,updated_at=now(),finished_at=CASE WHEN $4 THEN now() ELSE NULL END WHERE id=$1").bind(id).bind(phase).bind(status["error"].as_str().map(|s|s.chars().take(1000).collect::<String>())).bind(terminal).execute(&mut *tx).await?;
+                sqlx::query("UPDATE emissary_updates SET status=$2,error=$3,updated_at=now(),finished_at=CASE WHEN $4 THEN now() ELSE NULL END WHERE id=$1").bind(id).bind(phase).bind(status["error"].as_str().map(|s|s.chars().take(1000).collect::<String>())).bind(terminal).execute(&mut *tx).await?;
                 if terminal {
                     sqlx::query("UPDATE nodes SET ota_draining=false WHERE id=$1").bind(node).execute(&mut *tx).await?;
-                    if phase=="failed"||phase=="rolled_back" {sqlx::query("UPDATE node_pools SET agent_updates_paused=true WHERE id=$1").bind(u.get::<Uuid,_>("pool_id")).execute(&mut *tx).await?;}
-                    sqlx::query("INSERT INTO audit_events(actor,action,resource_id,details) VALUES('agent','agent_update_finished',$1,$2)").bind(id.to_string()).bind(json!({"node_id":node,"status":phase,"error":status["error"]})).execute(&mut *tx).await?;
+                    if phase=="failed"||phase=="rolled_back" {sqlx::query("UPDATE node_pools SET emissary_updates_paused=true WHERE id=$1").bind(u.get::<Uuid,_>("pool_id")).execute(&mut *tx).await?;}
+                    sqlx::query("INSERT INTO audit_events(actor,action,resource_id,details) VALUES('emissary','emissary_update_finished',$1,$2)").bind(id.to_string()).bind(json!({"node_id":node,"status":phase,"error":status["error"]})).execute(&mut *tx).await?;
                 }
             }
     }
@@ -479,7 +484,7 @@ mod tests {
                     os: (*os).into(),
                     arch: (*arch).into(),
                     name: format!(
-                        "artifactory-agent-{os}-{arch}{}",
+                        "artifactory-emissary-{os}-{arch}{}",
                         if *os == "windows" { ".exe" } else { "" }
                     ),
                     size: 10,

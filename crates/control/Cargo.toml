@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+artifactory-emissary-protocol = { path = "../emissary-protocol" }
+artifactory-database = { path = "../database" }
+artifactory-runtime-protocol = { path = "../runtime-protocol" }
+artifactory-source-core = { path = "../source-core" }
 aes-gcm = "0.10"
 anyhow = "1"
 argon2 = "0.5"
@@ -36,9 +40,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
-
-[build-dependencies]
-tonic-prost-build = "0.14"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

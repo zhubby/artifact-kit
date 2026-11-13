@@ -44,6 +44,10 @@ spec:
             - {name: POSTGRES_DB, value: artifactory}
             - {name: POSTGRES_USER, value: artifactory}
             - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+            - {name: TIMESCALEDB_TELEMETRY, value: 'off'}
+            - name: ARTIFACTORY_TELEMETRY_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ include "artifactory.credentials" . }}, key: telemetry-database-password}
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -61,11 +65,14 @@ spec:
           resources:
             {{- toYaml .Values.resources.postgres | nindent 12 }}
           volumeMounts:
+            - {name: init, mountPath: /docker-entrypoint-initdb.d/100_artifactory.sh, subPath: init.sh, readOnly: true}
             - {name: data, mountPath: /var/lib/postgresql/data}
             - {name: run, mountPath: /var/run/postgresql}
             - {name: tmp, mountPath: /tmp}
             - {name: shm, mountPath: /dev/shm}
       volumes:
+        - name: init
+          configMap: {name: {{ include "artifactory.fullname" . }}-timescale-init}
         - name: data
           persistentVolumeClaim:
             claimName: {{ include "artifactory.fullname" . }}-postgres

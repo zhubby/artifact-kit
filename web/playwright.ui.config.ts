@@ -1,5 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const port = process.env.ARTIFACTORY_UI_PORT || "3100";
+const localURL = `http://127.0.0.1:${port}`;
+
 export default defineConfig({
   testDir: "./tests/ui",
   timeout: 45000,
@@ -12,15 +15,15 @@ export default defineConfig({
   ],
   outputDir: "test-results/ui",
   use: {
-    baseURL: process.env.ARTIFACTORY_UI_URL || "http://127.0.0.1:3100",
+    baseURL: process.env.ARTIFACTORY_UI_URL || localURL,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
   webServer: {
     command: process.env.ARTIFACTORY_UI_PRODUCTION
-      ? "npm run start -- --hostname 127.0.0.1 --port 3100"
-      : "npm run dev -- --port 3100",
-    url: "http://127.0.0.1:3100/login",
+      ? `npm run start -- --hostname 127.0.0.1 --port ${port}`
+      : `npm run dev -- --port ${port}`,
+    url: `${localURL}/login`,
     reuseExistingServer: !process.env.CI,
     timeout: 120000,
   },

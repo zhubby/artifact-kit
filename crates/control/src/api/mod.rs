@@ -1,9 +1,10 @@
-mod agent_updates;
 pub(crate) mod ai_management;
 mod builds;
+mod emissary_updates;
 mod management;
 mod projects;
 mod source_http;
+mod telemetry;
 
 use crate::{auth, state::AppState};
 use axum::{
@@ -90,26 +91,37 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/nodes", get(management::nodes))
         .route("/api/v1/nodes/{id}", patch(management::update_node))
+        .route("/api/v1/nodes/{id}/telemetry", get(telemetry::latest))
         .route(
-            "/api/v1/agent-releases",
-            get(agent_updates::releases).post(agent_updates::import),
+            "/api/v1/nodes/{id}/telemetry/history",
+            get(telemetry::history),
+        )
+        .route("/api/v1/nodes/{id}/inventory", get(telemetry::inventory))
+        .route(
+            "/api/v1/attempts/{id}/telemetry",
+            get(telemetry::build_history),
+        )
+        .route("/api/v1/attempts/{id}/processes", get(telemetry::processes))
+        .route(
+            "/api/v1/emissary-releases",
+            get(emissary_updates::releases).post(emissary_updates::import),
         )
         .route(
-            "/api/v1/nodes/{id}/agent-update",
-            patch(agent_updates::node_target),
+            "/api/v1/nodes/{id}/emissary-update",
+            patch(emissary_updates::node_target),
         )
         .route(
-            "/api/v1/pools/{id}/agent-update",
-            patch(agent_updates::pool_target),
+            "/api/v1/pools/{id}/emissary-update",
+            patch(emissary_updates::pool_target),
         )
-        .route("/api/v1/agent-updates", get(agent_updates::updates))
+        .route("/api/v1/emissary-updates", get(emissary_updates::updates))
         .route(
-            "/api/v1/agent-updates/{id}/retry",
-            post(agent_updates::retry),
+            "/api/v1/emissary-updates/{id}/retry",
+            post(emissary_updates::retry),
         )
         .route(
-            "/api/v1/agent-updates/{id}/cancel",
-            post(agent_updates::cancel),
+            "/api/v1/emissary-updates/{id}/cancel",
+            post(emissary_updates::cancel),
         )
         .route(
             "/api/v1/credentials",
@@ -138,5 +150,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/releases/{id}", get(builds::release_detail))
         .layer(DefaultBodyLimit::max(512 * 1024))
         .layer(tower_http::trace::TraceLayer::new_for_http())
-        .with_state(state)
+        .with_state(state.clone())
+        .merge(crate::runtime_bridge::routes(state))
 }
