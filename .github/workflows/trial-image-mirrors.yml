@@ -1,0 +1,74 @@
+name: trial-image-mirrors
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing stable release tag for isolated dependency cache tags
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: trial-image-mirrors-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Cache trial ${{ matrix.component }} without changing upstream content
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: postgres
+            source: docker.io/timescale/timescaledb
+            tag: 2.32.0-pg17
+            digest: sha256:6a6b7d7a346d7c6be03a310c240706f3bbc6d7adbdf3fbc07823570b34337f5e
+          - component: s3
+            source: docker.io/chrislusf/seaweedfs
+            tag: '4.53'
+            digest: sha256:ccad23e18639c8b98cee17e7100b95830a06077b56d8e5b006d6dcf8ec5e94a0
+          - component: gateway
+            source: docker.io/library/caddy
+            tag: 2-alpine
+            digest: sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
+    steps:
+      - name: Install the registry copy client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends skopeo
+      - name: Copy immutable dependency manifests to existing public project storage
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REGISTRY_OWNER: ${{ github.repository_owner }}
+          REGISTRY_USER: ${{ github.actor }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          COMPONENT: ${{ matrix.component }}
+          SOURCE: ${{ matrix.source }}
+          UPSTREAM_TAG: ${{ matrix.tag }}
+          DIGEST: ${{ matrix.digest }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft == false' | grep -qx true
+          auth="$RUNNER_TEMP/registry-auth.json"
+          printf '%s' "$GH_TOKEN" | skopeo login --authfile "$auth" --username "$REGISTRY_USER" --password-stdin ghcr.io
+          destination="ghcr.io/${REGISTRY_OWNER,,}/artifactory-control-plane:$RELEASE_TAG-trial-$COMPONENT-$UPSTREAM_TAG"
+          if skopeo inspect --authfile "$auth" --raw "docker://$destination" > "$RUNNER_TEMP/manifest.json" 2> "$RUNNER_TEMP/inspect.log"; then
+            actual="sha256:$(sha256sum "$RUNNER_TEMP/manifest.json" | cut -d ' ' -f 1)"
+            test "$actual" = "$DIGEST"
+          else
+            grep -Eqi 'manifest unknown|manifest_unknown' "$RUNNER_TEMP/inspect.log"
+            skopeo copy --authfile "$auth" --all --preserve-digests "docker://$SOURCE@$DIGEST" "docker://$destination"
+          fi
+          skopeo inspect --authfile "$auth" --raw "docker://$destination" > "$RUNNER_TEMP/manifest.json"
+          actual="sha256:$(sha256sum "$RUNNER_TEMP/manifest.json" | cut -d ' ' -f 1)"
+          test "$actual" = "$DIGEST"
+          printf '%s -> %s (%s)\n' "$SOURCE" "$destination" "$actual" >> "$GITHUB_STEP_SUMMARY"

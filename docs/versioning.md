@@ -64,7 +64,11 @@ helm upgrade --install artifactory charts/artifactory \
 
 该 profile 为三副本控制平面、独立单副本 Source、PostgreSQL 和 S3；不是数据库 / 对象存储的全栈 HA。所有服务为 ClusterIP，不创建 Ingress、NodePort、CRD、ClusterRole 或 StorageClass。HTTP 仅用于明确批准的内网试验；正式上线需另行配置可信 HTTPS、备份和外部 HA 数据服务。
 
-配额限定 4 CPU / 6 GiB requests、12 CPU / 12 GiB limits、40 GiB PVC 申请量；所有试部署 Pod 使用 `preemptionPolicy: Never`，不能抢占其他工作负载。不要通过提高其他工作负载优先级、驱逐他人 Pod 或修改存储组件来满足调度。网络策略只允许本命名空间、DNS 与公网 HTTP(S)；接入私有 Git / 模型前应另行批准精确出口。网络策略是否实际执行还需核对现有 CNI，不得为此替换集群网络。
+配额限定 4 CPU / 6 GiB requests、12 CPU / 12 GiB limits、40 GiB PVC 申请量。试部署不设置 PriorityClass，安装前必须确认集群没有默认高优先级类、非目标 Pod 的优先级均不低于 0；这样默认优先级 0 的新 Pod 无法抢占现有工作负载。若该检查不满足，停止部署，不创建或修改集群级 PriorityClass。不能直接在 Pod 上设置 `preemptionPolicy: Never`：目标集群的 Priority admission 会要求它匹配所选 PriorityClass。不要通过提高优先级、驱逐他人 Pod 或修改存储组件来满足调度。网络策略只允许本命名空间、DNS 与公网 HTTP(S)；接入私有 Git / 模型前应另行批准精确出口。网络策略是否实际执行还需核对现有 CNI，不得为此替换集群网络。
+
+已发布的 0.2.0 Helm 包保持不可变，其中 `values-trial.yaml` 包含上述不兼容的逐 Pod 设置。使用该包时额外传入 `--set-string podPreemptionPolicy=` 清空它，并执行相同的优先级审计；当前源码 profile 已移除此设置。不得通过修改集群 admission 或创建新 PriorityClass 来绕过检查。
+
+若集群无法直连镜像源，仅在本次 Helm values 中使用经过上游摘要核对的镜像传输端点，并用 `tag@sha256:<digest>` 固定内容；不要修改节点 DNS、containerd registry 配置或集群网络。可手动运行 `trial-image-mirrors`，为已发布版本复制三个固定摘要的依赖镜像。缓存标签为现有公开 `artifactory-control-plane` 镜像仓库内的 `<release-tag>-trial-<component>-<upstream-tag>`，明确不是控制平面版本；复制保留原始所有架构、配置、许可证与内容摘要，且拒绝覆盖不同内容的已有标签。第一方版本标签、`latest` 和原始 Release 资产均不改变。
 
 ```sh
 kubectl --kubeconfig "$PRIVATE_KUBECONFIG" -n artifactory \

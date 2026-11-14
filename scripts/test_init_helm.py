@@ -14,7 +14,7 @@ SCRIPT = Path(__file__).with_name("init-helm.py")
 
 class HelmBootstrapTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which('helm'), 'requires helm')
-    def test_trial_profile_is_replicated_private_and_cannot_preempt_other_workloads(self):
+    def test_trial_profile_is_replicated_private_and_uses_default_priority(self):
         chart = SCRIPT.parents[1] / 'charts/artifactory'
         result = subprocess.run(['helm', 'template', 'artifactory', str(chart),
                                  '--namespace', 'artifactory', '--kube-version', '1.28.3',
@@ -27,8 +27,9 @@ class HelmBootstrapTests(unittest.TestCase):
         self.assertNotIn('type: LoadBalancer', result.stdout)
         self.assertNotIn('kind: Ingress\n', result.stdout)
         self.assertNotIn('kind: ClusterRole', result.stdout)
-        self.assertEqual(result.stdout.count('preemptionPolicy: Never'),
-                         result.stdout.count('kind: Deployment\n'))
+        self.assertNotIn('preemptionPolicy:', result.stdout)
+        self.assertNotIn('priorityClassName:', result.stdout)
+        self.assertNotIn('kind: PriorityClass', result.stdout)
         version = (SCRIPT.parents[1] / 'VERSION').read_text().strip()
         self.assertIn(f'ghcr.io/zhubby/artifactory-control-plane:{version}', result.stdout)
 

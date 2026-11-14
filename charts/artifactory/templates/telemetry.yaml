@@ -35,9 +35,6 @@ spec:
         {{- include "artifactory.selector" . | nindent 8 }}
         app.kubernetes.io/component: telemetry
     spec:
-      {{- with .Values.podPreemptionPolicy }}
-      preemptionPolicy: {{ . }}
-      {{- end }}
       automountServiceAccountToken: false
       securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
       {{- with .Values.imagePullSecrets }}

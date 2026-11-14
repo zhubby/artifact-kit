@@ -1,4 +1,3 @@
-podPreemptionPolicy: Never
 controlPlane:
   replicas: 3
   databaseConnections: 20
