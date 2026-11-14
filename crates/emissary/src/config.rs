@@ -21,6 +21,8 @@ pub struct Config {
     pub root: PathBuf,
     pub git_ca_file: PathBuf,
     pub tools: BTreeMap<String, String>,
+    /// Custom startup values; keys are automatically prefixed with custom.
+    pub metadata: BTreeMap<String, serde_json::Value>,
     pub signing_profiles: BTreeMap<String, BTreeMap<String, String>>,
     pub log_buffer_bytes: u64,
     pub source_cache_bytes: u64,

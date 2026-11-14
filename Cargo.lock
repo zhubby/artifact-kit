@@ -189,8 +189,10 @@ dependencies = [
  "argon2",
  "artifactory-database",
  "artifactory-emissary-protocol",
+ "artifactory-planner-runtime",
  "artifactory-runtime-protocol",
  "artifactory-source-core",
+ "artifactory-telemetry-model",
  "async-stream",
  "axum",
  "base64 0.22.1",
@@ -434,6 +436,7 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "uuid",
 ]
 

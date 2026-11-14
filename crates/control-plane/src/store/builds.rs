@@ -56,7 +56,7 @@ impl ControlStore {
         let model = self
             .model_snapshot(project_row.decode("model_profile_id")?)
             .await?;
-        let context = json!({"pool_ids":project_row.decode::<Vec<Uuid>>("pool_ids")?,"signing_profiles":project_row.decode::<Vec<String>>("signing_profiles")?,"build_context":project_row.decode::<String>("build_context")?,"source_credentials":project_row.decode::<Value>("source_credentials")?});
+        let context = json!({"placement_version":if std::env::var("ARTIFACTORY_AI_PLACEMENT").is_ok_and(|v|v=="1" || v=="true") {1}else{0},"pool_ids":project_row.decode::<Vec<Uuid>>("pool_ids")?,"signing_profiles":project_row.decode::<Vec<String>>("signing_profiles")?,"build_context":project_row.decode::<String>("build_context")?,"source_credentials":project_row.decode::<Value>("source_credentials")?});
         let id = Uuid::new_v4();
         let created=sql::execute(&mut self.pool.clone(), "INSERT INTO builds(id,project_id,requested_ref,parameters,selected_targets,release_version,publish_status,requested_by,source_repository_url,source_credential_id,goal,target_requirements,planning_context,model_config_snapshot) SELECT $1,id,$3,$4,$5,$6,$7,$8,repository_url,credential_id,$9,$10,$11,$12 FROM projects WHERE id=$2", params![id, project, &input.reference, &input.parameters, &input.targets, &input.release_version, if input.release_version.is_some(){"pending"}else{"not_requested"}, actor, goal, &input.target_requirements, context, model]).await?;
         if created != 1 {
@@ -100,7 +100,7 @@ impl ControlStore {
 
     pub async fn build_detail(&self, id: Uuid) -> Result<dto::BuildDetail> {
         let build:dto::BuildEnvelope=sql::scalar(&mut self.pool.clone(), "SELECT (to_jsonb(b)-'model_config_snapshot') || jsonb_build_object('project_name',p.name) FROM builds b JOIN projects p ON p.id=b.project_id WHERE b.id=$1", params![id]).await?;
-        let jobs:Vec<dto::Job>=sql::scalars(&mut self.pool.clone(), "SELECT to_jsonb(j) || jsonb_build_object('attempts',(SELECT coalesce(jsonb_agg((to_jsonb(a)-'lease_token'-'command_id') || jsonb_build_object('node_name',n.name,'steps',(SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY s.step_index),'[]') FROM step_runs s WHERE s.attempt_id=a.id)) ORDER BY a.created_at),'[]') FROM attempts a JOIN nodes n ON n.id=a.node_id WHERE a.job_id=j.id)) FROM jobs j WHERE j.build_id=$1 ORDER BY j.target", params![id]).await?;
+        let jobs:Vec<dto::Job>=sql::scalars(&mut self.pool.clone(), "SELECT to_jsonb(j) || jsonb_build_object('placement',(SELECT to_jsonb(p)-'job_id' FROM job_placements p WHERE p.job_id=j.id),'attempts',(SELECT coalesce(jsonb_agg((to_jsonb(a)-'lease_token'-'command_id') || jsonb_build_object('node_name',n.name,'steps',(SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY s.step_index),'[]') FROM step_runs s WHERE s.attempt_id=a.id)) ORDER BY a.created_at),'[]') FROM attempts a JOIN nodes n ON n.id=a.node_id WHERE a.job_id=j.id)) FROM jobs j WHERE j.build_id=$1 ORDER BY j.target", params![id]).await?;
         let artifacts:Vec<dto::BuildArtifact>=sql::scalars(&mut self.pool.clone(), "SELECT (to_jsonb(ar)-'object_key') || jsonb_build_object('target',j.target,'attempt_status',a.status) FROM artifacts ar JOIN attempts a ON a.id=ar.attempt_id JOIN jobs j ON j.id=a.job_id WHERE j.build_id=$1 ORDER BY ar.created_at", params![id]).await?;
         let publish_attempts = sql::scalars::<dto::PublishAttempt>(
             &mut self.pool.clone(),

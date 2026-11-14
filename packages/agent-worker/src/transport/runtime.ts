@@ -37,7 +37,7 @@ export function runtimeRpc(lease: Lease, source: string, post: Post, signal: Abo
     const args = JSON.parse(String(payload.arguments_json || "{}")) as Record<string, unknown>;
     if (["list_tree", "read_file", "search_source", "git_metadata"].includes(name)) return httpPost(source, signal)("/v1/tool", { lease, name, arguments: args });
     const request_id = randomUUID();
-    const submission = name === "submit_plan" || name === "request_input";
+    const submission = name === "submit_plan" || name === "submit_placements" || name === "request_input";
     let result: Record<string, unknown> | undefined;
     try { result = await post("/v1/tool", { lease, name, arguments: args, request_id }); }
     catch (error) {

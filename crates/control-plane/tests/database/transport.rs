@@ -1,7 +1,7 @@
 //! Real Tonic/mTLS connections against isolated database schemas and controlled storage.
 use super::*;
 use artifactory_control_plane::{dispatch, grpc::EmissaryService, pki, protocol as pb};
-use rcgen::{BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, KeyPair};
+use rcgen::{BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair};
 use serde_json::{Value, json};
 use std::{
     sync::atomic::{AtomicUsize, Ordering},
@@ -14,6 +14,8 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity, Server, 
 mod load;
 #[path = "local_source.rs"]
 mod local_source;
+#[path = "node_metadata.rs"]
+mod node_metadata;
 
 struct Certificates {
     ca: String,
@@ -27,11 +29,17 @@ impl Certificates {
         let key = KeyPair::generate().unwrap();
         let mut params = CertificateParams::default();
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params
+            .distinguished_name
+            .push(DnType::CommonName, "Artifactory test CA");
         let ca = params.self_signed(&key).unwrap().pem();
         let issuer = rcgen::Issuer::new(params, key);
         let key = KeyPair::generate().unwrap();
         let mut params =
             CertificateParams::new(vec!["localhost".into(), "127.0.0.1".into()]).unwrap();
+        params
+            .distinguished_name
+            .push(DnType::CommonName, "localhost");
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         let server = params.signed_by(&key, &issuer).unwrap().pem();
         Self {
@@ -45,6 +53,9 @@ impl Certificates {
     fn device(&self) -> (String, String) {
         let key = KeyPair::generate().unwrap();
         let mut params = CertificateParams::default();
+        params
+            .distinguished_name
+            .push(DnType::CommonName, "Artifactory test device");
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
         (
             params.signed_by(&key, &self.issuer).unwrap().pem(),
@@ -74,11 +85,13 @@ impl Replica {
             ))
             .client_ca_root(Certificate::from_pem(&certificates.ca));
         let service = EmissaryService(state.clone());
+        let planning = artifactory_control_plane::planning::PlanningService(state.clone());
         let server = tokio::spawn(async move {
             Server::builder()
                 .tls_config(tls)
                 .unwrap()
                 .add_service(pb::control_server::ControlServer::new(service))
+                .add_service(pb::planning_server::PlanningServer::new(planning))
                 .serve_with_incoming(incoming)
                 .await
                 .unwrap();
@@ -100,6 +113,7 @@ struct Device {
     client: pb::control_client::ControlClient<Channel>,
     events: mpsc::Sender<pb::EmissaryEvent>,
     commands: tonic::Streaming<pb::Command>,
+    startup: Option<artifactory_telemetry_model::nodes::MetadataSnapshot>,
 }
 
 impl Device {
@@ -116,6 +130,7 @@ impl Device {
             client,
             events,
             commands,
+            startup: None,
         }
     }
 
@@ -144,6 +159,21 @@ impl Device {
         mpsc::Sender<pb::EmissaryEvent>,
         tonic::Streaming<pb::Command>,
     )> {
+        Self::try_open_metadata(id, certificate, key, url, ca, None).await
+    }
+
+    async fn try_open_metadata(
+        id: Uuid,
+        certificate: &str,
+        key: &str,
+        url: &str,
+        ca: &str,
+        startup: Option<&artifactory_telemetry_model::nodes::MetadataSnapshot>,
+    ) -> anyhow::Result<(
+        pb::control_client::ControlClient<Channel>,
+        mpsc::Sender<pb::EmissaryEvent>,
+        tonic::Streaming<pb::Command>,
+    )> {
         let channel = Channel::from_shared(url.to_owned())?
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(15))
@@ -161,8 +191,9 @@ impl Device {
                 kind: "hello".into(),
                 emissary_id: id.to_string(),
                 protocol_major: 1,
-                payload_json: json!({"capabilities":["git","bash"],"active_attempts":[]})
-                    .to_string(),
+                payload_json:
+                    json!({"startup":startup,"capabilities":["git","bash"],"active_attempts":[]})
+                        .to_string(),
                 ..Default::default()
             })
             .await?;
@@ -327,6 +358,7 @@ async fn ordinary_health_rejects_superseded_revoked_and_expired_streams() {
         client,
         events,
         commands,
+        startup: None,
     };
     let before: Value = sql::scalar(&mut database.pool.clone(), "SELECT jsonb_build_object('session',active_session,'owner',connection_owner,'last_seen',last_seen,'diagnostics',diagnostics) FROM nodes WHERE id=$1", params![old.id]).await.unwrap();
     let pulse = |node: Uuid| {

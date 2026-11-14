@@ -7,7 +7,6 @@ mod spool;
 use crate::{
     client,
     config::Config,
-    doctor,
     protocol::{TelemetryBatch, telemetry_client::TelemetryClient},
 };
 use collector::Collector;
@@ -21,10 +20,76 @@ use std::{
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
+/// Capture static observations once, before the runtime opens any control connection.
+pub async fn startup(
+    cfg: &Config,
+    startup_id: uuid::Uuid,
+    diagnostics: &Value,
+    capabilities: Vec<String>,
+) -> anyhow::Result<(
+    artifactory_telemetry_model::nodes::MetadataSnapshot,
+    artifactory_telemetry_model::Inventory,
+)> {
+    let mut system = sysinfo::System::new();
+    system.refresh_cpu_all();
+    system.refresh_memory();
+    let mut inventory = inventory::collect(&system, diagnostics, capabilities.clone());
+    inventory.accelerators = inventory::accelerators(cfg).await;
+    inventory.collectors.insert(
+        "accelerator_inventory".into(),
+        if inventory.accelerators.is_empty() {
+            "unknown_or_unsupported"
+        } else {
+            "available"
+        }
+        .into(),
+    );
+    if inventory
+        .accelerators
+        .iter()
+        .any(|card| card.vendor == "NVIDIA")
+    {
+        inventory
+            .collectors
+            .insert("accelerator_utilization".into(), "nvidia-smi".into());
+    }
+    let mut metadata = std::collections::BTreeMap::new();
+    let value = serde_json::to_value(&inventory)?;
+    for (key, value) in value
+        .as_object()
+        .expect("inventory serializes to an object")
+    {
+        let namespace = match key.as_str() {
+            "tools" => "tools",
+            "emissary_version" | "collectors" => "emissary",
+            "os" | "os_version" | "kernel_version" | "arch" | "boot_time" | "container"
+            | "virtualization" => "system",
+            "capabilities" | "signing_profile_refs" => continue,
+            _ => "hardware",
+        };
+        if key == "tools" {
+            if let Some(tools) = value.as_object() {
+                for (tool, value) in tools {
+                    metadata.insert(format!("tools.{tool}"), value.clone());
+                }
+            }
+        } else if !value.is_null() {
+            metadata.insert(format!("{namespace}.{key}"), value.clone());
+        }
+    }
+    for (key, value) in &cfg.metadata {
+        metadata.insert(format!("custom.{key}"), value.clone());
+    }
+    let snapshot = artifactory_telemetry_model::nodes::MetadataSnapshot::new(
+        startup_id,
+        metadata,
+        capabilities,
+    )?;
+    Ok((snapshot, inventory))
+}
+
 #[derive(Clone)]
 pub struct Snapshot {
-    pub diagnostics: Value,
-    pub capabilities: Vec<String>,
     pub metrics: Value,
 }
 pub struct Handle {
@@ -34,33 +99,16 @@ pub struct Handle {
 }
 impl Handle {
     /// Start best-effort background collection. Telemetry errors never propagate into execution.
-    pub fn start(cfg: Config, diagnostics: Value, capabilities: Vec<String>) -> Self {
+    pub fn start(
+        cfg: Config,
+        startup_id: uuid::Uuid,
+        inventory: artifactory_telemetry_model::Inventory,
+    ) -> Self {
         let registry = Registry::default();
         let cancel = CancellationToken::new();
-        let snapshot = Arc::new(RwLock::new(Snapshot {
-            diagnostics: diagnostics.clone(),
-            capabilities: capabilities.clone(),
-            metrics: json!({}),
-        }));
+        let snapshot = Arc::new(RwLock::new(Snapshot { metrics: json!({}) }));
         let spool = Arc::new(Mutex::new(None::<Spool>));
         let notify = Arc::new(Notify::new());
-        let (probe_tx, mut probe_rx) = tokio::sync::watch::channel((diagnostics, capabilities));
-        let probe_cfg = cfg.clone();
-        let probe_cancel = cancel.clone();
-        let probe_snapshot = snapshot.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {_=probe_cancel.cancelled()=>break,_=tokio::time::sleep(Duration::from_secs(900))=>{}}
-                let value = tokio::select! {_=probe_cancel.cancelled()=>break,value=doctor::doctor(&probe_cfg)=>value};
-                if let Ok(mut snapshot) = probe_snapshot.write() {
-                    snapshot.diagnostics = value.0.clone();
-                    snapshot.capabilities = value.1.clone();
-                }
-                if probe_tx.send(value).is_err() {
-                    break;
-                }
-            }
-        });
         let collect_cfg = cfg.clone();
         let collect_cancel = cancel.clone();
         let collect_registry = registry.clone();
@@ -68,24 +116,25 @@ impl Handle {
         let collect_snapshot = snapshot.clone();
         let collect_notify = notify.clone();
         tokio::spawn(async move {
-            let Ok(mut collector) = tokio::task::spawn_blocking(Collector::new).await else {
+            let Ok(mut collector) =
+                tokio::task::spawn_blocking(move || Collector::new(startup_id)).await
+            else {
                 return;
             };
             let start = tokio::time::Instant::now() + crate::client::retry_delay(10);
             let mut tick = tokio::time::interval_at(start, Duration::from_secs(10));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut index = 0u64;
-            let mut cards = Vec::new();
-            let mut fingerprint = Vec::new();
+            let cards = inventory.accelerators.clone();
+            let mut pending_inventory = Some(inventory);
             loop {
                 tokio::select! {_=collect_cancel.cancelled()=>break,_=tick.tick()=>{}}
                 let host = index.is_multiple_of(3);
-                let probe = (index.is_multiple_of(90) || probe_rx.has_changed().unwrap_or(false))
-                    .then(|| probe_rx.borrow_and_update().clone());
+                let inventory = pending_inventory.clone();
                 let cfg = collect_cfg.clone();
                 let registry = collect_registry.clone();
                 let result = tokio::task::spawn_blocking(move || {
-                    let data = collector.sample(&cfg, &registry, host, probe);
+                    let data = collector.sample(&cfg, &registry, host, inventory);
                     (collector, data)
                 })
                 .await;
@@ -93,30 +142,6 @@ impl Handle {
                     break;
                 };
                 collector = next;
-                if let Some(inventory) = &mut batch.inventory {
-                    cards = tokio::select! {_=collect_cancel.cancelled()=>break,v=inventory::accelerators(&collect_cfg)=>v};
-                    inventory.accelerators = cards.clone();
-                    inventory.collectors.insert(
-                        "accelerator_inventory".into(),
-                        if cards.is_empty() {
-                            "unknown_or_unsupported"
-                        } else {
-                            "available"
-                        }
-                        .into(),
-                    );
-                    if cards.iter().any(|c| c.vendor == "NVIDIA") {
-                        inventory
-                            .collectors
-                            .insert("accelerator_utilization".into(), "nvidia-smi".into());
-                    }
-                    let next = serde_json::to_vec(inventory).unwrap_or_default();
-                    if next == fingerprint && !index.is_multiple_of(360) {
-                        batch.inventory = None;
-                    } else {
-                        fingerprint = next;
-                    }
-                }
                 if let Some(host) = &mut batch.host {
                     host.accelerators = tokio::select! {_=collect_cancel.cancelled()=>break,v=inventory::accelerator_samples(&collect_cfg,&cards)=>v};
                 }
@@ -130,8 +155,8 @@ impl Handle {
                 let spool = collect_spool.clone();
                 let cfg = collect_cfg.clone();
                 let snapshot = collect_snapshot.clone();
-                let _ = tokio::task::spawn_blocking(move || {
-                    let Ok(mut guard) = spool.lock() else { return };
+                let buffered = tokio::task::spawn_blocking(move || {
+                    let mut guard = spool.lock().expect("telemetry spool lock poisoned");
                     if guard.is_none() {
                         match Spool::open(
                             cfg.root.join("telemetry"),
@@ -144,23 +169,31 @@ impl Handle {
                             Ok(s) => *guard = Some(s),
                             Err(_) => {
                                 eprintln!("telemetry spool unavailable; execution continues");
-                                return;
+                                return false;
                             }
                         }
                     }
+                    let mut buffered = false;
                     if let Some(spool) = guard.as_mut() {
                         if batch.validate().is_err() || spool.push(&mut batch).is_err() {
                             let _ = spool.note_gap();
                             eprintln!(
                                 "telemetry sample could not be buffered; execution continues"
                             );
+                        } else {
+                            buffered = true;
                         }
                         if let Ok(mut snapshot) = snapshot.write() {
                             snapshot.metrics["telemetry_dropped_batches"] = json!(spool.dropped());
                         }
                     }
+                    buffered
                 })
-                .await;
+                .await
+                .unwrap_or(false);
+                if buffered {
+                    pending_inventory = None;
+                }
                 collect_notify.notify_one();
             }
         });

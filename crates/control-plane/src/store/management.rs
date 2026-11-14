@@ -126,7 +126,21 @@ impl ControlStore {
     }
 
     pub async fn nodes(&self, limit: i64, offset: i64, q: &str) -> Result<Vec<dto::NodeSummary>> {
-        Ok(sql::scalars(&mut self.pool.clone(), "SELECT (to_jsonb(n)-'certificate_hash'-'active_session'-'connection_owner') || jsonb_build_object('emissary_desired_release',coalesce(n.emissary_target_release,p.emissary_target_release),'emissary_pool_paused',p.emissary_updates_paused,'pool_name',p.name,'online',NOT n.revoked AND n.last_seen>now()-interval '30 seconds','active_jobs',(SELECT count(*) FROM attempts a WHERE a.node_id=n.id AND a.status IN ('leased','running') AND a.lease_expires_at>now())) FROM nodes n JOIN node_pools p ON p.id=n.pool_id WHERE strpos(lower(n.name||' '||n.os||' '||p.name),lower($3))>0 ORDER BY n.created_at DESC,n.id DESC LIMIT $1 OFFSET $2", params![limit, offset, q]).await?)
+        // Project before encoding so list requests never deserialize large metadata values.
+        Ok(sql::scalars(&mut self.pool.clone(), r#"SELECT to_jsonb(summary) FROM (
+            SELECT n.id,n.name,n.os,n.arch,n.pool_id,n.labels,n.capabilities,n.diagnostics,
+                n.signing_profiles,n.slots,n.draining,n.revoked,n.certificate_expires_at,
+                n.last_seen,n.created_at,n.emissary_target_release,n.emissary_current_version,
+                n.emissary_launcher_version,n.emissary_ota_status,n.ota_draining,
+                coalesce(n.emissary_target_release,p.emissary_target_release) AS emissary_desired_release,
+                p.emissary_updates_paused AS emissary_pool_paused,p.name AS pool_name,
+                NOT n.revoked AND n.last_seen>now()-interval '30 seconds' AS online,
+                (SELECT count(*) FROM attempts a WHERE a.node_id=n.id
+                    AND a.status IN ('leased','running') AND a.lease_expires_at>now()) AS active_jobs
+            FROM nodes n JOIN node_pools p ON p.id=n.pool_id
+            WHERE strpos(lower(n.name||' '||n.os||' '||p.name),lower($3))>0
+            ORDER BY n.created_at DESC,n.id DESC LIMIT $1 OFFSET $2
+        ) summary"#, params![limit, offset, q]).await?)
     }
 
     pub async fn update_node(&self, id: Uuid, input: &NodeUpdate) -> Result<bool> {

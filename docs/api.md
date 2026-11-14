@@ -25,7 +25,8 @@
 | `DELETE /tokens/{id}` | 吊销当前用户的 Token |
 | `GET, POST /pools` | 创建 `{name}` |
 | `POST /enrollment-tokens` | `{pool_id}`，返回一次性令牌 |
-| `GET /nodes` | 实际能力、诊断、slots、online、active_jobs |
+| `GET /nodes` | 实际能力、诊断、slots、online、active_jobs；不携带全量 metadata |
+| `GET /nodes/{id}/metadata` | viewer 会话；完整启动 metadata、startup_id、内容摘要与服务端接收时间 |
 | `GET /nodes/{id}/telemetry` | viewer 会话；最新主机采样、fresh 与版本化清单 |
 | `GET /nodes/{id}/inventory` | viewer 会话；最近 100 次清单观察，附 truncated |
 | `GET /nodes/{id}/telemetry/history` | viewer 会话；主机时序，显式 from / to / resolution |

@@ -318,6 +318,7 @@ response! { Job {
     created_at: String,
     plan_revision_id: Option<Uuid>,
     attempts: Vec<Attempt>,
+    placement: Option<Value>,
 }}
 
 response! { BuildArtifact {

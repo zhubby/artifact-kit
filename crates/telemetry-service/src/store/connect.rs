@@ -63,6 +63,19 @@ async fn business_authorization(url: &str) -> Result<BusinessAuthorizationReposi
     )
     .await?;
     artifactory_database::require_timescale(&business).await?;
+    if artifactory_database::validate_versions(
+        &business,
+        &[
+            (2026111301, "0000_baseline.sql"),
+            (2026111401, "0001_control_replication.sql"),
+            (2026111402, "0002_node_placements.sql"),
+        ],
+    )
+    .await
+    .is_ok()
+    {
+        return Ok(BusinessAuthorizationRepository::new(business));
+    }
     // Authorization columns are unchanged by HA. Accept both known histories,
     // including the baseline during an ordered Control/Telemetry upgrade.
     if artifactory_database::validate_versions(

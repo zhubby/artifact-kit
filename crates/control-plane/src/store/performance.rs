@@ -52,7 +52,12 @@ async fn critical_store_latency() {
         .await
         .unwrap();
         let started = Instant::now();
-        assert!(store.schedule_one().await.unwrap());
+        assert!(
+            store
+                .schedule_one(&super::placements::Admission::default())
+                .await
+                .unwrap()
+        );
         let (attempt, lease_token): (Uuid, String) = sql::tuple(
             &mut pool.clone(),
             "SELECT id,lease_token FROM attempts WHERE job_id=$1",

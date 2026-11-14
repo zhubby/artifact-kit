@@ -1,0 +1,226 @@
+{
+  "date": "2026-11-14",
+  "timezone": "Asia/Shanghai",
+  "base_commit": "9613ac65a63e07dfefa4008aad8dc72e17489c7b",
+  "branch": "codex/node-metadata-placement",
+  "uncommitted_source": true,
+  "environment": {
+    "os": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "logical_cpus": 10,
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
+    "node": "v24.11.1",
+    "database_image": "docker.m.daocloud.io/timescale/timescaledb:2.32.0-pg17"
+  },
+  "source_snapshot": {
+    "sha256": "721d5025e85eb9538b4553e90a1525c9ad95c27b50177f50098e41ccd1787ffe",
+    "files": 291,
+    "include_prefixes": [
+      "crates/",
+      "proto/",
+      "packages/agent-worker/",
+      "charts/",
+      "operator/",
+      "web/src/",
+      "web/tests/",
+      "tests/control/"
+    ],
+    "include_files": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "compose.yaml"
+    ],
+    "method": "SHA-256 over sorted Git-tracked and non-ignored untracked included implementation paths; concatenate UTF-8 relative path, NUL, file bytes, NUL"
+  },
+  "control_binary_sha256": "130e7d8e6b6952258fb8621bdcd813ea15ee026cd46ed58dd63be70376d6609b",
+  "checks": {
+    "rust_workspace_all_features": {
+      "status": "passed",
+      "tests": 95
+    },
+    "control_database": {
+      "status": "passed",
+      "tests": 62
+    },
+    "database_regression": {
+      "status": "passed",
+      "tests": 13
+    },
+    "telemetry_database": {
+      "status": "passed",
+      "tests": 4
+    },
+    "runtime_database": {
+      "status": "passed",
+      "tests": 8
+    },
+    "worker_node24": {
+      "status": "passed",
+      "tests": 15
+    },
+    "browser_desktop_tablet_mobile": {
+      "status": "passed",
+      "tests": 6
+    },
+    "rustfmt": {
+      "status": "passed"
+    },
+    "clippy_all_targets_all_features_deny_warnings": {
+      "status": "passed"
+    },
+    "rustdoc": {
+      "status": "passed"
+    },
+    "web_typecheck": {
+      "status": "passed"
+    },
+    "helm_lint": {
+      "status": "passed"
+    },
+    "helm_placement_disabled_enabled": {
+      "status": "passed"
+    },
+    "compose_placement_disabled_enabled": {
+      "status": "passed"
+    },
+    "data_access_boundaries": {
+      "status": "passed"
+    },
+    "web_production_build": {
+      "status": "passed"
+    },
+    "documentation_links": {
+      "status": "passed",
+      "chapters": 42,
+      "html_pages": 44,
+      "local_links_and_assets": 3741
+    },
+    "review_regressions": {
+      "status": "passed",
+      "findings_fixed": 3,
+      "failed_before_fix": 3
+    }
+  },
+  "migrations": {
+    "business": 2026111402,
+    "telemetry": 2026111403
+  },
+  "mcp": {
+    "sdk": "@modelcontextprotocol/sdk",
+    "protocol_methods": [
+      "initialize",
+      "tools/list",
+      "tools/call"
+    ],
+    "transports": [
+      "real mTLS gRPC",
+      "real Rust Runtime HTTP to authenticated Control"
+    ],
+    "runtime_test_identity": "registered fixture Pod identity and real Runtime grant; no Kubernetes TokenReview"
+  },
+  "gates": {
+    "heartbeat_p99_ms_lt": 2000,
+    "api_p95_ms_lt": 1000,
+    "reconnect_max_ms_lt": 20000,
+    "heartbeat_samples_gte": 20000,
+    "final_errors": 0,
+    "final_api_errors": 0
+  },
+  "isolated_load": {
+    "nodes": 10000,
+    "active_attempts": 1000,
+    "replicas": 3,
+    "seconds": 30,
+    "passed": true,
+    "connect_seconds": 30.560094916,
+    "build_profile": "release",
+    "database_connections_per_replica": 40,
+    "heartbeat_p99_ms": 325.042917,
+    "api_p95_ms": 105.625,
+    "heartbeat_samples": 32872,
+    "api_samples": 280,
+    "reconnect_latency": {
+      "max_ms": 11301.7425,
+      "p50_ms": 5652.025834,
+      "p95_ms": 9942.952874999999,
+      "p99_ms": 11026.453125,
+      "samples": 6667
+    },
+    "reconnects": 6667,
+    "transient_transport_retries": 88,
+    "reconnect_errors": {
+      "io_ConnectionReset": 88
+    },
+    "errors": 0,
+    "api_errors": 0,
+    "metadata_snapshots": 10000,
+    "metadata_history": 10000,
+    "metadata_preserved": true,
+    "database_configuration": {
+      "fsync": "on",
+      "full_page_writes": "on",
+      "max_connections": 200,
+      "server_version": "17.11",
+      "shared_buffers": "256MB",
+      "synchronous_commit": "on",
+      "wal_buffers": "16MB"
+    },
+    "database_connections_peak_including_harness": 133,
+    "database_lock_waits_peak": 0,
+    "all_nodes_recovered": true,
+    "attempt_ids_preserved": true,
+    "valid_running_attempts": 1000,
+    "heartbeat_phases": {
+      "after_sigkill": {
+        "max_ms": 648.667708,
+        "p50_ms": 8.70425,
+        "p95_ms": 95.113959,
+        "p99_ms": 221.93041599999998,
+        "samples": 9598
+      },
+      "after_sigterm": {
+        "max_ms": 1119.608583,
+        "p50_ms": 10.413541,
+        "p95_ms": 166.174292,
+        "p99_ms": 427.941541,
+        "samples": 13223
+      },
+      "steady": {
+        "max_ms": 447.931417,
+        "p50_ms": 8.392999999999999,
+        "p95_ms": 59.68525,
+        "p99_ms": 199.36445899999998,
+        "samples": 10088
+      }
+    },
+    "survivor_rss_kib": 605712,
+    "survivor_cpu_percent_snapshot": 30.8,
+    "hard_kill": true,
+    "sigterm_drain": true
+  },
+  "scope": {
+    "metadata": "small startup fixture, all 10000 nodes; reconnects reuse identity",
+    "executors": "virtual; 1000 active leases",
+    "excluded_capacity": [
+      "actual builds",
+      "artifact throughput",
+      "telemetry ingest",
+      "MCP query concurrency",
+      "model throughput",
+      "Kubernetes rollout"
+    ],
+    "database_memory_limit_bytes": 0,
+    "existing_cluster_or_resident_emissary_upgraded": false,
+    "external_model_calls": false,
+    "message_broker_added": false
+  },
+  "review": {
+    "fixed_severities": {
+      "P1": 1,
+      "P2": 2
+    },
+    "remaining_merge_blockers": 0,
+    "database_shared_buffers": "256MB",
+    "autotuned_4009MB_run_also_passed": true
+  }
+}

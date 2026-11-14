@@ -9,3 +9,8 @@ snapshot_name = "0000_snapshot.toml"
 id = 2026111401
 name = "0001_control_replication.sql"
 snapshot_name = "0001_snapshot.toml"
+
+[[migrations]]
+id = 2026111402
+name = "0002_node_placements.sql"
+snapshot_name = "0002_snapshot.toml"

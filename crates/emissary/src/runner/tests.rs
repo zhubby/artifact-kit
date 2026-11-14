@@ -3,6 +3,57 @@ use crate::config::read_json;
 use std::path::Path;
 
 #[test]
+fn reconnect_reuses_startup_metadata_and_ordinary_heartbeats_exclude_static_data() {
+    use artifactory_telemetry_model::nodes::MetadataSnapshot;
+    let root = tempfile::tempdir().unwrap();
+    let mut state = test_state(root.path());
+    let startup = uuid::Uuid::new_v4();
+    state.startup = Some(
+        MetadataSnapshot::new(
+            startup,
+            [(
+                "tools.cargo".into(),
+                json!({"available":true,"version":"1.91"}),
+            )]
+            .into(),
+            vec!["cargo".into()],
+        )
+        .unwrap(),
+    );
+    let first: Value = serde_json::from_str(&state.heartbeat("hello").payload_json).unwrap();
+    state.diagnostics["tools"] = json!({"cargo":{"version":"changed after startup"}});
+    let reconnect: Value = serde_json::from_str(&state.heartbeat("hello").payload_json).unwrap();
+    assert_eq!(first["startup"], reconnect["startup"]);
+    let heartbeat: Value =
+        serde_json::from_str(&state.heartbeat("heartbeat").payload_json).unwrap();
+    assert!(heartbeat["startup"].is_null());
+    assert!(heartbeat.get("capabilities").is_none());
+    assert!(heartbeat["diagnostics"].get("tools").is_none());
+    state
+        .command(
+            pb::Command {
+                kind: "metadata_ack".into(),
+                request_id: uuid::Uuid::new_v4().to_string(),
+                ..Default::default()
+            },
+            Instant::now(),
+        )
+        .unwrap();
+    assert!(!state.metadata_acked);
+    state
+        .command(
+            pb::Command {
+                kind: "metadata_ack".into(),
+                request_id: startup.to_string(),
+                ..Default::default()
+            },
+            Instant::now(),
+        )
+        .unwrap();
+    assert!(state.metadata_acked);
+}
+
+#[test]
 fn bounded_spool_does_not_skip_sequence_on_overflow() {
     let root = tempfile::tempdir().unwrap();
     let mut spool = Spool::new(root.path().into(), 1).unwrap();

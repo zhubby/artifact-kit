@@ -43,7 +43,13 @@ pub async fn ingest(
         return Ok(true);
     }
     if let Some(h) = &b.host {
-        sql::execute(&mut tx, "INSERT INTO host_samples(sampled_at,node_id,batch_id,session_id,monotonic_ms,received_at,cpu_percent,memory_total_bytes,memory_used_bytes,swap_total_bytes,swap_used_bytes,load_one,active_attempts,dropped_batches,devices) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)", params![b.sampled_at, node, b.id, b.session_id, b.monotonic_ms as i64, received, h.cpu_percent, h.memory_total_bytes.map(|n|n as i64), h.memory_used_bytes.map(|n|n as i64), h.swap_total_bytes.map(|n|n as i64), h.swap_used_bytes.map(|n|n as i64), h.load_one, h.active_attempts as i32, b.dropped_batches as i64, json!({"disks":h.disks,"networks":h.networks,"accelerators":h.accelerators})]).await.map_err(internal)?;
+        let resources = json!({
+            "available_memory_bytes": h.available_memory_bytes,
+            "build_disk_available_bytes": h.build_disk_available_bytes,
+            "cpu_percent": h.cpu_percent,
+        });
+        sql::execute(&mut tx,"INSERT INTO startup_resources(node_id,startup_id,sampled_at,received_at,sample) VALUES($1,$2,$3,$4,$5) ON CONFLICT(node_id,startup_id) DO UPDATE SET sampled_at=excluded.sampled_at,received_at=excluded.received_at,sample=excluded.sample WHERE excluded.sampled_at>startup_resources.sampled_at",params![node,b.session_id,b.sampled_at,received,resources]).await.map_err(internal)?;
+        sql::execute(&mut tx, "INSERT INTO host_samples(sampled_at,node_id,batch_id,session_id,monotonic_ms,received_at,cpu_percent,memory_total_bytes,memory_used_bytes,swap_total_bytes,swap_used_bytes,load_one,active_attempts,dropped_batches,devices) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)", params![b.sampled_at, node, b.id, b.session_id, b.monotonic_ms as i64, received, h.cpu_percent, h.memory_total_bytes.map(|n|n as i64), h.memory_used_bytes.map(|n|n as i64), h.swap_total_bytes.map(|n|n as i64), h.swap_used_bytes.map(|n|n as i64), h.load_one, h.active_attempts as i32, b.dropped_batches as i64, json!({"disks":h.disks,"networks":h.networks,"accelerators":h.accelerators,"available_memory_bytes":h.available_memory_bytes,"build_disk_available_bytes":h.build_disk_available_bytes})]).await.map_err(internal)?;
         sql::execute(&mut tx, "INSERT INTO latest_hosts(node_id,sampled_at,received_at,session_id,monotonic_ms,dropped_batches,sample) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(node_id) DO UPDATE SET sampled_at=excluded.sampled_at,received_at=excluded.received_at,session_id=excluded.session_id,monotonic_ms=excluded.monotonic_ms,dropped_batches=excluded.dropped_batches,sample=excluded.sample WHERE excluded.sampled_at>latest_hosts.sampled_at", params![node, b.sampled_at, received, b.session_id, b.monotonic_ms as i64, b.dropped_batches as i64, serde_json::to_value(h).map_err(internal)?]).await.map_err(internal)?;
     }
     if !b.processes.is_empty() {

@@ -72,6 +72,9 @@ pub(crate) use planning::{
 mod runtime_bridge;
 pub(crate) use runtime_bridge::{RemoteSnapshot, RuntimeEventCommit};
 
+mod node_metadata;
+mod node_queries;
+mod placements;
 mod replication;
 mod source_cache;
 pub(crate) use executions::SessionUpdate;

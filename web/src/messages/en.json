@@ -309,7 +309,9 @@
     "publishError": "Publication failed (build results retained): {detail}",
     "eyebrowId": "Build / {id}",
     "pipeline": "Build → Sign → Verify",
-    "publication": "Publication"
+    "publication": "Publication",
+    "placement": "Node placement",
+    "placementQueued": "Waiting for an eligible candidate"
   },
   "nodes": {
     "pages": "Node pages",
@@ -347,7 +349,8 @@
     "keep": "Keep node",
     "confirmRevoke": "Confirm revocation",
     "eyebrow": "Native build fleet",
-    "revokeDescription": "Revoke {name}? The node will lose lease renewal access and active jobs will stop. Re-enrollment is required to restore access."
+    "revokeDescription": "Revoke {name}? The node will lose lease renewal access and active jobs will stop. Re-enrollment is required to restore access.",
+    "metadata": "Device metadata"
   },
   "artifacts": {
     "description": "Only server-verified artifacts appear here. Download links are authorized and short-lived.",

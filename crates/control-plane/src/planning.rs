@@ -157,6 +157,11 @@ impl planning_server::Planning for PlanningService {
             .await?;
         let value = match outcome {
             crate::store::PlanningToolResult::Value(value) => value,
+            crate::store::PlanningToolResult::Nodes(build) => {
+                crate::node_query::tool(state, build, &input.name, &args)
+                    .await
+                    .unwrap_or_else(|e| json!({"error":e.to_string()}))
+            }
             crate::store::PlanningToolResult::Inspect(snapshot) => {
                 match source_cache::inspect_tool(state, snapshot, &input.name, &args).await {
                     Ok(value) => value,
@@ -272,6 +277,15 @@ pub(crate) async fn prepare_plan(
     plan.recipe.environment(&context.parameters)?;
     target_requirements(&plan.recipe, &context.target_requirements)?;
     let planning_context = context.planning_context;
+    if planning_context["placement_version"] == 1 {
+        ensure!(
+            plan.recipe.targets.keys().eq(plan.placements.keys()),
+            "AI placement is required for every target"
+        );
+    } else {
+        // A newer worker must preserve the scheduler selected when this build began.
+        plan.placements.clear();
+    }
     let permitted: Vec<String> = serde_json::from_value(
         planning_context
             .get("signing_profiles")

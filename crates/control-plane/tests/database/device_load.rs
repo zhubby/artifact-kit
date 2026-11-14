@@ -256,7 +256,7 @@ async fn run_device(
                         loop {
                             let jitter=(Uuid::new_v4().as_u128()%500) as u64+50;
                             tokio::time::sleep(Duration::from_millis(jitter)).await;
-                            match Device::try_open(device.id,&device.certificate,&device.key,&fallback,&ca).await {
+                            match Device::try_open_metadata(device.id,&device.certificate,&device.key,&fallback,&ca,device.startup.as_ref()).await {
                                 Ok(connection)=>break connection,
                                 Err(error)=>{
                                     metrics.transport_retries.fetch_add(1,Ordering::Relaxed);
@@ -415,8 +415,9 @@ async fn device_fleet_load() {
             let id=Uuid::new_v4();
             let (certificate,key)=certificates.device();
             sql::execute(&mut pool.clone(), "INSERT INTO nodes(id,name,os,arch,pool_id,certificate_hash,certificate_expires_at) VALUES($1,$2,'linux','amd64','00000000-0000-0000-0000-000000000001',$3,now()+interval '1 day')", params![id, format!("load-{index}"), pki::certificate_hash(&certificate).unwrap()]).await.unwrap();
-            let (client,events,commands)=Device::try_open(id,&certificate,&key,&urls[index%3],&certificates.ca).await.context("establishing the mTLS fleet")?;
-            Ok::<_,anyhow::Error>((index,Device{id,certificate,key,client,events,commands}))
+            let startup=Some(artifactory_telemetry_model::nodes::MetadataSnapshot::new(Uuid::new_v4(),std::collections::BTreeMap::from([("system.os".into(),json!("linux")),("system.arch".into(),json!("amd64")),("hardware.logical_cpus".into(),json!(8)),("custom.site".into(),json!("load-fixture"))]),vec!["git".into(),"bash".into()]).unwrap());
+            let (client,events,commands)=Device::try_open_metadata(id,&certificate,&key,&urls[index%3],&certificates.ca,startup.as_ref()).await.context("establishing the mTLS fleet")?;
+            Ok::<_,anyhow::Error>((index,Device{id,certificate,key,client,events,commands,startup}))
         }
     }).buffer_unordered(32);
     while let Some(device) = devices.next().await {
@@ -459,7 +460,17 @@ async fn device_fleet_load() {
     let connect_seconds = match bootstrap {
         Ok(seconds) => seconds,
         Err(error) => {
-            let evidence = json!({"nodes":nodes,"active_attempts":active,"replicas":3,"passed":false,"stage":"bootstrap",
+            let startup_snapshots:i64=sql::scalar(&mut database.pool.clone(),"SELECT count(*) FROM nodes WHERE startup_id IS NOT NULL AND metadata_digest IS NOT NULL",params![]).await.unwrap();
+            let startup_history: i64 = sql::scalar(
+                &mut database.pool.clone(),
+                "SELECT count(*) FROM node_startups",
+                params![],
+            )
+            .await
+            .unwrap();
+            let metadata_preserved =
+                startup_snapshots == nodes as i64 && startup_history == nodes as i64;
+            let evidence = json!({"metadata_snapshots":startup_snapshots,"metadata_history":startup_history,"metadata_preserved":metadata_preserved,"nodes":nodes,"active_attempts":active,"replicas":3,"passed":false,"stage":"bootstrap",
                 "bootstrap_error":error.to_string(),"bootstrap_seconds":connected.elapsed().as_secs_f64(),"devices_started":actors.len(),
                 "startup_heartbeat_latency":latency_summary(&metrics.startup_heartbeat_ms),"database_probe":bootstrap_database,
                 "control_log_filter":log_filter,
@@ -580,10 +591,25 @@ async fn device_fleet_load() {
         }
     }
     let errors = metrics.errors.load(Ordering::Relaxed);
-    let evidence = json!({"nodes":nodes,"active_attempts":active,"replicas":3,"seconds":seconds,"connect_seconds":connect_seconds,
+    let startup_snapshots: i64 = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT count(*) FROM nodes WHERE startup_id IS NOT NULL AND metadata_digest IS NOT NULL",
+        params![],
+    )
+    .await
+    .unwrap();
+    let startup_history: i64 = sql::scalar(
+        &mut database.pool.clone(),
+        "SELECT count(*) FROM node_startups",
+        params![],
+    )
+    .await
+    .unwrap();
+    let metadata_preserved = startup_snapshots == nodes as i64 && startup_history == nodes as i64;
+    let evidence = json!({"metadata_snapshots":startup_snapshots,"metadata_history":startup_history,"metadata_preserved":metadata_preserved,"nodes":nodes,"active_attempts":active,"replicas":3,"seconds":seconds,"connect_seconds":connect_seconds,
         "bootstrap_database_probe":bootstrap_database,
         "heartbeat_samples":sample_count,"heartbeat_p99_ms":heartbeat_p99,"startup_heartbeat_samples":startup_samples,"startup_heartbeat_p99_ms":startup_p99,"api_p95_ms":api_p95,"api_samples":metrics.api_ms.lock().unwrap().len(),
-        "passed":errors==0 && api_errors==0 && attempts_preserved && recovered && running==active as i64 && heartbeat_p99<2000.0 && api_p95<1000.0 && sample_count>=nodes*2,
+        "passed":metadata_preserved && errors==0 && api_errors==0 && attempts_preserved && recovered && running==active as i64 && heartbeat_p99<2000.0 && api_p95<1000.0 && sample_count>=nodes*2,
         "reconnects":metrics.reconnects.load(Ordering::Relaxed),"transient_transport_retries":metrics.transport_retries.load(Ordering::Relaxed),"errors":errors,"api_errors":api_errors,"database_connections_peak_including_harness":database_metrics["connections_peak"],
         "reconnect_errors":*metrics.reconnect_errors.lock().unwrap(),
         "database_active_queries_peak_including_harness":database_metrics["active_queries_peak"],"database_lock_waits_peak":database_metrics["lock_waits_peak"],
@@ -605,6 +631,10 @@ async fn device_fleet_load() {
     storage_server.abort();
     drop(replicas);
     database.close().await;
+    assert!(
+        metadata_preserved,
+        "reconnects must reuse each node startup snapshot"
+    );
     assert_eq!(errors, 0);
     assert_eq!(api_errors, 0, "all API probes must succeed");
     assert!(

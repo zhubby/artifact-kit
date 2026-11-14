@@ -144,18 +144,50 @@ impl protocol::control_server::Control for EmissaryService {
         let payload = heartbeat_payload(&hello)?;
         // Bind the claimed node to its current certificate while registering
         // the session and hello. Reconnects need only one database round trip.
-        self.0
-            .store
-            .record_heartbeat(
-                node,
-                session,
-                &payload,
-                crate::store::SessionUpdate::Register {
-                    owner: self.0.coordination.id,
-                    certificate_hash,
-                },
-            )
-            .await?;
+        let startup = payload
+            .get("startup")
+            .filter(|v| !v.is_null())
+            .map(|v| {
+                serde_json::from_value::<artifactory_telemetry_model::nodes::MetadataSnapshot>(
+                    v.clone(),
+                )
+                .map_err(|_| Status::invalid_argument("invalid startup metadata"))
+            })
+            .transpose()?;
+        if let Some(snapshot) = &startup {
+            self.0
+                .store
+                .register_metadata_session(
+                    node,
+                    session,
+                    self.0.coordination.id,
+                    &certificate_hash,
+                    snapshot,
+                )
+                .await?;
+            self.0
+                .store
+                .record_heartbeat(
+                    node,
+                    session,
+                    &payload,
+                    crate::store::SessionUpdate::Current,
+                )
+                .await?;
+        } else {
+            self.0
+                .store
+                .record_heartbeat(
+                    node,
+                    session,
+                    &payload,
+                    crate::store::SessionUpdate::Register {
+                        owner: self.0.coordination.id,
+                        certificate_hash,
+                    },
+                )
+                .await?;
+        }
         let registered = Instant::now();
         // Drain can start while the hello or the node-row update is in flight.
         if self.0.coordination.is_draining() {
@@ -193,6 +225,7 @@ impl protocol::control_server::Control for EmissaryService {
                 );
                 drop(admission);
                 initialized?;
+                if let Some(snapshot)=&startup { metadata_ack(&state,node,session,snapshot,&sender).await?; }
                 loop {
                     let message = tokio::select! {
                         _ = state.coordination.stop.cancelled() => return Err(Status::unavailable("control replica stopped")),
@@ -208,6 +241,10 @@ impl protocol::control_server::Control for EmissaryService {
                     }
                     if event.kind == "heartbeat" {
                         heartbeat(&state, node, session, &event, &sender).await?;
+                    } else if event.kind == "metadata" {
+                        if event.payload_json.len()>artifactory_telemetry_model::nodes::MAX_METADATA_BYTES { return Err(Status::invalid_argument("oversized metadata")); }
+                        let snapshot=serde_json::from_str(&event.payload_json).map_err(|_|Status::invalid_argument("invalid metadata"))?;
+                        metadata_ack(&state,node,session,&snapshot,&sender).await?;
                     } else {
                         apply_event(&state, node, session, &event, &sender).await?;
                     }
@@ -376,7 +413,7 @@ impl protocol::control_server::Control for EmissaryService {
 }
 
 fn heartbeat_payload(event: &EmissaryEvent) -> Result<Value, Status> {
-    if event.payload_json.len() > 65536 {
+    if event.payload_json.len() > 72 * 1024 {
         return Err(Status::invalid_argument("oversized heartbeat"));
     }
     let payload: Value = serde_json::from_str(&event.payload_json)
@@ -533,4 +570,22 @@ async fn apply_event(
         .await
         .map_err(|_| Status::unavailable("connection closed"))?;
     Ok(())
+}
+
+async fn metadata_ack(
+    state: &AppState,
+    node: Uuid,
+    session: Uuid,
+    snapshot: &artifactory_telemetry_model::nodes::MetadataSnapshot,
+    sender: &mpsc::Sender<Result<Command, Status>>,
+) -> Result<(), Status> {
+    state.store.retry_metadata(node, session, snapshot).await?;
+    sender
+        .send(Ok(Command {
+            kind: "metadata_ack".into(),
+            request_id: snapshot.startup_id.to_string(),
+            ..Default::default()
+        }))
+        .await
+        .map_err(|_| Status::unavailable("connection closed"))
 }

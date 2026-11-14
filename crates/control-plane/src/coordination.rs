@@ -26,6 +26,7 @@ pub struct Coordination {
     // Leave database capacity for established sessions even at the minimum pool
     // budget. The permit covers authorization, session replacement and hello.
     pub(crate) admissions: Arc<Semaphore>,
+    pub(crate) telemetry_client: tokio::sync::OnceCell<reqwest::Client>,
     draining: AtomicBool,
 }
 
@@ -48,6 +49,7 @@ impl Coordination {
                 (database_connections / 2).clamp(1, 16) as usize
             )),
             draining: AtomicBool::new(false),
+            telemetry_client: tokio::sync::OnceCell::new(),
         }
     }
 

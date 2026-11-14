@@ -309,7 +309,9 @@
     "publishError": "发布失败（构建结果保留）：{detail}",
     "eyebrowId": "构建 / {id}",
     "pipeline": "构建 → 签名 → 校验",
-    "publication": "发布"
+    "publication": "发布",
+    "placement": "节点选择",
+    "placementQueued": "等待候选节点满足条件"
   },
   "nodes": {
     "pages": "节点分页",
@@ -347,7 +349,8 @@
     "keep": "保留节点",
     "confirmRevoke": "确认吊销",
     "eyebrow": "原生构建集群",
-    "revokeDescription": "确认吊销 {name}？该节点将失去续租能力，在途任务会停止，恢复使用需要重新注册。"
+    "revokeDescription": "确认吊销 {name}？该节点将失去续租能力，在途任务会停止，恢复使用需要重新注册。",
+    "metadata": "设备元数据"
   },
   "artifacts": {
     "description": "只展示已经过服务端内容校验的制品。下载链接按权限短期签发。",

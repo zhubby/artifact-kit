@@ -8,10 +8,12 @@
 2. Emissary 本地产生 ECDSA P-256 私钥与 CSR，通过钉住 CA 的 TLS 调用 `Enrollment.Enroll`。
 3. 控制平面验证 CSR，签发 30 天节点证书；仅保存证书摘要与到期时间。节点私钥不离开本机。
 4. 所有 `Control` RPC 校验客户端证书链和数据库登记的证书摘要，并检查吊销 / 到期状态。TLS 层允许无证书连接只为注册；这不意味着 Control 可匿名调用。
-5. `Connect` 为双向流。hello 绑定节点 ID、协议版本、能力及诊断。新连接会替代旧 session；旧 session 不能继续改写任务。
+5. `Connect` 为双向流。hello 绑定节点 ID、协议版本和运行诊断；新版节点另提交进程启动时采集的 `startup` 快照，内含 `startup_id`、metadata 和 capabilities。新连接会替代旧 session；旧 session 不能继续改写任务或 metadata。
 6. 每 10 秒心跳。35 秒未收到消息关闭连接；是否重派由 90 秒持久化任务租约决定，而不是简单的 online 标志。
 
 节点证书到期前需要排空、吊销并以新配置重新注册；本版没有自动续证；Emissary 自动升级见 [OTA 协议与运维](emissary-ota.md)。吊销不可反向恢复，防止旧私钥重新有效。
+
+启动快照编码上限 64 KiB，控制平面提交后返回 `metadata_ack`，以 `request_id` 回显启动 ID。ACK 丢失时 `metadata` 事件重发同一快照；普通重连不重新探测，已退役 startup 和旧 session 的提交被拒绝。新进程快照完整替换旧值；管理员 labels、签名权限和 slots 独立维护。普通心跳只保留运行信息，详见 [节点元数据](node-placement.md)。
 
 ## 两阶段开始与租约
 
@@ -54,7 +56,7 @@ Emissary 在租约内断线保持 Worker，重连后补报；无续租则本地�
 
 ## Emissary 级 OTA 扩展
 
-协议主版本仍为 1。hello 的 capabilities 包含 `emissary-ota-v1` 才调度升级。心跳的独立 `ota` 对象报告持久化阶段；`emissary_update` 命令使用 Command.payload_json（新增字段 10），没有 attempt_id / lease_token；`emissary_health` 引用当前心跳 command_id。所有状态及确认继续验证节点 mTLS 身份、当前 session、吊销和证书期限。升级确认没有收到时不提交候选版本。
+协议主版本仍为 1。启动快照的 capabilities（旧节点为 hello 的 capabilities）包含 `emissary-ota-v1` 才调度升级。心跳的独立 `ota` 对象报告持久化阶段；`emissary_update` 命令使用 Command.payload_json（新增字段 10），没有 attempt_id / lease_token；`emissary_health` 引用当前心跳 command_id。所有状态及确认继续验证节点 mTLS 身份、当前 session、吊销和证书期限。升级确认没有收到时不提交候选版本。
 
 ## AI 与平台源码扩展
 

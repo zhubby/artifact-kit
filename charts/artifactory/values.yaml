@@ -40,6 +40,8 @@ controlPlane:
   databaseConnections: 20
   artifactVerifications: 4
   schedulerBatch: 64
+  # Enable only after Control, Telemetry, Runtime, Worker and Emissary are upgraded.
+  aiPlacement: false
   drainSeconds: 5
   temporaryStorage: 10Gi
   # Optional ConfigMap containing emissary-releases.json; mounted on every replica.

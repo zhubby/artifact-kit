@@ -65,6 +65,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/nodes", get(management::nodes))
         .route("/api/v1/nodes/{id}", patch(management::update_node))
+        .route(
+            "/api/v1/nodes/{id}/metadata",
+            get(management::node_metadata),
+        )
         .route("/api/v1/nodes/{id}/telemetry", get(telemetry::latest))
         .route(
             "/api/v1/nodes/{id}/telemetry/history",

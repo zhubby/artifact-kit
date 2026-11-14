@@ -279,6 +279,7 @@ async fn maintain(state: &AppState) -> Result<()> {
             expire(state).await?;
             refresh_builds(state).await?;
             queue_revisions(state).await?;
+            state.store.queue_placements().await?;
             state.store.retain_commands().await?;
             let pending = state.store.pending_publications().await?;
             for id in pending {
@@ -298,8 +299,15 @@ pub async fn expire(state: &AppState) -> Result<()> {
 /// # Errors
 /// Returns database or persisted target errors.
 pub async fn schedule(state: &AppState) -> Result<()> {
+    let mut admission = state
+        .store
+        .placement_admission(state.settings.control.scheduler_batch)
+        .await?;
+    admission.resources = crate::node_query::resources(state, &admission.identities)
+        .await
+        .unwrap_or_default();
     for _ in 0..state.settings.control.scheduler_batch {
-        if state.coordination.is_draining() || !state.store.schedule_one().await? {
+        if state.coordination.is_draining() || !state.store.schedule_one(&admission).await? {
             break;
         }
     }

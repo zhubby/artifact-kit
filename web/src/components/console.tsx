@@ -1,5 +1,7 @@
 "use client";
 
+import { NodeMetadata } from "@/components/node-metadata";
+
 import { PreferencesControls } from "@/components/preferences-controls";
 import { Atmosphere } from "@/components/atmosphere";
 import { BrandMark } from "@/components/brand-mark";
@@ -780,6 +782,7 @@ export function Console() {
                             {node.signing_profiles.join(", ")}
                           </div>
                         )}
+                        <NodeMetadata id={node.id} />
                         <NodeOTA node={node} user={user} releases={emissaryReleases.data || []} updates={emissaryUpdates.data || []} reload={async () => { await Promise.all([nodes.reload(), emissaryUpdates.reload()]); }} />
                         <details className="mt-4 text-[11px] text-muted-foreground">
                           <summary className="cursor-pointer">

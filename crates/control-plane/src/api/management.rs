@@ -309,3 +309,18 @@ pub async fn audit(
     auth.session_role("admin")?;
     Ok(Json(state.store.audit_events().await?))
 }
+
+pub async fn node_metadata(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>> {
+    auth.session_role("viewer")?;
+    Ok(Json(
+        state
+            .store
+            .node_metadata(id)
+            .await?
+            .ok_or(ApiError::NotFound)?,
+    ))
+}

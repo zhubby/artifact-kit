@@ -44,6 +44,7 @@ pub(crate) enum PlanningPrepared {
 pub(crate) enum PlanningToolResult {
     Value(Value),
     Inspect(Uuid),
+    Nodes(Uuid),
 }
 async fn lock_run(
     tx: &mut toasty::db::Transaction<'_>,
@@ -81,7 +82,7 @@ async fn lock_run(
     )
     .await
     .map_err(internal)?;
-    sql::optional_record(tx, "SELECT r.*,b.project_id,b.source_snapshot_id,b.goal,b.target_requirements,b.planning_context,b.parameters,b.selected_targets,b.current_plan_id,b.revision_count,b.release_version FROM planning_runs r JOIN builds b ON b.id=r.build_id JOIN ai_workers w ON w.id=r.worker_id WHERE r.id=$1 AND r.worker_id=$2 AND r.lease_hash=$3 AND r.state='leased' AND r.lease_expires_at>clock_timestamp() AND r.deadline_at>clock_timestamp() AND NOT b.cancel_requested AND b.status IN ('planning','replanning') AND NOT w.revoked AND w.certificate_expires_at>clock_timestamp()", params![id, worker, crypto::hash(token)], &[("id", Type::Uuid),("build_id", Type::Uuid),("worker_id", Type::Uuid),("purpose", Type::String),("state", Type::String),("failed_targets", Type::List(Box::new(Type::String))),("model_config", Type::String),("lease_hash", Type::String),("lease_expires_at", Type::Timestamp),("deadline_at", Type::Timestamp),("calls", Type::I32),("usage", Type::String),("error", Type::String),("created_at", Type::Timestamp),("finished_at", Type::Timestamp),("authority", Type::String),("project_id", Type::Uuid),("source_snapshot_id", Type::Uuid),("goal", Type::String),("target_requirements", Type::String),("planning_context", Type::String),("parameters", Type::String),("selected_targets", Type::List(Box::new(Type::String))),("current_plan_id", Type::Uuid),("revision_count", Type::I32),("release_version", Type::String)]).await.map_err(internal)?.ok_or_else(||Status::failed_precondition("planning lease expired, canceled or superseded"))
+    sql::optional_record(tx, "SELECT r.*,b.project_id,b.source_snapshot_id,b.goal,b.target_requirements,b.planning_context,b.parameters,b.selected_targets,b.current_plan_id,b.revision_count,b.release_version FROM planning_runs r JOIN builds b ON b.id=r.build_id JOIN ai_workers w ON w.id=r.worker_id WHERE r.id=$1 AND r.worker_id=$2 AND r.lease_hash=$3 AND r.state='leased' AND r.lease_expires_at>clock_timestamp() AND r.deadline_at>clock_timestamp() AND NOT b.cancel_requested AND (b.status IN ('planning','replanning') OR (r.purpose='placement' AND b.status IN ('queued','running'))) AND NOT w.revoked AND w.certificate_expires_at>clock_timestamp()", params![id, worker, crypto::hash(token)], &[("id", Type::Uuid),("build_id", Type::Uuid),("worker_id", Type::Uuid),("purpose", Type::String),("state", Type::String),("failed_targets", Type::List(Box::new(Type::String))),("model_config", Type::String),("lease_hash", Type::String),("lease_expires_at", Type::Timestamp),("deadline_at", Type::Timestamp),("calls", Type::I32),("usage", Type::String),("error", Type::String),("created_at", Type::Timestamp),("finished_at", Type::Timestamp),("authority", Type::String),("project_id", Type::Uuid),("source_snapshot_id", Type::Uuid),("goal", Type::String),("target_requirements", Type::String),("planning_context", Type::String),("parameters", Type::String),("selected_targets", Type::List(Box::new(Type::String))),("current_plan_id", Type::Uuid),("revision_count", Type::I32),("release_version", Type::String)]).await.map_err(internal)?.ok_or_else(||Status::failed_precondition("planning lease expired, canceled or superseded"))
 }
 
 pub(super) async fn submission_context(
@@ -133,6 +134,10 @@ pub(super) async fn persist_plan(
         .sha256(crypto::hash(serde_json::to_vec(&contents)?))
         .exec(tx)
         .await?;
+    ensure!(
+        row.decode::<String>("purpose")? != "placement",
+        "placement rounds cannot change execution plans"
+    );
     for (name, target) in &plan.recipe.targets {
         if current.is_none() {
             super::models::Job::create()
@@ -147,6 +152,9 @@ pub(super) async fn persist_plan(
             let changed=sql::execute(tx, "UPDATE jobs SET target_config=$3,plan_revision_id=$4,status='queued' WHERE build_id=$1 AND target=$2 AND status IN ('failed','lost')", params![build, name, serde_json::to_value(target)?, plan_id]).await?;
             ensure!(changed == 1, "target is no longer eligible for revision");
         }
+    }
+    for (name, placement) in &plan.placements {
+        sql::execute(tx,"INSERT INTO job_placements(job_id,placement) SELECT id,$3 FROM jobs WHERE build_id=$1 AND target=$2 AND status='queued' ON CONFLICT(job_id) DO UPDATE SET placement=excluded.placement,version=job_placements.version+1,waiting_since=NULL,reason=NULL",params![build,name,serde_json::to_value(placement)?]).await?;
     }
     sql::execute(tx, "UPDATE builds SET current_plan_id=$2,config_snapshot=$3,status='queued',error=NULL,finished_at=NULL WHERE id=$1", params![build, plan_id, serde_json::to_value(&plan.recipe)?]).await?;
     sql::execute(
@@ -189,17 +197,52 @@ impl ControlStore {
         Ok(super::executions::EnrolledNode { id, certificate })
     }
     pub(crate) async fn planning_nodes(&self, build: Uuid) -> Result<Vec<Value>> {
-        let context: Value = sql::scalar(
+        let groups: Vec<Value> = sql::scalars(
             &mut self.pool.clone(),
-            "SELECT planning_context FROM builds WHERE id=$1",
+            r#"WITH authorized AS (
+                SELECT n.pool_id,n.os,n.arch,n.labels,n.capabilities,n.name,n.slots,
+                    ARRAY(SELECT s FROM unnest(n.signing_profiles) s
+                          WHERE s=ANY(p.signing_profiles)
+                            AND b.planning_context->'signing_profiles' ? s) AS signing_profiles,
+                    CASE WHEN n.startup_id IS NULL THEN n.diagnostics->'tools'
+                         ELSE (SELECT coalesce(jsonb_object_agg(substr(key,7),value),'{}')
+                               FROM jsonb_each(n.metadata) WHERE starts_with(key,'tools.'))
+                    END AS tools,
+                    coalesce(n.last_seen>clock_timestamp()-interval '30 seconds'
+                        AND n.active_session IS NOT NULL AND n.connection_owner IS NOT NULL
+                        AND n.certificate_expires_at>clock_timestamp(),false) AS online,
+                    n.draining OR n.ota_draining AS draining,
+                    (SELECT count(*) FROM attempts a WHERE a.node_id=n.id
+                        AND a.status IN ('leased','running')
+                        AND a.lease_expires_at>clock_timestamp()) AS active_tasks
+                FROM builds b JOIN projects p ON p.id=b.project_id
+                JOIN nodes n ON n.pool_id=ANY(p.pool_ids)
+                    AND b.planning_context->'pool_ids' ? n.pool_id::text
+                WHERE b.id=$1 AND NOT n.revoked
+            ), groups AS (
+                SELECT pool_id,os,arch,labels,capabilities,signing_profiles,tools,
+                    min(name) AS name,count(*) AS nodes,sum(slots) AS task_slots,
+                    sum(active_tasks) AS active_tasks,
+                    coalesce(sum(greatest(slots-active_tasks,0))
+                        FILTER (WHERE online AND NOT draining),0) AS available_slots,
+                    bool_or(online) AS online,count(*) FILTER (WHERE online) AS online_count,
+                    count(*) FILTER (WHERE draining) AS draining_count
+                FROM authorized
+                GROUP BY pool_id,os,arch,labels,capabilities,signing_profiles,tools
+            ) SELECT jsonb_build_object(
+                'name',name,'pool_id',pool_id,'os',os,'arch',arch,'labels',labels,
+                'capabilities',capabilities,'signing_profiles',signing_profiles,'tools',tools,
+                'count',nodes,'task_slots',task_slots,'active_tasks',active_tasks,
+                'available_slots',available_slots,'online',online,'online_count',online_count,
+                'draining_count',draining_count,'summary',true,
+                'total_groups',count(*) OVER (),'truncated',count(*) OVER ()>128)
+            FROM groups ORDER BY nodes DESC,pool_id,os,arch,labels::text,
+                capabilities::text,signing_profiles,tools::text LIMIT 128"#,
             params![build],
         )
         .await?;
-        let pools: Vec<Uuid> =
-            serde_json::from_value(context.get("pool_ids").cloned().unwrap_or(json!([])))?;
-        let groups: Vec<Value> = sql::scalars(&mut self.pool.clone(), "WITH groups AS (SELECT pool_id,os,arch,labels,capabilities,signing_profiles,diagnostics->'tools' AS tools,min(name) AS name,count(*) AS nodes,bool_or(last_seen>now()-interval '30 seconds' AND connection_owner IS NOT NULL) AS online,count(*) FILTER (WHERE last_seen>now()-interval '30 seconds' AND connection_owner IS NOT NULL) AS online_count FROM nodes WHERE NOT revoked AND pool_id=ANY($1) GROUP BY pool_id,os,arch,labels,capabilities,signing_profiles,diagnostics->'tools') SELECT jsonb_build_object('name',name,'pool_id',pool_id,'os',os,'arch',arch,'labels',labels,'capabilities',capabilities,'signing_profiles',signing_profiles,'tools',tools,'count',nodes,'online',online,'online_count',online_count,'summary',true,'total_groups',count(*) OVER (),'truncated',count(*) OVER ()>128) FROM groups ORDER BY nodes DESC,pool_id,os,arch,labels::text,capabilities::text,signing_profiles,tools::text LIMIT 128", params![pools]).await?;
         // Keep room for source evidence and tool history in both planning protocols.
-        const MAX_SUMMARY_BYTES: usize = 128 * 1024;
+        const MAX_SUMMARY_BYTES: usize = 128 * 1024 - 4096;
         const MAX_GROUP_BYTES: usize = 8 * 1024;
         let mut summary = Vec::with_capacity(groups.len());
         let mut bytes = 2;
@@ -255,7 +298,7 @@ impl ControlStore {
             tx.commit().await.map_err(internal)?;
             return Ok(None);
         }
-        let Some(row)=sql::optional_record(&mut tx, "SELECT r.id,r.build_id,r.model_config,r.calls,r.usage FROM planning_runs r JOIN builds b ON b.id=r.build_id WHERE r.state='queued' AND r.authority='poll' AND NOT b.cancel_requested AND b.status IN ('planning','replanning') ORDER BY r.created_at FOR UPDATE OF r SKIP LOCKED LIMIT 1", params![], &[("id", Type::Uuid),("build_id", Type::Uuid),("model_config", Type::String),("calls", Type::I32),("usage", Type::String)]).await.map_err(internal)? else { tx.commit().await.map_err(internal)?; return Ok(None); };
+        let Some(row)=sql::optional_record(&mut tx, "SELECT r.id,r.build_id,r.purpose,r.model_config,r.calls,r.usage FROM planning_runs r JOIN builds b ON b.id=r.build_id WHERE r.state='queued' AND r.authority='poll' AND NOT b.cancel_requested AND (b.status IN ('planning','replanning') OR (r.purpose='placement' AND b.status IN ('queued','running'))) ORDER BY r.created_at FOR UPDATE OF r SKIP LOCKED LIMIT 1", params![], &[("id", Type::Uuid),("build_id", Type::Uuid),("purpose", Type::String),("model_config", Type::String),("calls", Type::I32),("usage", Type::String)]).await.map_err(internal)? else { tx.commit().await.map_err(internal)?; return Ok(None); };
         let id: Uuid = row.decode("id").map_err(internal)?;
         let build: Uuid = row.decode("build_id").map_err(internal)?;
         let config: Value = row.decode("model_config").map_err(internal)?;
@@ -267,7 +310,7 @@ impl ControlStore {
         let current:Option<Value>=sql::optional_scalar(&mut self.pool.clone(), "SELECT contents FROM plan_revisions WHERE id=(SELECT current_plan_id FROM builds WHERE id=$1)", params![build]).await.map_err(internal)?;
         let failed:Vec<Value>=sql::scalars(&mut self.pool.clone(), "SELECT jsonb_build_object('target',j.target,'error',a.error,'attempt_id',a.id) FROM jobs j JOIN LATERAL (SELECT id,error FROM attempts WHERE job_id=j.id ORDER BY created_at DESC LIMIT 1) a ON true WHERE j.build_id=$1 AND j.status IN ('failed','lost')", params![build]).await.map_err(internal)?;
         let checkpoint:Option<Value>=sql::optional_scalar(&mut self.pool.clone(), "SELECT payload FROM planning_events WHERE run_id=$1 AND kind='checkpoint' ORDER BY id DESC LIMIT 1", params![id]).await.map_err(internal)?;
-        let context = json!({"build_id":build,"goal":b.decode::<Option<String>>("goal").map_err(internal)?,"ref":b.decode::<String>("requested_ref").map_err(internal)?,"commit":b.decode::<Option<String>>("commit_sha").map_err(internal)?,"parameters":b.decode::<Value>("parameters").map_err(internal)?,"target_requirements":b.decode::<Value>("target_requirements").map_err(internal)?,"project_context":b.decode::<Value>("planning_context").map_err(internal)?,"snapshot_id":b.decode::<Uuid>("source_snapshot_id").map_err(internal)?,"revision":b.decode::<i32>("revision_count").map_err(internal)?,"current_plan":current,"failed_targets":failed,"nodes":self.planning_nodes(build).await.map_err(internal)?,"checkpoint":checkpoint,"usage":row.decode::<Value>("usage").map_err(internal)?});
+        let context = json!({"purpose":row.decode::<String>("purpose").map_err(internal)?,"placement_task":self.placement_context(id).await.map_err(internal)?,"build_id":build,"goal":b.decode::<Option<String>>("goal").map_err(internal)?,"ref":b.decode::<String>("requested_ref").map_err(internal)?,"commit":b.decode::<Option<String>>("commit_sha").map_err(internal)?,"parameters":b.decode::<Value>("parameters").map_err(internal)?,"target_requirements":b.decode::<Value>("target_requirements").map_err(internal)?,"project_context":b.decode::<Value>("planning_context").map_err(internal)?,"snapshot_id":b.decode::<Uuid>("source_snapshot_id").map_err(internal)?,"revision":b.decode::<i32>("revision_count").map_err(internal)?,"current_plan":current,"failed_targets":failed,"nodes":self.planning_nodes(build).await.map_err(internal)?,"checkpoint":checkpoint,"usage":row.decode::<Value>("usage").map_err(internal)?});
         Ok(Some(PlanningClaim {
             id,
             token,
@@ -320,6 +363,21 @@ impl ControlStore {
         let build: Uuid = row.decode("build_id").map_err(internal)?;
         let run: Uuid = row.decode("id").map_err(internal)?;
         let result: Result<Value> = match name {
+            "submit_placements" => {
+                let mut savepoint = tx.transaction().await.map_err(internal)?;
+                let result =
+                    super::placements::persist_placements(&mut savepoint, &row, args).await;
+                match result {
+                    Ok(value) => {
+                        savepoint.commit().await.map_err(internal)?;
+                        Ok(value)
+                    }
+                    Err(error) => {
+                        savepoint.rollback().await.map_err(internal)?;
+                        Err(error)
+                    }
+                }
+            }
             "submit_plan" => {
                 // A rejected plan must leave no jobs or revision behind, including
                 // failures after the first SQL write. Keep the lease transaction.
@@ -345,7 +403,9 @@ impl ControlStore {
                     }
                 }
             }
-            "request_input" => {
+            "request_input"
+                if row.decode::<String>("purpose").map_err(internal)? != "placement" =>
+            {
                 let question = args.get("question").and_then(Value::as_str).unwrap_or("");
                 if question.trim().is_empty() || question.len() > 8000 {
                     Ok(json!({"error":"a concise question is required"}))
@@ -361,10 +421,10 @@ impl ControlStore {
                     Ok(json!({"accepted":true,"needs_input":true}))
                 }
             }
-            "node_capabilities" => self
-                .planning_nodes(build)
-                .await
-                .map(|value| json!({"nodes":value})),
+            "node_capabilities" | "summarize_nodes" | "query_nodes" | "get_node" => {
+                tx.commit().await.map_err(internal)?;
+                return Ok(PlanningToolResult::Nodes(build));
+            }
             "read_logs" => match prepare(PlanningAction::ReadLogs(build)).await {
                 Ok(PlanningPrepared::Value(value)) => Ok(value),
                 Ok(_) => Err(anyhow::anyhow!("invalid prepared tool result")),
@@ -460,8 +520,8 @@ impl ControlStore {
             .map_err(internal)?;
             sql::execute(
                 &mut tx,
-                "UPDATE builds SET status='failed',error=$2,finished_at=now() WHERE id=$1",
-                params![row.decode::<Uuid>("build_id").map_err(internal)?, message],
+                "UPDATE builds SET status='failed',error=$2,finished_at=now() WHERE id=$1 AND NOT EXISTS(SELECT 1 FROM planning_runs WHERE id=$3 AND purpose='placement')",
+                params![row.decode::<Uuid>("build_id").map_err(internal)?, message, run],
             )
             .await
             .map_err(internal)?;
@@ -509,7 +569,9 @@ impl ControlStore {
                 .decode::<Option<chrono::DateTime<chrono::Utc>>>("deadline_at")?
                 .is_none_or(|time| time <= chrono::Utc::now());
             let canceled: bool = run.decode("cancel_requested")?;
-            if expired || canceled {
+            if run.decode::<String>("purpose")? == "placement" {
+                sql::execute(&mut tx,"UPDATE planning_runs SET state='failed',finished_at=clock_timestamp(),error='placement lease expired' WHERE id=$1",params![run.decode::<Uuid>("id")?]).await?;
+            } else if expired || canceled {
                 sql::execute(&mut tx, "UPDATE planning_runs SET state=$2,error='planning deadline reached',finished_at=now() WHERE id=$1", params![run.decode::<Uuid>("id")?, if canceled{"canceled"}else{"failed"}]).await?;
                 sql::execute(&mut tx, "UPDATE builds SET status=$2,error=CASE WHEN $2='failed' THEN 'planning deadline reached' ELSE error END,finished_at=now() WHERE id=$1", params![run.decode::<Uuid>("build_id")?, if canceled{"canceled"}else{"failed"}]).await?;
             } else {

@@ -7,7 +7,7 @@ use artifactory_runtime_protocol::{
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    routing::get,
+    routing::{get, post},
 };
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -58,6 +58,7 @@ pub fn router(state: Service, token: String) -> Router {
     service::protected(
         Router::new()
             .route("/metrics", get(|| async { crate::metrics() }))
+            .route("/v1/resources", post(resources))
             .route("/v1/nodes/{id}/latest", get(latest))
             .route("/v1/nodes/{id}/history", get(history))
             .route("/v1/nodes/{id}/inventory", get(inventory))
@@ -66,6 +67,20 @@ pub fn router(state: Service, token: String) -> Router {
             .with_state(state),
         token,
     )
+}
+
+async fn resources(
+    State(s): State<Service>,
+    Json(nodes): Json<Vec<artifactory_telemetry_model::nodes::ResourceIdentity>>,
+) -> Result<Json<Value>> {
+    if nodes.len() > 512 {
+        return Err(ApiError::BadRequest(
+            "at most 512 resource identities".into(),
+        ));
+    }
+    Ok(Json(serde_json::to_value(
+        s.store.resources(&nodes).await?,
+    )?))
 }
 async fn latest(State(s): State<Service>, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     Ok(Json(serde_json::to_value(s.store.latest(id).await?)?))

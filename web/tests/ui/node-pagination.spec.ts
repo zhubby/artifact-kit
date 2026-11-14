@@ -34,3 +34,22 @@ test("fleet pagination and search request bounded server pages", async ({ page }
   expect(requests.at(-1)).toContain("q=Search%20device");
   await page.screenshot({ path: "test-results/ui/node-pagination.png", fullPage: true });
 });
+
+test("node metadata loads on expansion and preserves structured values", async ({ page }) => {
+  await fixtureAPI(page);
+  await page.context().addCookies([{ name: "artifactory-locale", value: "en", url: "http://127.0.0.1:3100" }]);
+  let queries = 0;
+  await page.route("**/api/v1/nodes/*/metadata", async route => {
+    queries++;
+    await route.fulfill({ json: { startup_id: "startup-one", received_at: "2026-11-14T00:00:00Z", metadata: { "custom.site": "lab", "tools.cargo": { available: true, version: "1.91" } } } });
+  });
+  await page.goto("/nodes");
+  await expect(page.getByText("Mac Studio", { exact: true })).toBeVisible();
+  expect(queries).toBe(0);
+  await page.locator("summary").filter({ hasText: "Device metadata" }).first().click();
+  await expect(page.getByText("custom.site", { exact: true })).toBeVisible();
+  await expect(page.getByText("lab", { exact: true })).toBeVisible();
+  await expect(page.getByText("tools.cargo", { exact: true })).toBeVisible();
+  expect(queries).toBe(1);
+  await page.screenshot({ path: `test-results/ui/node-metadata-${test.info().project.name}.png`, fullPage: true });
+});

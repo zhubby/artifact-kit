@@ -167,6 +167,8 @@ struct State {
     drain_request: String,
     drain_update: String,
     telemetry: Option<crate::telemetry::Handle>,
+    startup: Option<artifactory_telemetry_model::nodes::MetadataSnapshot>,
+    metadata_acked: bool,
 }
 enum Action {
     Start(String, u32),
@@ -190,6 +192,8 @@ impl State {
             drain_request: String::new(),
             drain_update: String::new(),
             telemetry: None,
+            startup: None,
+            metadata_acked: false,
         })
     }
     fn heartbeat(&mut self, kind: &str) -> pb::EmissaryEvent {
@@ -201,19 +205,12 @@ impl State {
         self.anchors.insert(id.clone(), now);
         let mut metrics = json!({});
         if let Some(snapshot) = self.telemetry.as_ref().and_then(|h| h.snapshot()) {
-            self.diagnostics = snapshot.diagnostics;
-            self.capabilities = snapshot.capabilities;
             metrics = snapshot.metrics;
-            if self.ota_directory.is_some()
-                && !self.capabilities.iter().any(|c| c == "emissary-ota-v1")
-            {
-                self.capabilities.push("emissary-ota-v1".into());
-            }
         }
-        let mut diagnostics = self.diagnostics.clone();
+        let mut diagnostics = json!({"emissary_version": self.diagnostics["emissary_version"]});
         diagnostics["metrics"] = metrics;
         diagnostics["buffered_log_bytes"] = json!(self.spool.bytes);
-        pb::EmissaryEvent{emissary_id:self.cfg.emissary_id.clone(),kind:kind.into(),command_id:id,protocol_major:1,payload_json:json!({"active_attempts":self.tasks.iter().map(|(id,t)|json!({"attempt_id":id,"lease_token":t.token})).collect::<Vec<_>>(),"capabilities":self.capabilities,"diagnostics":diagnostics,"ota":ota}).to_string(),..Default::default()}
+        pb::EmissaryEvent{emissary_id:self.cfg.emissary_id.clone(),kind:kind.into(),command_id:id,protocol_major:1,payload_json:json!({"active_attempts":self.tasks.iter().map(|(id,t)|json!({"attempt_id":id,"lease_token":t.token})).collect::<Vec<_>>(),"startup":if kind=="hello" {self.startup.as_ref()} else {None},"diagnostics":diagnostics,"ota":ota}).to_string(),..Default::default()}
     }
     fn ota_snapshot(&mut self, request: &str) -> Option<ota::State> {
         let directory = self.ota_directory.as_ref()?;
@@ -231,6 +228,16 @@ impl State {
         Some(state)
     }
     fn command(&mut self, command: pb::Command, now: Instant) -> Result<Vec<Action>> {
+        if command.kind == "metadata_ack" {
+            self.metadata_acked = self
+                .startup
+                .as_ref()
+                .is_some_and(|s| command.request_id == s.startup_id.to_string());
+            return Ok(vec![]);
+        }
+        if command.kind == "emissary_health" && self.ota_directory.is_none() {
+            return Ok(vec![]);
+        }
         if let Some(directory) = &self.ota_directory {
             match command.kind.as_str() {
                 "emissary_update" => {
@@ -570,11 +577,20 @@ pub async fn run(cfg: Config, cancel: CancellationToken) -> Result<()> {
         capabilities.push("emissary-ota-v1".into());
     }
     let mut state = State::new(cfg.clone(), diagnostics, capabilities)?;
+    let startup_id = uuid::Uuid::new_v4();
+    let (snapshot, inventory) = crate::telemetry::startup(
+        &cfg,
+        startup_id,
+        &state.diagnostics,
+        state.capabilities.clone(),
+    )
+    .await?;
+    state.startup = Some(snapshot);
     if !cfg.telemetry_endpoint.is_empty() {
         state.telemetry = Some(crate::telemetry::Handle::start(
             cfg.clone(),
-            state.diagnostics.clone(),
-            state.capabilities.clone(),
+            startup_id,
+            inventory,
         ));
     }
     let (send, mut recv) = mpsc::channel(256);
@@ -601,6 +617,7 @@ pub async fn run(cfg: Config, cancel: CancellationToken) -> Result<()> {
             if let Some(directory) = &state.ota_directory {
                 ota::confirm(directory, &session, "")?;
             }
+            state.metadata_acked = false;
             let hello = state.heartbeat("hello");
             let cfg = cfg.clone();
             let send = send.clone();
@@ -637,7 +654,7 @@ pub async fn run(cfg: Config, cancel: CancellationToken) -> Result<()> {
                             });
                         }
                 }
-                if now>=heartbeat {if let Some(tx)=&outbound {let _=tx.try_send(state.heartbeat("heartbeat"));}heartbeat=now+Duration::from_secs(10);}
+                if now>=heartbeat {if let Some(tx)=&outbound {let _=tx.try_send(state.heartbeat("heartbeat")); if !state.metadata_acked && let Some(snapshot)=&state.startup { let _=tx.try_send(pb::EmissaryEvent { emissary_id:cfg.emissary_id.clone(), kind:"metadata".into(),protocol_major:1,payload_json:serde_json::to_string(snapshot)?,..Default::default() }); }}heartbeat=now+Duration::from_secs(10);}
                 if let Some(deadline)=shutdown&& (now>=deadline || (state.workers==0 && state.tasks.values().all(|t|!t.started) && state.spool.bytes==0)) {break;}
             },
             Some(message)=recv.recv()=>match message {

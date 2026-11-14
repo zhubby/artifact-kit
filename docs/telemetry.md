@@ -17,10 +17,10 @@ flowchart LR
 
 | 数据 | 采集与语义 |
 |---|---|
-| 主机资源 | 每 30 秒采集 CPU、内存、swap、Unix load、文件系统容量、网络累计计数；平台支持时记录累计磁盘 I/O |
+| 主机资源 | 每 30 秒采集 CPU、内存、可用内存、构建目录可用磁盘、swap、Unix load、文件系统容量、网络累计计数；平台支持时记录累计磁盘 I/O。可用内存考虑 Linux cgroup 及祖先限制 |
 | 托管构建进程 | 每 10 秒采集 Emissary worker 及其后代的 CPU、RSS、I/O、状态、attempt、当前 step；PID 与启动时间共同标识进程 |
-| 硬件与环境 | OS、内核、架构、启动时间、CPU 型号与核数、物理内存；可读取时记录容器、虚拟化与 Linux cgroup 有效配额 |
-| 工具链与构建能力 | 每 15 分钟重新执行有超时和输出上限的版本探测，更新 capability；只存签名配置的引用名称 |
+| 硬件与环境 | 每次 Emissary 进程启动采集一次 OS、内核、架构、系统启动时间、CPU 型号与核数、物理内存；可读取时记录容器、虚拟化与 Linux cgroup 有效配额 |
+| 工具链与构建能力 | 进程启动时执行一次有超时和输出上限的版本探测；普通重连复用快照，更新工具后需重启 Emissary；只存签名配置的引用名称 |
 | 加速器 | NVIDIA 使用有超时的 `nvidia-smi` 读取型号、驱动、VRAM、利用率；macOS 使用 `system_profiler`，Windows 使用 CIM 读取可用的显示设备身份。Apple 统一内存不作为独立 VRAM |
 | 缺失与中断 | 不支持或无法读取的可选指标为 `null`，collector 状态说明采集范围；缓存淘汰、永久拒收计入累计 dropped counter；进程截断使构建汇总 `complete=false` |
 
@@ -42,13 +42,15 @@ flowchart LR
 
 分钟 / 小时聚合覆盖主机 CPU、内存、活动 attempt，以及构建 CPU、RSS、进程数和完整性。磁盘、网络、加速器、swap、load 及逐进程 I/O 当前保留原始采样，不生成跨重启或跨设备的累计计数平均值。
 
-静态清单存于 `inventory_versions`，每个节点与内容摘要只存一份；变化和每小时确认记录在 `inventory_observations`，保留 180 天。`latest_hosts` 与 `latest_inventories` 提供常数规模的节点摘要，乱序重放不能覆盖更新的采样。fresh 要求采样时间和接收时间都在 90 秒内，且采样时间不超过服务器 30 秒；重放旧数据不会使设备显示为新鲜。
+静态清单存于 `inventory_versions`，每个节点与内容摘要只存一份；新版 Emissary 每次进程启动复用 metadata 的同一快照向 `inventory_observations` 投递一次，保留 180 天。`latest_hosts` 与 `latest_inventories` 提供常数规模的节点摘要，乱序重放不能覆盖更新的采样。fresh 要求采样时间和接收时间都在 90 秒内，且采样时间不超过服务器 30 秒；重放旧数据不会使设备显示为新鲜。
+
+AI 查询和分配另以 `startup_resources` 保存每个节点／启动的最新资源摘要，批量读取当前业务节点的 `startup_id`，避免重放旧启动的数据影响当前选机。详见 [节点元数据、MCP 与 AI 选机](node-placement.md)。
 
 ## 传输、故障与权限
 
 注册回复包含 `telemetry_endpoint`，使用设备现有的 pinned CA 和 mTLS 身份，连接独立端口 8444。Telemetry 每次验证证书指纹、过期和撤销；只读查询业务库确认 process attempt 属于该设备，允许已完成/已取消任务离线补报，不取得任何构建执行权。
 
-批次有 UUID、进程内 session、单调计时、UTC 采样时间。服务器在事务提交后 ACK；节点与批次 ID 构成幂等键，内容不一致的重复 ID 被拒绝。发送端在 ACK ID 匹配后才删除本地记录。重放窗口为 48 小时；超过窗口或未来超过 5 分钟的记录永久拒收并记为缺口，需要设备修正系统时间。
+批次有 UUID、进程内 session、单调计时、UTC 采样时间；新版 Emissary 的 `session_id` 与 metadata 的 `startup_id` 相同。服务器在事务提交后 ACK；节点与批次 ID 构成幂等键，内容不一致的重复 ID 被拒绝。发送端在 ACK ID 匹配后才删除本地记录。重放窗口为 48 小时；超过窗口或未来超过 5 分钟的记录永久拒收并记为缺口，需要设备修正系统时间。
 
 独立缓存位于 `<root>/telemetry/`，默认 32 MiB、最多 8192 个记录，先淘汰最老记录；记录和丢弃计数原子落盘。主机重启后从相同 managed root 重放。构建日志配额独立。遥测超时、断联、数据库背压、磁盘写入失败均不返回构建错误；最后一种情况会记录本地告警，无法落盘的样本不保证补报。容器化 Emissary 应将 managed root 放在持久卷上。
 
@@ -67,7 +69,7 @@ psql "$ARTIFACTORY_BUSINESS_ADMIN_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
 
 将数据库名、schema 与角色名替换为实际值，并将 `ARTIFACTORY_BUSINESS_DATABASE_URL` 配置为该角色的连接。脚本可重复执行，只授予上述对象的读取权限；授权角色不需要拥有业务表、写权限或迁移权限。自定义 schema 时，连接的 `search_path` 必须与授权 schema 一致。
 
-遥测用于趋势、能力筛选与负载参考。现有权限、设备签名限制、capability 和 slots 决定任务匹配；不自动抢占、预留资源或调整并发。
+遥测用于趋势、能力筛选与负载参考。启用新版 AI 选机后，控制平面还会在分配前检查当前启动的资源快照及 AI 设定的门槛；现有权限、设备签名限制、capability 和 slots 继续生效。不自动抢占、预留资源或调整并发。
 
 ## 部署与本地开发
 

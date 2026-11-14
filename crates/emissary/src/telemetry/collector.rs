@@ -1,7 +1,4 @@
-use super::{
-    inventory,
-    managed::{self, Registry},
-};
+use super::managed::{self, Registry};
 use crate::config::Config;
 use artifactory_telemetry_model::{
     Batch, DiskSample, HostSample, Inventory, MAX_PROCESSES, NetworkSample, ProcessSample,
@@ -22,7 +19,7 @@ pub(super) struct Collector {
     cpu_ready: bool,
 }
 impl Collector {
-    pub fn new() -> Self {
+    pub fn new(session: Uuid) -> Self {
         let mut system = System::new();
         system.refresh_cpu_all();
         system.refresh_memory();
@@ -30,7 +27,7 @@ impl Collector {
             system,
             disks: Disks::new_with_refreshed_list(),
             networks: Networks::new_with_refreshed_list(),
-            session: Uuid::new_v4(),
+            session,
             started: Instant::now(),
             previous: HashMap::new(),
             cpu_ready: false,
@@ -41,7 +38,7 @@ impl Collector {
         cfg: &Config,
         registry: &Registry,
         host: bool,
-        probe: Option<(Value, Vec<String>)>,
+        inventory: Option<Inventory>,
     ) -> (Batch, Value) {
         self.system.refresh_cpu_usage();
         self.system.refresh_memory();
@@ -113,6 +110,8 @@ impl Collector {
                 memory_total_bytes: Some(self.system.total_memory()).filter(|n| *n > 0),
                 memory_used_bytes: Some(self.system.used_memory())
                     .filter(|_| self.system.total_memory() > 0),
+                available_memory_bytes: super::inventory::available_memory(&self.system),
+                build_disk_available_bytes: fs2::available_space(&cfg.root).ok(),
                 swap_total_bytes: Some(self.system.total_swap()),
                 swap_used_bytes: Some(self.system.used_swap()),
                 load_one: if cfg!(unix) {
@@ -168,8 +167,6 @@ impl Collector {
             }
         });
         self.cpu_ready = true;
-        let inventory: Option<Inventory> =
-            probe.map(|(d, c)| inventory::collect(&self.system, &d, c));
         let metrics = json!({"logical_cpus":self.system.cpus().len(),"emissary_rss_bytes":self.system.process(Pid::from_u32(std::process::id())).map(|p|p.memory()),"managed_free_bytes":fs2::available_space(&cfg.root).ok()});
         (
             Batch {

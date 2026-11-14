@@ -151,57 +151,64 @@ async fn intents_are_idempotent_conflicting_payloads_fail_and_cancel_before_crea
 #[tokio::test]
 #[ignore = "requires isolated PostgreSQL"]
 async fn duplicate_pod_and_old_generation_cannot_report_or_submit_and_proposal_survives_ack_loss() {
-    let s = state().await;
-    let run = Uuid::new_v4();
-    server::put_intent(&s, serde_json::to_value(intent(run)).unwrap())
-        .await
-        .unwrap();
-    let lease = owner(&s, run).await;
-    assert!(
-        server::register_execution(
-            &s,
-            Execution {
-                run_id: run,
-                generation: 1,
-                uid: "pod-b".into(),
-                name: "pod-b".into(),
-                namespace: "test".into()
-            }
+    for name in ["submit_plan", "submit_placements"] {
+        let s = state().await;
+        let run = Uuid::new_v4();
+        server::put_intent(&s, serde_json::to_value(intent(run)).unwrap())
+            .await
+            .unwrap();
+        let lease = owner(&s, run).await;
+        assert!(
+            server::register_execution(
+                &s,
+                Execution {
+                    run_id: run,
+                    generation: 1,
+                    uid: "pod-b".into(),
+                    name: "pod-b".into(),
+                    namespace: "test".into()
+                }
+            )
+            .await
+            .is_err()
+        );
+        let id = Uuid::new_v4();
+        let arguments = if name == "submit_plan" {
+            json!({"plan":{"summary":"test"}})
+        } else {
+            json!({"placements":{"app":{"candidates":[]}}})
+        };
+        let value = json!({"lease":lease,"request_id":id,"name":name,"arguments":arguments});
+        assert_eq!(
+            server::tool_call(&s, value.clone()).await.unwrap()["pending"],
+            true
+        );
+        assert_eq!(
+            server::tool_call(&s, value.clone()).await.unwrap()["proposal_id"],
+            id.to_string()
+        );
+        let mut conflict = value;
+        conflict["arguments"] = json!({});
+        assert!(server::tool_call(&s, conflict).await.is_err());
+        let proposals: i64 = sql::scalar(
+            &mut s.pool.clone(),
+            "SELECT count(*) FROM runtime_proposals WHERE run_id=$1",
+            params![run],
         )
         .await
-        .is_err()
-    );
-    let id = Uuid::new_v4();
-    let value = json!({"lease":lease,"request_id":id,"name":"submit_plan","arguments":{"plan":{"summary":"test"}}});
-    assert_eq!(
-        server::tool_call(&s, value.clone()).await.unwrap()["pending"],
-        true
-    );
-    assert_eq!(
-        server::tool_call(&s, value.clone()).await.unwrap()["proposal_id"],
-        id.to_string()
-    );
-    let mut conflict = value;
-    conflict["arguments"] = json!({});
-    assert!(server::tool_call(&s, conflict).await.is_err());
-    let proposals: i64 = sql::scalar(
-        &mut s.pool.clone(),
-        "SELECT count(*) FROM runtime_proposals WHERE run_id=$1",
-        params![run],
-    )
-    .await
-    .unwrap();
-    assert_eq!(proposals, 1);
-    let mut stale = lease.clone();
-    stale.uid = "pod-b".into();
-    assert!(server::validate_grant(&s, stale).await.is_err());
-    server::put_intent(&s, json!({"run_id":run,"version":2,"canceled":true}))
-        .await
         .unwrap();
-    server::put_intent(&s, json!({"run_id":run,"version":2,"canceled":true}))
-        .await
-        .expect("replaying cancellation must be idempotent");
-    assert!(server::heartbeat_run(&s, lease).await.is_err());
+        assert_eq!(proposals, 1);
+        let mut stale = lease.clone();
+        stale.uid = "pod-b".into();
+        assert!(server::validate_grant(&s, stale).await.is_err());
+        server::put_intent(&s, json!({"run_id":run,"version":2,"canceled":true}))
+            .await
+            .unwrap();
+        server::put_intent(&s, json!({"run_id":run,"version":2,"canceled":true}))
+            .await
+            .expect("replaying cancellation must be idempotent");
+        assert!(server::heartbeat_run(&s, lease).await.is_err());
+    }
 }
 #[tokio::test]
 #[ignore = "requires isolated PostgreSQL"]

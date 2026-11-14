@@ -102,7 +102,7 @@ impl ControlStore {
     }
 
     pub(crate) async fn runtime_tool_build(&self, run: Uuid) -> Result<Uuid> {
-        let build:Uuid=sql::scalar(&mut self.pool.clone(), "SELECT b.id FROM builds b JOIN planning_runs r ON r.build_id=b.id WHERE r.id=$1 AND r.authority='kubernetes' AND NOT b.cancel_requested AND b.status IN ('planning','replanning')", params![run]).await?;
+        let build:Uuid=sql::scalar(&mut self.pool.clone(), "SELECT b.id FROM builds b JOIN planning_runs r ON r.build_id=b.id WHERE r.id=$1 AND r.authority='kubernetes' AND NOT b.cancel_requested AND (b.status IN ('planning','replanning') OR (r.purpose='placement' AND b.status IN ('queued','running'))) AND r.state IN ('queued','leased') AND (r.deadline_at IS NULL OR r.deadline_at>clock_timestamp())", params![run]).await?;
         Ok(build)
     }
 
@@ -188,7 +188,16 @@ impl ControlStore {
         let result = if let Some(plan) = existing {
             json!({"accepted":true,"plan_revision_id":plan})
         } else if row.decode::<bool>("cancel_requested")?
-            || !["planning", "replanning"].contains(&row.decode::<String>("build_status")?.as_str())
+            || !(["planning", "replanning"]
+                .contains(&row.decode::<String>("build_status")?.as_str())
+                || (row.decode::<String>("purpose")? == "placement"
+                    && ["queued", "running"]
+                        .contains(&row.decode::<String>("build_status")?.as_str())))
+            || (row.decode::<String>("purpose")? == "placement"
+                && (!matches!(row.decode::<String>("state")?.as_str(), "queued" | "leased")
+                    || row
+                        .decode::<Option<chrono::DateTime<chrono::Utc>>>("deadline_at")?
+                        .is_none_or(|deadline| deadline <= chrono::Utc::now())))
         {
             json!({"error":"build canceled or planning superseded"})
         } else if kind == "failed" {
@@ -203,10 +212,10 @@ impl ControlStore {
             .await?;
             sql::execute(
                 &mut tx,
-                "UPDATE builds SET status='failed',error=$2,finished_at=now() WHERE id=$1",
+                "UPDATE builds SET status='failed',error=$2,finished_at=now() WHERE id=$1 AND NOT EXISTS(SELECT 1 FROM planning_runs WHERE id=$3 AND purpose='placement')",
                 params![
                     build,
-                    payload["error"].as_str().unwrap_or("Pi planning failed")
+                    payload["error"].as_str().unwrap_or("Pi planning failed"),run
                 ],
             )
             .await?;
@@ -220,7 +229,24 @@ impl ControlStore {
             json!({"error":"planning deadline reached"})
         } else if let Some(error) = validation {
             json!({"error":error})
-        } else if payload["kind"] == "request_input" {
+        } else if payload["kind"] == "submit_placements" {
+            let mut savepoint = tx.transaction().await?;
+            let result =
+                super::placements::persist_placements(&mut savepoint, &row, &payload["payload"])
+                    .await;
+            match result {
+                Ok(value) => {
+                    savepoint.commit().await?;
+                    value
+                }
+                Err(error) => {
+                    savepoint.rollback().await?;
+                    json!({"error":error.to_string()})
+                }
+            }
+        } else if payload["kind"] == "request_input"
+            && row.decode::<String>("purpose")? != "placement"
+        {
             let question = payload["payload"]["question"].as_str().unwrap_or("");
             if question.trim().is_empty() || question.len() > 8000 {
                 json!({"error":"a concise question is required"})
@@ -327,7 +353,7 @@ impl ControlStore {
         let build: Uuid = row.decode("build_id")?;
         let current:Option<Value>=sql::optional_scalar(&mut self.pool.clone(), "SELECT contents FROM plan_revisions WHERE id=(SELECT current_plan_id FROM builds WHERE id=$1)", params![build]).await?;
         let failed:Vec<Value>=sql::scalars(&mut self.pool.clone(), "SELECT jsonb_build_object('target',j.target,'error',a.error,'attempt_id',a.id) FROM jobs j JOIN LATERAL (SELECT id,error FROM attempts WHERE job_id=j.id ORDER BY created_at DESC LIMIT 1) a ON true WHERE j.build_id=$1 AND j.status IN ('failed','lost')", params![build]).await?;
-        let context = json!({"build_id":build,"goal":row.decode::<Option<String>>("goal")?,"ref":row.decode::<String>("requested_ref")?,"commit":row.decode::<Option<String>>("commit_sha")?,"parameters":row.decode::<Value>("parameters")?,"target_requirements":row.decode::<Value>("target_requirements")?,"project_context":row.decode::<Value>("planning_context")?,"snapshot_id":row.decode::<Uuid>("source_snapshot_id")?,"revision":row.decode::<i32>("revision_count")?,"current_plan":current,"failed_targets":failed,"nodes":self.planning_nodes(build).await?,"source_url":row.decode::<Option<String>>("service_origin")?});
+        let context = json!({"purpose":row.decode::<String>("purpose")?,"placement_task":self.placement_context(run).await?,"build_id":build,"goal":row.decode::<Option<String>>("goal")?,"ref":row.decode::<String>("requested_ref")?,"commit":row.decode::<Option<String>>("commit_sha")?,"parameters":row.decode::<Value>("parameters")?,"target_requirements":row.decode::<Value>("target_requirements")?,"project_context":row.decode::<Value>("planning_context")?,"snapshot_id":row.decode::<Uuid>("source_snapshot_id")?,"revision":row.decode::<i32>("revision_count")?,"current_plan":current,"failed_targets":failed,"nodes":self.planning_nodes(build).await?,"source_url":row.decode::<Option<String>>("service_origin")?});
         Ok(RuntimeIntentContext {
             build_id: build,
             project_id: row.decode("project_id")?,

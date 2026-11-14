@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+artifactory-telemetry-model = { path = "../telemetry-model" }
 artifactory-emissary-protocol = { path = "../emissary-protocol" }
 artifactory-database = { path = "../database" }
 artifactory-runtime-protocol = { path = "../runtime-protocol" }
@@ -43,5 +44,6 @@ url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
+artifactory-planner-runtime = { path = "../planner-runtime" }
 rcgen = "0.14"
 tower = { version = "0.5", features = ["util"] }

@@ -143,6 +143,11 @@ async fn business_authorization_starts_with_only_documented_read_grants() -> Res
         upgraded.authorize_attempts(node, &[attempt]).await?;
         ensure!(sql::execute(&mut upgraded.pool.clone(), "UPDATE nodes SET revoked=true", params![]).await.is_err(),
             "HA startup must preserve read-only authorization");
+        sql::execute(&mut owner, "INSERT INTO __toasty_migrations(id,name,applied_at) VALUES(2026111402,'0002_node_placements.sql',now())", params![]).await?;
+        let metadata = business_authorization(identity.as_str()).await?;
+        ensure!(metadata.identify("test-certificate".into()).await? == node,
+            "the restricted role must accept the appended metadata history");
+        metadata.authorize_attempts(node, &[attempt]).await?;
         sql::execute(&mut owner, "UPDATE __toasty_migrations SET id=0 WHERE id=2026111301", params![]).await?;
         ensure!(
             business_authorization(identity.as_str()).await.is_err(),

@@ -13,6 +13,7 @@ metadata:
 data:
   ARTIFACTORY_DB_MAX_CONNECTIONS: {{ .Values.controlPlane.databaseConnections | quote }}
   ARTIFACTORY_ARTIFACT_VERIFY_CONCURRENCY: {{ .Values.controlPlane.artifactVerifications | quote }}
+  ARTIFACTORY_AI_PLACEMENT: {{ .Values.controlPlane.aiPlacement | quote }}
   ARTIFACTORY_SCHEDULER_BATCH_SIZE: {{ .Values.controlPlane.schedulerBatch | quote }}
   ARTIFACTORY_CONTROL_DRAIN_SECONDS: {{ .Values.controlPlane.drainSeconds | quote }}
   {{- if .Values.localSource.enabled }}

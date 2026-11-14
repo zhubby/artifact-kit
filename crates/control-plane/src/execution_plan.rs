@@ -25,6 +25,9 @@ pub struct ExecutionPlan {
     #[serde(default)]
     pub scripts: Vec<ExternalScript>,
     pub recipe: Recipe,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub placements:
+        std::collections::BTreeMap<String, artifactory_telemetry_model::nodes::Placement>,
 }
 
 impl ExecutionPlan {
@@ -35,6 +38,15 @@ impl ExecutionPlan {
         );
         let mut plan: Self = serde_json::from_value(value)?;
         plan.recipe = Recipe::parse(&serde_yaml::to_string(&plan.recipe)?)?;
+        ensure!(
+            plan.placements
+                .keys()
+                .all(|key| plan.recipe.targets.contains_key(key)),
+            "placement references unknown target"
+        );
+        for placement in plan.placements.values() {
+            placement.validate()?;
+        }
         ensure!(
             !plan.summary.trim().is_empty() && plan.summary.len() <= 8000,
             "invalid plan summary"

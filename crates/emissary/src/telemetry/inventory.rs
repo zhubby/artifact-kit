@@ -5,6 +5,87 @@ use std::{collections::BTreeMap, time::Duration};
 use sysinfo::System;
 use tokio::process::Command;
 
+pub(super) fn available_memory(system: &System) -> Option<u64> {
+    let available = (system.total_memory() > 0).then(|| system.available_memory());
+    #[cfg(target_os = "linux")]
+    {
+        let membership = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+        let remaining =
+            cgroup_available(std::path::Path::new("/sys/fs/cgroup"), &membership).ok()?;
+        available.map(|host| remaining.map_or(host, |remaining| host.min(remaining)))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        available
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn cgroup_available(root: &std::path::Path, membership: &str) -> std::io::Result<Option<u64>> {
+    use std::{
+        fs,
+        path::{Component, Path},
+    };
+    let mut remaining = None::<u64>;
+    for line in membership.lines() {
+        let fields: Vec<_> = line.splitn(3, ':').collect();
+        if fields.len() != 3 {
+            continue;
+        }
+        let (base, limit, used) = if fields[0] == "0" {
+            (root.to_path_buf(), "memory.max", "memory.current")
+        } else if fields[1].split(',').any(|v| v == "memory") {
+            (
+                root.join("memory"),
+                "memory.limit_in_bytes",
+                "memory.usage_in_bytes",
+            )
+        } else {
+            continue;
+        };
+        let mut directory = base.clone();
+        for component in Path::new(fields[2]).components() {
+            if let Component::Normal(part) = component {
+                directory.push(part);
+            }
+        }
+        if !directory.exists() {
+            directory = base.clone();
+        }
+        loop {
+            let text = match fs::read_to_string(directory.join(limit)) {
+                Ok(text) => text,
+                // cgroup v2 exposes memory.max only on non-root cgroups.
+                // Missing controller files below the hierarchy root stay unknown.
+                Err(error)
+                    if fields[0] == "0"
+                        && directory == base
+                        && error.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    break;
+                }
+                Err(error) => return Err(error),
+            };
+            if text.trim() != "max" {
+                let limit = text.trim().parse::<u64>().map_err(std::io::Error::other)?;
+                // cgroup v1 represents an unlimited controller using a very large value.
+                if limit < 1 << 60 {
+                    let used = fs::read_to_string(directory.join(used))?
+                        .trim()
+                        .parse::<u64>()
+                        .map_err(std::io::Error::other)?;
+                    let free = limit.saturating_sub(used);
+                    remaining = Some(remaining.map_or(free, |value| value.min(free)));
+                }
+            }
+            if directory == base || !directory.pop() {
+                break;
+            }
+        }
+    }
+    Ok(remaining)
+}
+
 pub(super) fn collect(
     system: &System,
     diagnostics: &Value,
@@ -288,4 +369,53 @@ pub(super) async fn accelerator_samples(
         }
     }
     samples
+}
+
+#[cfg(test)]
+mod memory_tests {
+    #[test]
+    fn unified_hierarchy_root_without_memory_max_is_unlimited() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(super::cgroup_available(root.path(), "0::/").unwrap(), None);
+        std::fs::create_dir(root.path().join("child")).unwrap();
+        std::fs::write(root.path().join("child/memory.max"), "1000").unwrap();
+        std::fs::write(root.path().join("child/memory.current"), "400").unwrap();
+        assert_eq!(
+            super::cgroup_available(root.path(), "0::/child").unwrap(),
+            Some(600)
+        );
+        std::fs::remove_file(root.path().join("child/memory.max")).unwrap();
+        assert!(super::cgroup_available(root.path(), "0::/child").is_err());
+    }
+
+    #[test]
+    fn parent_cgroup_limit_bounds_available_memory() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("child")).unwrap();
+        for (file, value) in [
+            ("memory.max", "1000"),
+            ("memory.current", "900"),
+            ("child/memory.max", "max"),
+            ("child/memory.current", "20"),
+        ] {
+            std::fs::write(root.path().join(file), value).unwrap();
+        }
+        assert_eq!(
+            super::cgroup_available(root.path(), "0::/child").unwrap(),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn missing_cgroup_usage_is_unknown_and_v1_limits_are_honored() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("memory")).unwrap();
+        std::fs::write(root.path().join("memory/memory.limit_in_bytes"), "1000").unwrap();
+        assert!(super::cgroup_available(root.path(), "2:memory:/").is_err());
+        std::fs::write(root.path().join("memory/memory.usage_in_bytes"), "400").unwrap();
+        assert_eq!(
+            super::cgroup_available(root.path(), "2:memory:/").unwrap(),
+            Some(600)
+        );
+    }
 }

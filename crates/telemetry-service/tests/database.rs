@@ -226,6 +226,51 @@ async fn durable_replay_ordering_nulls_columnstore_and_rollups() {
     .unwrap();
     assert_eq!(inventory["samples"].as_array().unwrap().len(), 100);
     assert_eq!(inventory["truncated"], true);
+    let current_startup = Uuid::new_v4();
+    let old_startup = batch.session_id;
+    batch.id = Uuid::new_v4();
+    batch.session_id = current_startup;
+    batch.sampled_at = Utc::now();
+    batch.processes.clear();
+    batch.inventory = None;
+    batch.host.as_mut().unwrap().available_memory_bytes = Some(4096);
+    store::ingest(
+        &pool,
+        node,
+        &batch,
+        &serde_json::to_vec(&batch).unwrap(),
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    batch.id = Uuid::new_v4();
+    batch.session_id = old_startup;
+    batch.sampled_at = Utc::now() + Duration::seconds(1);
+    batch.host.as_mut().unwrap().available_memory_bytes = Some(1);
+    store::ingest(
+        &pool,
+        node,
+        &batch,
+        &serde_json::to_vec(&batch).unwrap(),
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    let resources = store::TelemetryStore::new(pool.clone(), pool.clone())
+        .resources(&[artifactory_telemetry_model::nodes::ResourceIdentity {
+            node_id: node,
+            startup_id: current_startup,
+        }])
+        .await
+        .unwrap_or_else(|error| match error {
+            artifactory_runtime_protocol::error::ApiError::Internal(error) => panic!("{error:#}"),
+            _ => panic!("startup resource query failed"),
+        });
+    assert_eq!(resources.len(), 1);
+    assert_eq!(
+        resources[0]["available_memory_bytes"], 4096,
+        "an old startup replay cannot overwrite current-startup resources even with a later event timestamp"
+    );
     grpc_authorization(&pool, node, attempt).await;
     drop(pool);
     sql::execute(

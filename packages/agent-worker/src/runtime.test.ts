@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { runTask, checkpoint, restoreCheckpoint, safeError, toolDefinitions, type Task } from "./runtime.js";
 
 test("worker exposes only read-only analysis and structured completion tools", () => {
-  assert.deepEqual(toolDefinitions.map((tool) => tool.name), ["list_tree", "read_file", "search_source", "git_metadata", "node_capabilities", "read_logs", "submit_plan", "request_input"]);
+  assert.deepEqual(toolDefinitions.map((tool) => tool.name), ["list_tree", "read_file", "search_source", "git_metadata", "node_capabilities", "read_logs", "submit_plan", "submit_placements", "request_input"]);
   assert.equal(safeError(new Error("401 secret-value"), "secret-value"), "model authentication rejected; check the platform model profile");
   assert.equal(safeError(new Error('429: organization org-c401 request reached max RPM'), "secret-value"), "model provider quota or rate limit reached");
   assert.equal(safeError(new Error("request with key secret-value failed"), "secret-value").includes("secret-value"), false);
@@ -104,4 +104,55 @@ test("planning deadline interrupts an awaited rate-limit delay", async () => {
     assert.ok(Date.now()-started<3000,"deadline must not wait for the 60-second call throttle");
     assert.equal(requests,1);
   } finally {server.close();server.closeAllConnections();}
+});
+
+test("placement inference resumes and corrects prose using only placement completion tools", async () => {
+  const node = "00000000-0000-0000-0000-000000000001";
+  const placements = { app: { candidates: [{ node_id: node, metadata_digest: "a".repeat(64), reason: "native toolchain and available resources" }], resources: { min_available_memory_bytes: 4096 } } };
+  let requests = 0;
+  const reminders: string[] = [];
+  const server = createServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    const sent = JSON.parse(body);
+    const names = sent.tools.map((tool: { function: { name: string } }) => tool.function.name);
+    assert.ok(names.includes("query_nodes") && names.includes("submit_placements"));
+    for (const forbidden of ["submit_plan", "request_input", "read_file"]) assert.ok(!names.includes(forbidden));
+    requests++;
+    if (requests <= 2) reminders.push(JSON.stringify(sent.messages.findLast((message: { role: string }) => message.role === "user").content));
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    const chunk = (delta: unknown, finish_reason: string | null = null) => response.write(`data: ${JSON.stringify({ id: "placement-test", object: "chat.completion.chunk", created: 1, model: "gpt-4.1", choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
+    if (requests === 1) {
+      chunk({ role: "assistant", content: "I will find suitable replacement devices." });
+      chunk({}, "stop");
+      response.end("data: [DONE]\n\n");
+      return;
+    }
+    const name = requests === 2 ? "query_nodes" : "submit_placements";
+    const args = requests === 2 ? { os: "linux", tools: ["cargo"] } : { placements };
+    chunk({ role: "assistant", tool_calls: [{ index: 0, id: `tool-${requests}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] });
+    chunk({}, "tool_calls");
+    response.end("data: [DONE]\n\n");
+  });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  const address = server.address(); assert.ok(address && typeof address === "object");
+  const task: Task = { context: { purpose: "placement", checkpoint: { messages: checkpoint([]) }, placement_task: { targets: { app: { version: 1 } }, current_placements: placements } }, model: { api: "openai-completions", base_url: `http://127.0.0.1:${address.port}/v1`, model: "gpt-4.1", api_key: "test-secret", parameters: {} }, timeout_seconds: 10, max_calls: 5 };
+  const calls: string[] = [];
+  try {
+    await runTask(task, async (method, payload) => {
+      if (method !== "tool") return { ok: true };
+      calls.push(String(payload.name));
+      if (payload.name === "query_nodes") return { nodes: [{ node_id: node, metadata_digest: "a".repeat(64), resources_fresh: true }] };
+      assert.equal(payload.name, "submit_placements");
+      assert.deepEqual(JSON.parse(String(payload.arguments_json)), { placements });
+      return { accepted: true };
+    }, new AbortController().signal);
+    assert.deepEqual(calls, ["query_nodes", "submit_placements"]);
+    assert.equal(requests, 3);
+    assert.equal(reminders.length, 2);
+    for (const reminder of reminders) {
+      assert.match(reminder, /submit_placements/);
+      assert.doesNotMatch(reminder, /submit_plan\b|request_input|source read/);
+    }
+  } finally { server.close(); server.closeAllConnections(); }
 });

@@ -90,7 +90,9 @@ async fn tool(
 ) -> artifactory_runtime_protocol::error::Result<Json<Value>> {
     let build = s.store.runtime_tool_build(id(&v, "run_id")?).await?;
     Ok(Json(match v["name"].as_str() {
-        Some("node_capabilities") => json!({"nodes":crate::planning::nodes(&s,build).await?}),
+        Some(name @ ("node_capabilities" | "summarize_nodes" | "query_nodes" | "get_node")) => {
+            crate::node_query::tool(&s, build, name, &v["arguments"]).await?
+        }
         Some("read_logs") => crate::planning::read_logs(&s, build, &v["arguments"]).await?,
         _ => json!({"error":"tool not permitted"}),
     }))

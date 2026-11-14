@@ -47,6 +47,13 @@ async fn bounded(
 }
 
 impl TelemetryStore {
+    /// Fetch current-startup resources in one bounded query; historical replay stays isolated.
+    pub async fn resources(
+        &self,
+        identities: &[artifactory_telemetry_model::nodes::ResourceIdentity],
+    ) -> Result<Vec<Value>> {
+        Ok(sql::scalars(&mut self.read.clone(),"SELECT jsonb_build_object('node_id',h.node_id,'startup_id',h.startup_id,'sampled_at',h.sampled_at,'received_at',h.received_at,'available_memory_bytes',h.sample->'available_memory_bytes','build_disk_available_bytes',h.sample->'build_disk_available_bytes','cpu_percent',h.sample->'cpu_percent') FROM startup_resources h JOIN jsonb_to_recordset($1) AS r(node_id uuid,startup_id uuid) ON h.node_id=r.node_id AND h.startup_id=r.startup_id",params![serde_json::to_value(identities)?]).await?)
+    }
     pub async fn latest(&self, id: Uuid) -> Result<LatestTelemetry> {
         let host:Option<Value>=sql::optional_scalar(&mut self.read.clone(), "SELECT to_jsonb(h) || jsonb_build_object('fresh', sampled_at BETWEEN now()-interval '90 seconds' AND now()+interval '30 seconds' AND received_at>now()-interval '90 seconds') FROM latest_hosts h WHERE node_id=$1", params![id]).await?;
         let inventory:Option<Value>=sql::optional_scalar(&mut self.read.clone(), "SELECT jsonb_build_object('sampled_at',i.sampled_at,'digest',i.digest,'inventory',v.inventory) FROM latest_inventories i JOIN inventory_versions v USING(node_id,digest) WHERE i.node_id=$1", params![id]).await?;

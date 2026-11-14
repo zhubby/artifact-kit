@@ -5,6 +5,7 @@
 # 使用与配置
 
 - [零侵入 AI 构建](ai-builds.md)
+- [节点元数据、MCP 与 AI 选机](node-placement.md)
 - [执行配方与历史配置](configuration.md)
 - [控制台语言、主题与动效](frontend-experience.md)
 
@@ -29,6 +30,7 @@
 # 验收记录
 
 - [实施与验收总览](acceptance.md)
+- [节点元数据、MCP 与 AI 选机 · 2026-11-14](acceptance/nodes/2026-11-14.md)
 - [控制平面 HA 与 Toasty · 2026-11-14](acceptance/control-ha/2026-11-14-toasty.md)
 - [控制平面 HA · SQLx 阶段归档](acceptance/control-ha/2026-11-14.md)
 - [Toasty 数据访问迁移 · 2026-11-13](toasty-acceptance-2026-11-13.md)

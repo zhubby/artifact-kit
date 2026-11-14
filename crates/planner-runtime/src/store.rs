@@ -475,7 +475,7 @@ impl RuntimeStore {
         }
         let mut life = authorized(&row, &lease)?;
         ensure!(!life.pending, "proposal awaiting acceptance");
-        if matches!(name, "submit_plan" | "request_input") {
+        if matches!(name, "submit_plan" | "submit_placements" | "request_input") {
             life.pending = true;
             models::Proposal::create()
                 .id(proposal)
@@ -495,7 +495,14 @@ impl RuntimeStore {
             ))
         } else {
             ensure!(
-                matches!(name, "node_capabilities" | "read_logs"),
+                matches!(
+                    name,
+                    "node_capabilities"
+                        | "summarize_nodes"
+                        | "query_nodes"
+                        | "get_node"
+                        | "read_logs"
+                ),
                 "source tools must use Source Service"
             );
             tx.commit().await?;

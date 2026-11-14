@@ -6,6 +6,7 @@ import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messag
 import { deflateSync, inflateSync } from "node:zlib";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
+import { connectNodeMcp } from "./node-mcp.js";
 
 export interface ModelConfiguration {
   api: "openai-completions" | "openai-responses" | "anthropic-messages";
@@ -50,7 +51,16 @@ answered question again, even if the original goal requested that question.
 If source changes are necessary, explain the limitation with request_input.
 On a revision, read failure logs. Keep the target set and successful targets
 unchanged, and revise only failed targets. Never expand platform/signing scope.
-Finish by calling submit_plan with summary, evidence, scripts and recipe.
+When project_context.placement_version is 1, query_nodes through MCP and submit
+placements for every target: up to 8 ranked authorized candidates with node_id,
+metadata_digest and a concrete reason, plus conservative resource thresholds.
+Use get_node for details as needed. Never invent IDs or digests. Unknown/stale
+resources do not satisfy thresholds. The system revalidates before allocation.
+When purpose is placement, only use submit_placements to update the requested
+unassigned targets; copy their resource thresholds unchanged. Scripts, platform
+and signing authorization are immutable.
+For initial/revision tasks, finish by calling submit_plan with summary, evidence,
+scripts, recipe and placements. For placement tasks, finish with submit_placements.
 Put version:1 inside recipe (recipe.version), never at the outer plan level.
 Give each step an explicit timeout_seconds no greater than its target timeout.
 Do not finish with a prose-only plan. A tool error is feedback to correct the plan.
@@ -61,7 +71,10 @@ const text = { type: "string" };
 const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: "object", properties, required, additionalProperties: false });
 const step = object({ name: text, phase: { type: "string", enum: ["build", "sign", "verify"] }, shell: { type: "string", enum: ["bash", "sh", "powershell", "pwsh"] }, run: text, timeout_seconds: { type: "integer", minimum: 1 } }, ["name", "run"]);
 const target = object({ os: { type: "string", enum: ["linux", "darwin", "windows"] }, arch: { type: "string", enum: ["amd64", "arm64"] }, executor: { type: "string", const: "native" }, labels: { type: "object", additionalProperties: text }, capabilities: { type: "array", items: text }, signing_profiles: { type: "array", items: text }, timeout_seconds: { type: "integer", minimum: 1 }, steps: { type: "array", items: step }, artifacts: { type: "array", items: text } }, ["os", "arch", "steps", "artifacts"]);
+const placement = object({ candidates: { type: "array", minItems: 1, maxItems: 8, items: object({ node_id: {type:"string",format:"uuid"}, metadata_digest: {type:"string",pattern:"^[a-f0-9]{64}$"}, reason: text }, ["node_id","metadata_digest","reason"]) }, resources: object({ min_available_memory_bytes:{type:"integer",minimum:0}, min_build_disk_available_bytes:{type:"integer",minimum:0}, max_cpu_percent:{type:"number",minimum:0,maximum:100} }) }, ["candidates"]);
+const placements = {type:"object",additionalProperties:placement};
 const plan = object({
+  placements,
   summary: text,
   evidence: { type: "array", items: object({ path: text, reason: text }, ["path", "reason"]) },
   scripts: { type: "array", items: object({ name: text, content: text }, ["name", "content"]) },
@@ -76,6 +89,7 @@ export const toolDefinitions = [
   { name: "node_capabilities", description: "Inspect actual authorized node OS, architecture, labels and installed tools.", parameters: object({}) },
   { name: "read_logs", description: "Read recent build failure logs, optionally restricted to one target.", parameters: object({ target: text }) },
   { name: "submit_plan", description: "Submit the complete structured execution plan for server validation and automatic execution.", parameters: object({ plan }, ["plan"]) },
+  { name: "submit_placements", description: "For a placement reselection task only: replace candidate lists for unassigned targets. Cannot modify scripts, platforms, signing or running tasks.", parameters: object({ placements }, ["placements"]) },
   { name: "request_input", description: "Pause planning and ask the user one concrete missing-information question.", parameters: object({ question: text }, ["question"]) },
 ] as const;
 
@@ -145,16 +159,30 @@ export async function runTask(task: Task, rpc: Rpc, signal: AbortSignal): Promis
       if (typeof value === "number" && Number.isFinite(value) && value >= 0) usage[key] = value;
     }
   }
-  const tools: AgentTool<any>[] = toolDefinitions.map((definition) => ({
+  const mcp = await connectNodeMcp(rpc);
+  const placementTask = task.context.purpose === "placement";
+  const completion = placementTask
+    ? "submit_placements for unassigned targets, keeping their resource thresholds unchanged"
+    : "submit_plan with recipe.version=1 or request_input for a necessary question";
+  const submission = (name: string) => ["submit_plan","submit_placements","request_input"].includes(name);
+  const tools: AgentTool<any>[] = toolDefinitions.filter(d => placementTask ? ["submit_placements","read_logs"].includes(d.name) : d.name !== "submit_placements").map((definition) => ({
     ...definition, label: definition.name,
     execute: async (_id: string, args: Record<string, unknown>) => {
-      if (task.proxied && (definition.name === "submit_plan" || definition.name === "request_input")) await rpc("report", { kind: "checkpoint", payload_json: JSON.stringify({ messages: checkpoint(agent.state.messages, task.model.api_key), pending_tool: { id: _id, name: definition.name } }) });
+      if (task.proxied && submission(definition.name)) await rpc("report", { kind: "checkpoint", payload_json: JSON.stringify({ messages: checkpoint(agent.state.messages, task.model.api_key), pending_tool: { id: _id, name: definition.name } }) });
       const result = await rpc("tool", { name: definition.name, arguments_json: JSON.stringify(args) });
       if (result.error) throw new Error(String(result.error));
-      if (result.accepted && (definition.name === "submit_plan" || definition.name === "request_input")) completed = true;
+      if (result.accepted && submission(definition.name)) completed = true;
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }], details: {}, ...(completed ? { terminate: true } : {}) };
     },
   }));
+  for (const definition of mcp.tools) tools.push({
+    name:definition.name, label:definition.name, description:definition.description ?? "Authorized node query", parameters:definition.inputSchema,
+    execute:async (_id:string,args:Record<string,unknown>) => {
+      const result=await mcp.client.callTool({name:definition.name,arguments:args});
+      if (result.isError) throw new Error("node query rejected or unavailable");
+      return {content:result.content as {type:"text";text:string}[],details:{}};
+    },
+  });
   const prior = restoreTaskCheckpoint(task.context);
   const agent = new Agent({
     initialState: { systemPrompt, model, tools, thinkingLevel: (task.model.parameters?.thinking_level || "off") as ThinkingLevel, ...(prior ? { messages: prior } : {}) },
@@ -165,7 +193,7 @@ export async function runTask(task: Task, rpc: Rpc, signal: AbortSignal): Promis
     beforeToolCall: async () => completed ? { block: true, reason: "planning already completed", terminate: true } : undefined,
     finishTurn: ({ message }) => completed ? { action: "end" } : message.stopReason === "error" || message.stopReason === "aborted" ? undefined : { action: "continue" },
     prepareNextTurnWithContext: ({ message, toolResults }) => !toolResults.length && message.stopReason !== "error" && message.stopReason !== "aborted" ? {
-      messages: [{role: "user", content: "Planning is not complete. Use an available tool now: submit_plan with recipe.version=1, request_input for a necessary question, or a focused source read. Prose alone does not submit a plan.", timestamp: Date.now()}],
+      messages: [{role: "user", content: `Planning is not complete. Use an available tool now: ${completion}${placementTask ? "; use MCP node queries as needed" : ", or a focused source read"}. Prose alone does not submit a plan.`, timestamp: Date.now()}],
     } : undefined,
   });
   let deadlineReached = false;
@@ -195,7 +223,7 @@ export async function runTask(task: Task, rpc: Rpc, signal: AbortSignal): Promis
   });
   try {
     const context = { ...task.context }; delete context.checkpoint; delete context.usage;
-    await agent.prompt(prior ? "Resume this same planning task from its saved context. Finish through submit_plan or request_input." : JSON.stringify(context));
+    await agent.prompt(prior ? `Resume this same planning task from its saved context. Finish through ${completion}.` : JSON.stringify(context));
     if (!completed) {
       const last = agent.state.messages.findLast((message) => message.role === "assistant");
       throw new Error(deadlineReached ? "planning deadline reached" : signal.aborted ? "task canceled" : last?.role === "assistant" && last.errorMessage ? last.errorMessage : "model provider did not complete planning");
@@ -205,6 +233,6 @@ export async function runTask(task: Task, rpc: Rpc, signal: AbortSignal): Promis
     throw error;
   } finally {
     clearTimeout(timeout); signal.removeEventListener("abort", abort);
-    agent.abort(); await agent.waitForIdle();
+    agent.abort(); await agent.waitForIdle(); await mcp.close();
   }
 }

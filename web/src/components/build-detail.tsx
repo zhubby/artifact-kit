@@ -257,6 +257,10 @@ export function BuildDetail({ id, user }: { id: string; user: User }) {
                 </button>
               );
             })}
+            {job?.placement && <div className="space-y-2 border-t border-border p-4 text-xs text-muted-foreground">
+              <p>{t("builds.placement")} · {job.placement.selected_reason || job.placement.reason || t("builds.placementQueued")}</p>
+              <ol className="list-inside list-decimal space-y-1">{job.placement.placement.candidates.map(candidate => <li key={candidate.node_id} className="break-all"><code>{short(candidate.node_id)}</code> · {candidate.reason}</li>)}</ol>
+            </div>}
             {attempt?.error && (
               <div className="p-4">
                 <ErrorBox message={attempt.error} />

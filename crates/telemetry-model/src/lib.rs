@@ -1,4 +1,5 @@
 //! Bounded telemetry records. Environment values and process command lines are intentionally absent.
+pub mod nodes;
 use anyhow::{Result, ensure};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,10 @@ pub struct HostSample {
     pub cpu_percent: Option<f64>,
     pub memory_total_bytes: Option<u64>,
     pub memory_used_bytes: Option<u64>,
+    #[serde(default)]
+    pub available_memory_bytes: Option<u64>,
+    #[serde(default)]
+    pub build_disk_available_bytes: Option<u64>,
     pub swap_total_bytes: Option<u64>,
     pub swap_used_bytes: Option<u64>,
     pub load_one: Option<f64>,
@@ -180,6 +185,8 @@ impl Batch {
                 [
                     h.memory_total_bytes,
                     h.memory_used_bytes,
+                    h.available_memory_bytes,
+                    h.build_disk_available_bytes,
                     h.swap_total_bytes,
                     h.swap_used_bytes
                 ]
