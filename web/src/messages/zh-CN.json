@@ -55,6 +55,7 @@
     "needs_input": "等待补充"
   },
   "navigation": {
+    "docs": "文档",
     "overview": "交付总览",
     "projects": "项目空间",
     "builds": "构建记录",

@@ -61,6 +61,33 @@ python3 -u scripts/compose_acceptance.py
 
 日志和证据保存在 `.local/compose-tls/<run>/`。其中源码快照含本次部署的主密钥、数据库 / S3 密码和测试 PKI，必须保持私有；CI 仅上传显式列出的诊断日志和证据文件，不上传快照、生成的 Compose 配置或 Emissary 私钥。专用 probe 容器只承载该验收的原生 Linux 进程，不属于产品的容器执行器，也不证明实体 Emissary 服务、五类真实应用、发行签名或公网 DNS / ACME 已验收。
 
+## 文档站点
+
+Compose 和 Helm 的 Web 镜像在构建时使用 mdBook 生成文档，部署后在控制台同域名的 `/docs` 免登录提供静态页面、搜索索引、Mermaid 脚本、图片和附件。静态文件随 Web 镜像版本更新、回滚；启动容器时不再构建文档，也无需额外文档服务。
+
+构建 Web 镜像必须从仓库根目录提供上下文，Docker 会安装固定版本的文档工具：
+
+```sh
+docker build -f web/Dockerfile -t artifactory-web:local .
+```
+
+本地维护需要 mdBook 0.4.40 与 mdbook-mermaid 0.14.0：
+
+```sh
+cargo install --locked --version 0.4.40 mdbook
+cargo install --locked --version 0.14.0 mdbook-mermaid
+cd web
+npm ci
+npm run docs:build
+npm run docs:serve
+```
+
+`docs:build` 输出到 Git 忽略的 `web/public/docs/`。`docs:serve` 在 `http://127.0.0.1:3001` 提供自动重建预览；启动控制台后可在其 `/docs` 验证正式路径。`npm run build` 自动先构建文档，工具缺失、版本不符或文档构建失败会中止 Web 构建。
+
+章节目录由 `docs/SUMMARY.md` 维护，原 Markdown 路径保持稳定；新增页面须加入目录。设计计划和验收记录保留各自时点的背景与边界。Mermaid 资源由固定版本工具生成在仓库根目录的 `mermaid.min.js`、`mermaid-init.js`，已加入 Git 和 Docker 上下文忽略规则；生成文档时随静态站点打包，不从 CDN 加载。
+
+在仓库根目录运行 `python3 scripts/check_docs.py` 检查目录覆盖、生成页面、内部链接、锚点与资源；完成 Web 生产构建后，在 `web` 运行 `npm run test:docs` 验证匿名访问、真实 404、搜索、主题、图表和移动导航。隔离 Compose TLS 验收也会检查同域名 `/docs`，文档内容不依赖 API 登录状态。
+
 ## Emissary 安装与注册
 
 运行 `sh scripts/cross-build-emissary.sh`，默认构建本机 Rust 目标，输出位于 `.local/emissary-bin`。其他目标由 `EMISSARY_TARGETS` 显式指定，需预装对应 linker / SDK；正式发布由五种原生 runner 分别编译。设备程序不依赖 Go。
@@ -119,7 +146,7 @@ Worker 在 SIGTERM / SIGINT、租约到期和父控制管道 EOF 时先终止任
 
 `native-emissary` 作业在 Linux amd64 / arm64、macOS amd64 / arm64 与 Windows amd64 原生 runner 上运行 Rust 测试及 Clippy。`process_tree` 直接启动系统进程验证进程组 / Job Object 清理；`runtime` 使用真实 TLS 1.3 和 mTLS loopback 服务验证认证连接、OTA 替换 / 回滚，以及 Unix 前台和 supervisor 停止时的在途 Worker、日志确认和目录清理。
 
-`native_service_lifecycle` 另由显式启用的 GitHub 托管临时 VM 执行，核对实际平台，创建专用账户，以带空格的路径安装、启动、重启、停止并卸载 systemd / launchd / SCM 服务，验证认证连接、在途进程树和后续任务。普通测试跳过此项，不在开发机安装系统服务。systemd / launchd / SCM 的专用账户安装、OS 重启、各平台 SDK 与发行签名必须在相应的临时 VM 或实体机单独验收；不能用过去 Go 实现的服务记录代替 Rust 版本验收。实际执行结果见 [Emissary 移植说明](../crates/emissary/PORTING.md) 与带日期的验收记录。
+`native_service_lifecycle` 另由显式启用的 GitHub 托管临时 VM 执行，核对实际平台，创建专用账户，以带空格的路径安装、启动、重启、停止并卸载 systemd / launchd / SCM 服务，验证认证连接、在途进程树和后续任务。普通测试跳过此项，不在开发机安装系统服务。systemd / launchd / SCM 的专用账户安装、OS 重启、各平台 SDK 与发行签名必须在相应的临时 VM 或实体机单独验收；不能用过去 Go 实现的服务记录代替 Rust 版本验收。实际执行结果见 [Emissary 移植说明](https://github.com/zhubby/artifact-kit/blob/main/crates/emissary/PORTING.md) 与带日期的验收记录。
 
 ## 本机签名配置
 

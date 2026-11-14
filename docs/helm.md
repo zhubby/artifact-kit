@@ -76,6 +76,8 @@ helm upgrade --install artifactory charts/artifactory \
 
 Web Service 的入口是 Caddy；它先将 `/api/*` 和 `/healthz` 直接转发给 control，再将页面转发给 Next.js，SSE 不缓冲。这避免 Next 镜像构建时固定的 `control` DNS 与 Helm 的资源前缀冲突。Ingress 也必须关闭响应缓冲并允许实际制品大小。
 
+Web 镜像同时包含由 mdBook 生成的完整静态文档，安装后访问控制台同域名的 `/docs`，无需登录，也不需要额外的 Service、PVC 或 Ingress 路径。文档随 Web 镜像一起升级和回滚；构建与维护说明见[文档站点](operations.md#文档站点)。
+
 gRPC 使用独立的 `<release>-grpc:8443` Service，保留服务器 TLS 与节点 mTLS。通过受信网络的 TCP LoadBalancer、NodePort 或 TLS passthrough 暴露，确保 Agent 访问的主机名/IP 在生成证书 SAN 中。不要使用普通 HTTP Ingress 终止这条私有 CA 认证连接，也不要公开数据库或 SeaweedFS 内部管理端口。
 
 ## 本机 kind
@@ -96,7 +98,7 @@ kubectl --context YOUR_KIND_CONTEXT apply \
 
 ```sh
 docker build -t artifactory-control:kind .
-docker build -t artifactory-web:kind web
+docker build -f web/Dockerfile -t artifactory-web:kind .
 kind load docker-image --name YOUR_CLUSTER artifactory-control:kind artifactory-web:kind
 
 helm upgrade --install artifactory charts/artifactory \

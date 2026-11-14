@@ -55,6 +55,7 @@
     "needs_input": "Needs input"
   },
   "navigation": {
+    "docs": "Documentation",
     "overview": "Delivery overview",
     "projects": "Projects",
     "builds": "Build runs",

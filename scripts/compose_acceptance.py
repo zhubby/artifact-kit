@@ -128,7 +128,7 @@ def main():
         for kind in ('container', 'volume', 'network'):
             check('unique Compose ' + kind + ' namespace is unused', not capture(['docker', kind, 'ls', '-q'] + (['-a'] if kind == 'container' else []) + ['--filter', 'label=com.docker.compose.project=' + project]))
         control_image = build('control', snapshot, (snapshot / 'Dockerfile').read_text(), options.control_image)
-        web_image = build('web', snapshot / 'web', (snapshot / 'web/Dockerfile').read_text(), options.web_image)
+        web_image = build('web', snapshot, (snapshot / 'web/Dockerfile').read_text(), options.web_image)
         ai_worker_image = build('ai-worker', snapshot, (snapshot / 'ai-worker/Dockerfile').read_text(), options.ai_worker_image)
         architecture = capture(['docker', 'image', 'inspect', control_image, '--format', '{{.Architecture}}'])
         check('probe image uses a supported Emissary architecture', architecture in ('amd64', 'arm64'))

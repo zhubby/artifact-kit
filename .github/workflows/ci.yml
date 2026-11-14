@@ -34,6 +34,10 @@ jobs:
       - run: npm ci && npm run check && npm test
         working-directory: ai-worker
       - run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy && rustup default 1.95.0
+      - name: Install pinned documentation tools
+        run: |
+          cargo install --locked --version 0.4.40 mdbook
+          cargo install --locked --version 0.14.0 mdbook-mermaid
       - run: sh scripts/local-services.sh
       - run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
       - run: cargo fmt --all --check && cargo clippy --locked --all-targets -- -D warnings
@@ -49,6 +53,11 @@ jobs:
       - run: cargo build --locked --bin artifactory-emissary
       - run: sh scripts/cross-build-emissary.sh
       - run: npm ci && npm run typecheck && npm run build && npx playwright install --with-deps chromium
+        working-directory: web
+      - name: Validate complete documentation and generated links
+        run: python3 scripts/check_docs.py
+      - name: Production documentation routes and browser interactions
+        run: npm run test:docs
         working-directory: web
       - name: Frontend locales, themes and motion
         run: npm run test:ui
@@ -108,6 +117,7 @@ jobs:
             web/test-results/
             web/playwright-report/
             .local/frontend-evidence/
+            .local/docs-evidence/
   kubernetes-pi:
     runs-on: ubuntu-latest
     timeout-minutes: 45

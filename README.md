@@ -4,6 +4,8 @@
 
 面向个人与内部可信团队的跨平台应用构建、签名与内部分发平台。
 
+文档使用 mdBook 按使用、部署、接口、验收与历史设计整理：[文档首页](docs/README.md)。Web 部署后通过同域名 `/docs` 免登录阅读，构建与维护命令见[文档站点](docs/operations.md#文档站点)。
+
 项目于 2026-11-11 统一更名为 `artifactory`。GitHub 仓库地址与本地目录不变；命令、配置与环境变量使用产品名；设备端现为 Rust `artifactory-emissary`。更名说明见 [更名记录](docs/artifactory-rename-2026-11-11.md)，后续复审修复及实际部署见[本机 / Mac mini 验收](docs/local-macmini-acceptance-2026-11-11.md)；此前的设计和验收记录保留当时的名称与结果。
 
 **只读 Git 项目 → 固定源码快照 → Pi AI 执行计划 → 原生节点构建 → 签名 / 校验 → 私有制品 → 不可变 Release。**

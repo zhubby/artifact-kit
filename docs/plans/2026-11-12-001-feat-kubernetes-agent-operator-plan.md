@@ -9,6 +9,8 @@ origin: docs/superpowers/specs/2026-11-12-kubernetes-agent-operator-design.md
 
 # Kubernetes Agent Operator 落地计划
 
+> 历史设计与计划归档。本文保留当时的决策和实施背景，不作为当前功能清单；实际结果以对应版本的源码与验收记录为准。
+
 > 2026-11-13 后续决策：设备执行器已更名为 **Artifactory Emissary**，由 Rust 完全替换，不保留 Go 接入、旧协议别名或迁移层。下文的 Go / 混合机群描述保留为首期计划历史，不作为当前实施要求；当前实现与验证见 [Emissary 记录](../acceptance/emissary/2026-11-13.md)。Pi 与设备执行器的职责划分不变。
 
 **交付目标：native 在 Kubernetes Job/Pod 上运行 Pi，Rust Operator 管理运行与源码处理资源，Rust Runtime/Source 服务接管高频执行和源码数据流；Substrate 可选，业务控制平面继续接纳计划和调度设备 Agent。设备 Artifactory Agent 后续迁移到 Rust。**
@@ -237,4 +239,4 @@ flowchart TB
 - [Substrate / AX 固定版本研究](../substrate-scheduling-assessment-2026-11-12.md)。
 - [既有 AI Builds 计划](../superpowers/plans/2026-11-11-ai-builds.md)、[AI Builds 接纳记录](../ai-builds-acceptance-2026-11-11.md)。
 - [Kubernetes Operator](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)、[Jobs](https://kubernetes.io/docs/concepts/workloads/controllers/job/)、[PV 访问模式](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes)、[Custom Resources](https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/)。
-- [kube-rs](https://github.com/kube-rs/kube)、[kube-runtime](https://docs.rs/kube-runtime/latest/kube_runtime/)、[当前设备协议](../../proto/artifactory/agent/v1/agent.proto)。
+- [kube-rs](https://github.com/kube-rs/kube)、[kube-runtime](https://docs.rs/kube-runtime/latest/kube_runtime/)、[当前设备协议](https://github.com/zhubby/artifact-kit/blob/main/proto/artifactory/emissary/v1/emissary.proto)。

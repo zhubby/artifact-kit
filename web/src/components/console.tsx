@@ -14,6 +14,7 @@ import {
   ArrowRight,
   ArrowUpRight,
   Boxes,
+  BookOpen,
   CheckCircle2,
   ChevronRight,
   CircleDot,
@@ -215,6 +216,10 @@ export function Console() {
             </Link>
           ))}
         </nav>
+        <a href="/docs" className="nav-item">
+          <BookOpen />
+          {t("navigation.docs")}
+        </a>
         <div className="nav-label mt-5">{t("navigation.adminGroup")}</div>
         <Link
           href="/settings"
