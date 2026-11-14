@@ -13,6 +13,13 @@ SCRIPT = Path(__file__).with_name("init-helm.py")
 
 
 class HelmBootstrapTests(unittest.TestCase):
+    def test_rollout_notes_do_not_contradict_replicated_control_or_variable_pvc_counts(self):
+        notes = (SCRIPT.parents[1] / 'charts/artifactory/templates/NOTES.txt').read_text()
+        self.assertNotIn('do not scale its Deployment above one replica', notes)
+        self.assertNotIn('all three PVCs', notes)
+        self.assertIn('.Values.controlPlane.replicas', notes)
+        self.assertIn('.Values.localSource.enabled', notes)
+
     @unittest.skipUnless(shutil.which('helm'), 'requires helm')
     def test_trial_profile_is_replicated_private_and_uses_default_priority(self):
         chart = SCRIPT.parents[1] / 'charts/artifactory'

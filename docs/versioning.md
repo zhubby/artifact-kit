@@ -70,6 +70,8 @@ helm upgrade --install artifactory charts/artifactory \
 
 若集群无法直连镜像源，仅在本次 Helm values 中使用经过上游摘要核对的镜像传输端点，并用 `tag@sha256:<digest>` 固定内容；不要修改节点 DNS、containerd registry 配置或集群网络。可手动运行 `trial-image-mirrors`，为已发布版本复制三个固定摘要的依赖镜像。缓存标签为现有公开 `artifactory-control-plane` 镜像仓库内的 `<release-tag>-trial-<component>-<upstream-tag>`，明确不是控制平面版本；复制保留原始所有架构、配置、许可证与内容摘要，且拒绝覆盖不同内容的已有标签。第一方版本标签、`latest` 和原始 Release 资产均不改变。
 
+`deploy/releases/0.2.0-trial-values.yaml` 固定本次 0.2.0 试部署的第一方与依赖摘要，选择已核对内容的南大传输端点，并包含旧包 admission 兼容设置。用已下载且校验通过的 `artifactory-0.2.0.tgz` 安装时，在 trial profile 之后额外传入此 values 文件；它不包含凭据，不替代优先级、容量、权限或 CNI 的现场检查。该文件是历史版本快照，不随后续统一版本升级而改写。
+
 ```sh
 kubectl --kubeconfig "$PRIVATE_KUBECONFIG" -n artifactory \
   port-forward --address 127.0.0.1 service/artifactory-web 38100:80

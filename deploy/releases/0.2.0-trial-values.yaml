@@ -1,0 +1,20 @@
+podPreemptionPolicy: ""
+images:
+  control-plane:
+    repository: ghcr.nju.edu.cn/zhubby/artifactory-control-plane
+    tag: "0.2.0@sha256:15b007d8e5b5635786b5cc85f64f3ba8dd0ba1d56a83d6cb9e7900d96c26f557"
+  web:
+    repository: ghcr.nju.edu.cn/zhubby/artifactory-web
+    tag: "0.2.0@sha256:ddb31e00025f52c9b0539cb71cca9f8c79eaf78c211845579703c53dcbe31523"
+  agent-worker:
+    repository: ghcr.nju.edu.cn/zhubby/artifactory-agent-worker
+    tag: "0.2.0@sha256:12f5a20659a36794998b248d68e385011d2d73464b62aa9448d72b36863fb19b"
+  postgres:
+    repository: ghcr.nju.edu.cn/zhubby/artifactory-control-plane
+    tag: "v0.2.0-trial-postgres-2.32.0-pg17@sha256:6a6b7d7a346d7c6be03a310c240706f3bbc6d7adbdf3fbc07823570b34337f5e"
+  s3:
+    repository: ghcr.nju.edu.cn/zhubby/artifactory-control-plane
+    tag: "v0.2.0-trial-s3-4.53@sha256:ccad23e18639c8b98cee17e7100b95830a06077b56d8e5b006d6dcf8ec5e94a0"
+  gateway:
+    repository: ghcr.nju.edu.cn/zhubby/artifactory-control-plane
+    tag: "v0.2.0-trial-gateway-2-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0"

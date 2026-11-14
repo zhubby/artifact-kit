@@ -55,5 +55,6 @@
 # 品牌与变更记录
 
 - [Artifactory 0.2.0](releases/0.2.0.md)
+- [0.2.0 Kubernetes 试部署记录](releases/0.2.0-kubernetes-trial.md)
 - [Artifactory 装配 A](brand/README.md)
 - [Artifactory 更名记录 · 2026-11-11](artifactory-rename-2026-11-11.md)

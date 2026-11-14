@@ -3,8 +3,13 @@ S3 signed URL endpoint: {{ .Values.s3.publicEndpoint }}
 gRPC TLS service: {{ include "artifactory.fullname" . }}-grpc:8443
 
 Credentials and PKI are external Secrets; Helm never rotates them.
-Back up all three PVCs, the credentials Secret, and the PKI Secret together.
-Control is a single scheduler; do not scale its Deployment above one replica.
+Back up all application PVCs, the credentials Secret, and the PKI Secret together.
+Control plane replicas: {{ .Values.controlPlane.replicas }}, coordinated through PostgreSQL fencing.
+{{- if .Values.localSource.enabled }}
+Source data uses a separate single-replica service and PVC.
+{{- else }}
+Multiple control replicas require localSource.enabled=true and an explicit database connection budget.
+{{- end }}
 {{- if .Values.development.insecureHttp }}
 
 HTTP DEVELOPMENT MODE IS ENABLED. gRPC still requires the pinned private CA.
