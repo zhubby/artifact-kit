@@ -1,29 +1,62 @@
 "use client";
 
-import { useState } from "react";
 import { useRemote } from "@/lib/api";
+import type { NodeMetadataSnapshot } from "@/lib/types";
 import { useUI } from "@/components/providers";
-import { ErrorBox, Loading } from "@/components/common";
-
-interface Metadata { startup_id: string | null; received_at: string | null; metadata: Record<string, unknown> }
+import { Loading } from "@/components/common";
+import {
+  NodeDataError,
+  NodeFacts,
+  NodeTimestamp,
+} from "@/components/node-detail-parts";
 
 export function NodeMetadata({ id }: { id: string }) {
-  const [open, setOpen] = useState(false);
-  const { t, date } = useUI();
-  const snapshot = useRemote<Metadata>(open ? `/nodes/${id}/metadata` : null, 30000);
-  return <details className="mt-4 text-[11px] text-muted-foreground" onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary className="cursor-pointer">{t("nodes.metadata")}</summary>
-    {open && <div className="mt-3 space-y-2">
-      <ErrorBox message={snapshot.error} />
+  const { t } = useUI();
+  const snapshot = useRemote<NodeMetadataSnapshot>(
+    `/nodes/${id}/metadata`,
+    30000,
+  );
+  return (
+    <div className="space-y-6">
+      <NodeDataError error={snapshot.error} retry={snapshot.reload} />
       {!snapshot.data && !snapshot.error && <Loading />}
-      {snapshot.data && <>
-        <p>{date(snapshot.data.received_at)}</p>
-        {Object.keys(snapshot.data.metadata).length === 0 ? <p>{t("nodes.notReported")}</p> :
-          <dl className="divide-y divide-border">{Object.entries(snapshot.data.metadata).map(([key,value]) => <div key={key} className="py-2">
-            <dt className="break-all font-mono text-foreground">{key}</dt>
-            <dd className="mt-1 whitespace-pre-wrap break-all font-mono">{typeof value === "string" ? value : JSON.stringify(value, null, 2)}</dd>
-          </div>)}</dl>}
-      </>}
-    </div>}
-  </details>;
+      {snapshot.data && (
+        <>
+          <NodeFacts
+            entries={[
+              [t("nodes.startupId"), snapshot.data.startup_id],
+              [t("nodes.metadataDigest"), snapshot.data.digest],
+              [
+                t("nodes.receivedAt"),
+                <NodeTimestamp
+                  key="received"
+                  value={snapshot.data.received_at}
+                />,
+              ],
+            ]}
+          />
+          {Object.keys(snapshot.data.metadata).length === 0 ? (
+            <p className="node-empty">{t("nodes.notReported")}</p>
+          ) : (
+            <dl className="node-metadata-list">
+              {Object.entries(snapshot.data.metadata)
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([key, value]) => (
+                  <div key={key}>
+                    <dt>{key}</dt>
+                    <dd>
+                      <pre>
+                        {typeof value === "string"
+                          ? value
+                          : JSON.stringify(value, null, 2)}
+                      </pre>
+                    </dd>
+                  </div>
+                ))}
+            </dl>
+          )}
+        </>
+      )}
+    </div>
+  );
 }

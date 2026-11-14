@@ -29,7 +29,7 @@ function UpdateActions({ update, reload }: { update: EmissaryUpdate; reload: () 
   </div><ErrorBox message={error} /></div>;
 }
 
-export function NodeOTA({ node, user, releases, updates, reload }: { node: Node; user: User; releases: EmissaryRelease[]; updates: EmissaryUpdate[]; reload: () => Promise<unknown> }) {
+export function NodeOTA({ node, user, releases, updates, reload, actionsReady = true }: { node: Node; user: User; releases: EmissaryRelease[]; updates: EmissaryUpdate[]; reload: () => Promise<unknown>; actionsReady?: boolean }) {
   const { t } = useUI();
   const [open, setOpen] = useState(false);
   const history = updates.filter(u => u.node_id === node.id);
@@ -48,7 +48,7 @@ export function NodeOTA({ node, user, releases, updates, reload }: { node: Node;
     {node.emissary_pool_paused && <p className="text-amber-600 dark:text-amber-400">{t("ota.poolPaused")}</p>}
     {latest?.error && <p className="break-words text-destructive" role="status">{latest.error}</p>}
     {latest?.status === "rolled_back" && <p>{t("ota.restored", { version: node.emissary_current_version || "—" })}</p>}
-    {user.role === "admin" && <div className="flex flex-wrap items-start gap-2">
+    {user.role === "admin" && actionsReady && <div className="flex flex-wrap items-start gap-2">
       <Button size="sm" variant="secondary" disabled={!!active || node.revoked} onClick={() => setOpen(true)}>{t("ota.setTarget")}</Button>
       {latest && !node.revoked && <UpdateActions update={latest} reload={reload} />}
     </div>}

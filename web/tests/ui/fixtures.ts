@@ -3,6 +3,7 @@ import type {
   Artifact,
   Build,
   Node,
+  NodeTelemetry,
   Project,
   Release,
   User,
@@ -170,6 +171,44 @@ export const nodes: Node[] = [
     },
   },
 ];
+export const nodeTelemetry: NodeTelemetry = {
+  host: {
+    node_id: nodes[0].id,
+    session_id: "session-main",
+    sampled_at: new Date().toISOString(),
+    received_at: new Date().toISOString(),
+    fresh: true,
+    dropped_batches: 0,
+    sample: {
+      cpu_percent: 24.5,
+      memory_total_bytes: 68719476736,
+      memory_used_bytes: 17179869184,
+      available_memory_bytes: 51539607552,
+      build_disk_available_bytes: 73014444032,
+      swap_total_bytes: 2147483648,
+      swap_used_bytes: 0,
+      load_one: 1.25,
+      active_attempts: 1,
+      disks: [{ device: "disk3s1", mount: "/Volumes/Build", total_bytes: 1099511627776, available_bytes: 73014444032, read_bytes: 123456789, written_bytes: 987654321 }],
+      networks: [{ interface: "en0", received_bytes: 12345678, transmitted_bytes: 23456789, receive_errors: 0, transmit_errors: 0 }],
+      accelerators: [{ id: "gpu-0", utilization_percent: 12.5, memory_used_bytes: 1073741824 }],
+    },
+  },
+  inventory: {
+    sampled_at: created,
+    digest: "inventory-main",
+    inventory: {
+      os: "darwin", arch: "arm64", os_version: "macOS 26.1", kernel_version: "Darwin 25.1",
+      cpu_model: "Apple M4 Max", physical_cores: 12, logical_cpus: 12,
+      physical_memory_bytes: 68719476736, effective_cpu_limit: 12,
+      effective_memory_limit_bytes: 68719476736, container: null, virtualization: null,
+      tools: { xcode: { available: true, version: "Xcode 26.0" }, cargo: { available: false, version: null } },
+      capabilities: nodes[0].capabilities, signing_profile_refs: ["apple-internal"],
+      collectors: { host: "sysinfo" },
+      accelerators: [{ id: "gpu-0", vendor: "Apple", model: "Apple GPU", driver: null, memory_total_bytes: 68719476736 }],
+    },
+  },
+};
 const release: Release = {
   id: "release-main",
   project_id: project.id,
@@ -220,6 +259,17 @@ export async function fixtureAPI(page: Page, role: User["role"] = "admin") {
       ],
       [`/builds/${build.id}`]: build,
       "/nodes": nodes,
+      [`/nodes/${nodes[0].id}/telemetry`]: {
+        ...nodeTelemetry,
+        host: {
+          ...nodeTelemetry.host,
+          sampled_at: new Date().toISOString(),
+          received_at: new Date().toISOString(),
+        },
+      },
+      [`/nodes/${nodes[1].id}/telemetry`]: { host: null, inventory: null },
+      [`/nodes/${nodes[0].id}/metadata`]: { node_id: nodes[0].id, startup_id: "startup-main", digest: "a".repeat(64), received_at: created, metadata: { "custom.site": "lab", "tools.cargo": { available: false, version: null } } },
+      [`/nodes/${nodes[1].id}/metadata`]: { startup_id: null, digest: null, received_at: null, metadata: {} },
       "/emissary-releases": [],
       "/emissary-updates": [],
       "/overview": {

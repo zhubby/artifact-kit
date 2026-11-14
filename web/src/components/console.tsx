@@ -1,6 +1,7 @@
 "use client";
 
-import { NodeMetadata } from "@/components/node-metadata";
+import { NodeCard } from "@/components/node-card";
+import { NodeDetailDialog } from "@/components/node-detail-dialog";
 
 import { PreferencesControls } from "@/components/preferences-controls";
 import { Atmosphere } from "@/components/atmosphere";
@@ -53,7 +54,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/dialog";
 import {
-  NodeForm,
   ProjectForm,
   SecretDialog,
   SubmitForm,
@@ -61,13 +61,10 @@ import {
 import { BuildDetail } from "@/components/build-detail";
 import { BuildTable } from "@/components/build-table";
 import { BuildWizard } from "@/components/build-wizard";
-import { NodeOTA } from "@/components/emissary-ota";
 import { Settings } from "@/components/settings";
 import { mutation, useRemote } from "@/lib/api";
 import { asError } from "@/lib/errors";
 import type {
-  EmissaryRelease,
-  EmissaryUpdate,
   Artifact,
   Build,
   Credential,
@@ -78,7 +75,7 @@ import type {
   Release,
   User,
 } from "@/lib/types";
-import { bytes, cn, short } from "@/lib/utils";
+import { cn, short } from "@/lib/utils";
 
 const platform = (os: string) =>
   ({ darwin: "macOS", linux: "Linux", windows: "Windows" })[os] || os;
@@ -104,8 +101,6 @@ export function Console() {
   const [nodeOffset, setNodeOffset] = useState(0);
   const nodeSearch = pieces[0] === "nodes" ? search : "";
   const nodes = useRemote<Node[]>(user ? `/nodes?limit=100&offset=${nodeOffset}&q=${encodeURIComponent(nodeSearch)}` : null);
-  const emissaryReleases = useRemote<EmissaryRelease[]>(user ? "/emissary-releases" : null);
-  const emissaryUpdates = useRemote<EmissaryUpdate[]>(user ? "/emissary-updates" : null, 3000);
   const overview = useRemote<Overview>(user ? "/overview" : null);
   const releases = useRemote<Release[]>(user ? "/releases" : null);
   const artifacts = useRemote<Artifact[]>(
@@ -119,11 +114,38 @@ export function Console() {
   const [mobile, setMobile] = useState(false);
   const [newProject, setNewProject] = useState(false);
   const [editingProject, setEditingProject] = useState<Project>();
-  const [editingNode, setEditingNode] = useState<Node>();
+  const [nodeSelection, setNodeSelection] = useState<{
+    id: string;
+    search: string;
+    offset: number;
+    pathname: string;
+  }>();
+  const [nodeRemoved, setNodeRemoved] = useState(false);
   const [enrolling, setEnrolling] = useState(false);
   const [secret, setSecret] = useState<string>();
-  const [revoke, setRevoke] = useState<Node>();
   const [error, setError] = useState<Error>();
+  const currentSelection =
+    nodeSelection?.search === nodeSearch &&
+    nodeSelection.offset === nodeOffset &&
+    nodeSelection.pathname === pathname
+      ? nodeSelection
+      : undefined;
+  const selectedNode =
+    currentSelection && nodes.data?.find(node => node.id === currentSelection.id);
+  useEffect(() => {
+    setNodeSelection(undefined);
+    setNodeRemoved(false);
+  }, [nodeSearch, nodeOffset, pathname]);
+  useEffect(() => {
+    if (
+      currentSelection &&
+      nodes.data &&
+      !nodes.data.some(node => node.id === currentSelection.id)
+    ) {
+      setNodeSelection(undefined);
+      setNodeRemoved(true);
+    }
+  }, [currentSelection, nodes.data]);
   useEffect(() => { setNodeOffset(0); }, [nodeSearch, pathname]);
   useEffect(() => {
     setSearch("");
@@ -699,6 +721,9 @@ export function Console() {
                   </Button>
                 )}
               </PageTitle>
+              {nodeRemoved && (
+                <p className="notice" role="status">{t("nodes.noLongerListed")}</p>
+              )}
               {!nodes.data ? (
                 <Loading />
               ) : nodes.data.length === 0 ? (
@@ -711,150 +736,20 @@ export function Console() {
               ) : (
                 <div className="node-grid">
                   {nodes.data.map((node) => (
-                      <SpotlightCard
-                        as="article"
-                        className="node-card"
-                        key={node.id}
-                      >
-                        <div className="flex items-start gap-3">
-                          <span className="rounded-lg border border-border bg-secondary p-2.5">
-                            <Monitor className="size-5 text-primary" />
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <h2 className="truncate text-sm font-medium">
-                              {node.name}
-                            </h2>
-                            <p className="mt-1.5 font-mono text-[10px] text-muted-foreground">
-                              {platform(node.os)} / {node.arch} ·{" "}
-                              {node.pool_name}
-                            </p>
-                          </div>
-                          <Status
-                            small
-                            value={
-                              node.revoked
-                                ? "revoked"
-                                : node.draining
-                                  ? "draining"
-                                  : node.online
-                                    ? "online"
-                                    : "offline"
-                            }
-                          />
-                        </div>
-                        <div className="node-metrics">
-                          <div>
-                            <strong>
-                              {node.active_jobs}/{node.slots}
-                            </strong>
-                            <span>{t("nodes.slots")}</span>
-                          </div>
-                          <div>
-                            <strong>
-                              {node.diagnostics.metrics?.logical_cpus ?? "—"}
-                            </strong>
-                            <span>{t("nodes.cpus")}</span>
-                          </div>
-                          <div>
-                            <strong>
-                              {bytes(
-                                node.diagnostics.metrics?.managed_free_bytes,
-                              )}
-                            </strong>
-                            <span>{t("nodes.disk")}</span>
-                          </div>
-                        </div>
-                        <div className="mt-4 flex flex-wrap gap-1.5">
-                          {node.capabilities.slice(0, 9).map((capability) => (
-                            <span key={capability} className="tag">
-                              {capability}
-                            </span>
-                          ))}
-                          {node.capabilities.length > 9 && (
-                            <span className="tag">
-                              +{node.capabilities.length - 9}
-                            </span>
-                          )}
-                        </div>
-                        {node.signing_profiles.length > 0 && (
-                          <div className="mt-3 flex items-center gap-2 text-[10px] text-primary">
-                            <ShieldCheck size={12} />
-                            {node.signing_profiles.join(", ")}
-                          </div>
-                        )}
-                        <NodeMetadata id={node.id} />
-                        <NodeOTA node={node} user={user} releases={emissaryReleases.data || []} updates={emissaryUpdates.data || []} reload={async () => { await Promise.all([nodes.reload(), emissaryUpdates.reload()]); }} />
-                        <details className="mt-4 text-[11px] text-muted-foreground">
-                          <summary className="cursor-pointer">
-                            {t("nodes.diagnostics")}
-                          </summary>
-                          <div className="mt-3 space-y-2 leading-6">
-                            <p>
-                              {t("nodes.lastSeen")}
-                              {date(node.last_seen)}
-                            </p>
-                            <p>
-                              {t("nodes.certificate")}
-                              {date(node.certificate_expires_at)}
-                            </p>
-                            <p>
-                              Emissary：
-                              {node.diagnostics.emissary_version ||
-                                t("nodes.notReported")}{" "}
-                              {t("nodes.heap")}
-                              {bytes(
-                                node.diagnostics.metrics?.emissary_rss_bytes,
-                              )}
-                            </p>
-                            <p>
-                              {t("nodes.buffer")}
-                              {bytes(node.diagnostics.buffered_log_bytes)}
-                            </p>
-                            {Object.entries(node.diagnostics.tools || {})
-                              .filter(([, tool]) => tool.available)
-                              .map(([name, tool]) => (
-                                <div
-                                  key={name}
-                                  className="border-t border-border pt-2"
-                                >
-                                  <span className="font-mono text-foreground">
-                                    {name}
-                                  </span>
-                                  <pre className="mt-1 whitespace-pre-wrap break-all font-mono text-[9px]">
-                                    {tool.version || tool.path}
-                                  </pre>
-                                </div>
-                              ))}
-                          </div>
-                        </details>
-                        <div className="mt-5 flex items-center justify-between border-t border-border pt-4">
-                          <span className="font-mono text-[9px] text-muted-foreground">
-                            #{short(node.id)}
-                          </span>
-                          {user.role === "admin" && (
-                            <div className="flex gap-1">
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => setEditingNode(node)}
-                              >
-                                {t("common.settings")}
-                              </Button>
-                              {!node.revoked && (
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="text-destructive"
-                                  onClick={() => setRevoke(node)}
-                                >
-                                  {t("common.revoke")}
-                                </Button>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </SpotlightCard>
-                    ))}
+                    <NodeCard
+                      key={node.id}
+                      node={node}
+                      onDetails={() => {
+                        setNodeRemoved(false);
+                        setNodeSelection({
+                          id: node.id,
+                          search: nodeSearch,
+                          offset: nodeOffset,
+                          pathname,
+                        });
+                      }}
+                    />
+                  ))}
                 </div>
               )}
               <nav className="flex items-center justify-end gap-3" aria-label={t("nodes.pages")}>
@@ -1016,25 +911,16 @@ export function Console() {
           />
         )}
       </Modal>
-      <Modal
-        open={!!editingNode}
-        onOpenChange={(open) => {
-          if (!open) setEditingNode(undefined);
-        }}
-        title={t("nodes.configure")}
-        description={t("nodes.configureHint")}
-      >
-        {editingNode && (
-          <NodeForm
-            node={editingNode}
-            pools={pools.data || []}
-            done={() => {
-              setEditingNode(undefined);
-              void refresh();
-            }}
-          />
-        )}
-      </Modal>
+      {selectedNode && (
+        <NodeDetailDialog
+          key={selectedNode.id}
+          node={selectedNode}
+          user={user}
+          pools={pools.data || []}
+          onClose={() => setNodeSelection(undefined)}
+          reload={nodes.reload}
+        />
+      )}
       <Modal
         open={enrolling}
         onOpenChange={setEnrolling}
@@ -1071,45 +957,6 @@ export function Console() {
         title={t("nodes.saveToken")}
         close={() => setSecret(undefined)}
       />
-      <Modal
-        open={!!revoke}
-        onOpenChange={(open) => {
-          if (!open) setRevoke(undefined);
-        }}
-        title={t("nodes.revokeTitle")}
-        description={t("nodes.revokeDescription", { name: revoke?.name || "" })}
-      >
-        <div className="form-footer">
-          <Button variant="secondary" onClick={() => setRevoke(undefined)}>
-            {t("nodes.keep")}
-          </Button>
-          <Button
-            variant="destructive"
-            onClick={() => {
-              if (revoke)
-                void mutation(
-                  `/nodes/${revoke.id}`,
-                  {
-                    draining: true,
-                    revoked: true,
-                    slots: revoke.slots,
-                    pool_id: revoke.pool_id,
-                    labels: revoke.labels,
-                    signing_profiles: revoke.signing_profiles,
-                  },
-                  "PATCH",
-                )
-                  .then(() => {
-                    setRevoke(undefined);
-                    void refresh();
-                  })
-                  .catch((error) => setError(asError(error)));
-            }}
-          >
-            {t("nodes.confirmRevoke")}
-          </Button>
-        </div>
-      </Modal>
     </div>
   );
 }
