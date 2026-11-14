@@ -1,0 +1,34 @@
+podPreemptionPolicy: Never
+controlPlane:
+  replicas: 3
+  databaseConnections: 20
+  temporaryStorage: 2Gi
+localSource:
+  enabled: true
+postgres:
+  maxConnections: 200
+console:
+  publicUrl: http://127.0.0.1:38100
+s3:
+  publicEndpoint: http://127.0.0.1:38333
+development:
+  insecureHttp: true
+telemetry:
+  replicas: 1
+  endpoint: https://artifactory-telemetry:8093
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: '1', memory: 512Mi}
+resources:
+  control-plane:
+    requests: {cpu: 500m, memory: 256Mi, ephemeral-storage: 256Mi}
+    limits: {cpu: '1', memory: 1Gi, ephemeral-storage: 3Gi}
+  postgres:
+    requests: {cpu: 500m, memory: 512Mi}
+    limits: {cpu: '2', memory: 2Gi}
+  agent-worker:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: '1', memory: 1Gi}
+  s3:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: '1', memory: 1Gi}

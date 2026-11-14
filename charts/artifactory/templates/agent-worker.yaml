@@ -18,6 +18,9 @@ spec:
         {{- include "artifactory.selector" . | nindent 8 }}
         app.kubernetes.io/component: agent-worker
     spec:
+      {{- with .Values.podPreemptionPolicy }}
+      preemptionPolicy: {{ . }}
+      {{- end }}
       automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

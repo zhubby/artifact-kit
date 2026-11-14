@@ -1,9 +1,9 @@
 apiVersion: v2
 name: artifactory
-description: Single-instance Artifactory with PostgreSQL and private S3 storage
+description: Artifactory with replicated control plane, PostgreSQL and private S3 storage
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 home: https://github.com/zhubby/artifactory
 sources:
   - https://github.com/zhubby/artifactory

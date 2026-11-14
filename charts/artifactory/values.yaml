@@ -2,6 +2,7 @@
 fullnameOverride: ""
 imagePullSecrets: []
 podAnnotations: {}
+podPreemptionPolicy: ""
 
 images:
   control-plane:

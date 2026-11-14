@@ -182,7 +182,7 @@ checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
 
 [[package]]
 name = "artifactory-control-plane"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -227,7 +227,7 @@ dependencies = [
 
 [[package]]
 name = "artifactory-database"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -245,7 +245,7 @@ dependencies = [
 
 [[package]]
 name = "artifactory-emissary"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "artifactory-database",
@@ -292,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "artifactory-emissary-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "prost",
  "serde",
@@ -303,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "artifactory-operator"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "artifactory-runtime-protocol",
@@ -325,7 +325,7 @@ dependencies = [
 
 [[package]]
 name = "artifactory-planner-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "artifactory-database",
@@ -350,7 +350,7 @@ dependencies = [
 
 [[package]]
 name = "artifactory-runtime-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -382,7 +382,7 @@ dependencies = [
 
 [[package]]
 name = "artifactory-source-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "artifactory-database",
@@ -403,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "artifactory-source-service"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "artifactory-database",
@@ -428,7 +428,7 @@ dependencies = [
 
 [[package]]
 name = "artifactory-telemetry-model"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "artifactory-telemetry-service"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "artifactory-database",

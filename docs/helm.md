@@ -133,7 +133,7 @@ helm --kube-context YOUR_CONTEXT -n artifactory history artifactory
 
 健康检查成功后，仍需验证真实登录、CSRF、Agent mTLS 注册/心跳、SSE 和一次制品构建/下载。HTTP kind 联测不代表公网 TLS、真实业务应用、实体机启动恢复、发行签名或生产备份恢复已验收。
 
-升级使用同一命名空间、release 名、Secret 和 PVC，显式指定新镜像 tag。保持 control-plane 副本数为一；升级前排空 Agent，协调备份数据库、对象存储、control-plane 数据、主密钥与 CA。Secret 更新后容器环境变量不会自动刷新，需要安排相关 Deployment 重启；数据库用户密码也不会因更改初始化环境变量而自动更新。
+升级使用同一命名空间、release 名、Secret 和 PVC，显式指定新镜像 tag。未分离 Source 时保持 control-plane 单副本；设置多个副本前按[控制平面多副本](control-ha.md)启用 `localSource.enabled` 并核算数据库连接预算。升级前排空 Agent，协调备份数据库、对象存储、control-plane 数据、主密钥与 CA。Secret 更新后容器环境变量不会自动刷新，需要安排相关 Deployment 重启；数据库用户密码也不会因更改初始化环境变量而自动更新。首次隔离试验可使用[受限三副本 profile](versioning.md#隔离的-kubernetes-试部署)，不要将内网 HTTP profile 当作生产 TLS 部署。
 
 三个 PVC 带有 `helm.sh/resource-policy: keep`，`helm uninstall` 会保留它们；外部 Secret 同样保留。**删除命名空间仍会删除这些资源**。不要将卸载、删除命名空间或重建 kind 集群用作升级流程。
 

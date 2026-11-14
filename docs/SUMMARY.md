@@ -12,6 +12,7 @@
 
 - [部署与运维](operations.md)
 - [Helm / Kubernetes 部署](helm.md)
+- [统一版本与发布](versioning.md)
 - [控制平面多副本与设备容量](control-ha.md)
 - [Kubernetes Pi Operator 运维](operator-operations.md)
 - [Toasty 数据访问与整体切换](toasty-migration.md)
@@ -53,5 +54,6 @@
 
 # 品牌与变更记录
 
+- [Artifactory 0.2.0](releases/0.2.0.md)
 - [Artifactory 装配 A](brand/README.md)
 - [Artifactory 更名记录 · 2026-11-11](artifactory-rename-2026-11-11.md)

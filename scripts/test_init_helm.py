@@ -14,6 +14,25 @@ SCRIPT = Path(__file__).with_name("init-helm.py")
 
 class HelmBootstrapTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which('helm'), 'requires helm')
+    def test_trial_profile_is_replicated_private_and_cannot_preempt_other_workloads(self):
+        chart = SCRIPT.parents[1] / 'charts/artifactory'
+        result = subprocess.run(['helm', 'template', 'artifactory', str(chart),
+                                 '--namespace', 'artifactory', '--kube-version', '1.28.3',
+                                 '-f', str(chart / 'values-trial.yaml')],
+                                check=True, capture_output=True, text=True)
+        self.assertIn('replicas: 3', result.stdout)
+        self.assertIn('name: artifactory-local-source', result.stdout)
+        self.assertIn('kind: PodDisruptionBudget', result.stdout)
+        self.assertNotIn('type: NodePort', result.stdout)
+        self.assertNotIn('type: LoadBalancer', result.stdout)
+        self.assertNotIn('kind: Ingress\n', result.stdout)
+        self.assertNotIn('kind: ClusterRole', result.stdout)
+        self.assertEqual(result.stdout.count('preemptionPolicy: Never'),
+                         result.stdout.count('kind: Deployment\n'))
+        version = (SCRIPT.parents[1] / 'VERSION').read_text().strip()
+        self.assertIn(f'ghcr.io/zhubby/artifactory-control-plane:{version}', result.stdout)
+
+    @unittest.skipUnless(shutil.which('helm'), 'requires helm')
     def test_replicated_control_requires_source_isolation_and_renders_ha_resources(self):
         chart = SCRIPT.parents[1] / 'charts/artifactory'
         invalid = subprocess.run(['helm', 'template', 'ha-test', str(chart), '--set', 'controlPlane.replicas=3'],

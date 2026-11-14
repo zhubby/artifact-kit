@@ -13,7 +13,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - name: Verify the canonical version and release tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python3 scripts/version.py --check --tag "$RELEASE_TAG"
+          python3 -m unittest scripts.test_version -v
+
   build:
+    needs: verify-version
     name: ${{ matrix.image.name }} (${{ matrix.arch }})
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 45
@@ -37,8 +51,11 @@ jobs:
         env:
           COMPONENT: ${{ matrix.image.name }}
         run: |
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/artifactory-$COMPONENT" >> "$GITHUB_OUTPUT"
+          {
+            echo "sha=$(git rev-parse HEAD)"
+            echo "version=$(cat VERSION)"
+            echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/artifactory-$COMPONENT"
+          } >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -56,7 +73,7 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
-            org.opencontainers.image.version=${{ github.event.release.tag_name }}
+            org.opencontainers.image.version=${{ steps.source.outputs.version }}
           cache-from: type=gha,scope=release-${{ matrix.image.name }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=release-${{ matrix.image.name }}-${{ matrix.arch }}
       - name: Export digest
@@ -130,3 +147,32 @@ jobs:
           docker buildx imagetools inspect "${tags[0]}" --raw > manifest.json
           jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64", "arm64"]' manifest.json
           docker buildx imagetools inspect "${tags[0]}" >> "$GITHUB_STEP_SUMMARY"
+
+  charts:
+    name: Publish versioned Helm packages
+    needs: verify-version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+      - name: Package both charts and publish checksummed source identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p .local/release
+          helm lint charts/artifactory --strict
+          helm lint charts/artifactory-operator --strict
+          helm package charts/artifactory --destination .local/release
+          helm package charts/artifactory-operator --destination .local/release
+          cp VERSION .local/release/VERSION
+          git rev-parse HEAD > .local/release/SOURCE_COMMIT
+          (cd .local/release && sha256sum -- ./*.tgz VERSION SOURCE_COMMIT > SHA256SUMS)
+          gh release upload "$RELEASE_TAG" .local/release/*

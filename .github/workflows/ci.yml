@@ -3,7 +3,14 @@ on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
 jobs:
+  version-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/version.py --check
+      - run: python3 -m unittest scripts.test_version -v
   linux-end-to-end:
+    needs: version-contract
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -18,10 +25,13 @@ jobs:
           helm lint charts/artifactory --strict
           helm lint charts/artifactory --strict -f charts/artifactory/values-kind.yaml
           helm lint charts/artifactory --strict -f charts/artifactory/values-ha.yaml
+          helm lint charts/artifactory --strict -f charts/artifactory/values-trial.yaml
           helm lint charts/artifactory-operator --strict
           helm template native charts/artifactory-operator > /dev/null
           helm template artifactory charts/artifactory --set ingress.enabled=true > /dev/null
           helm template artifactory charts/artifactory -f charts/artifactory/values-kind.yaml > /dev/null
+          helm template artifactory charts/artifactory --namespace artifactory --kube-version 1.28.3 \
+            -f charts/artifactory/values-trial.yaml > /dev/null
           helm template artifactory charts/artifactory -f charts/artifactory/values-ha.yaml \
             --set postgres.enabled=false,s3.enabled=false,ingress.enabled=true \
             --set s3.endpoint=https://objects.example.com > /dev/null
@@ -124,6 +134,7 @@ jobs:
             .local/frontend-evidence/
             .local/docs-evidence/
   kubernetes-pi:
+    needs: version-contract
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -190,6 +201,7 @@ jobs:
             .local/operator-load/*/runtime-failure.log
             .local/operator-load/*/operator-failure.log
   native-emissary:
+    needs: version-contract
     name: native-emissary (${{ matrix.os }})
     timeout-minutes: 30
     strategy:
@@ -228,6 +240,7 @@ jobs:
           ARTIFACTORY_NATIVE_EXPECTED_PLATFORM: ${{ matrix.platform }}
         run: cargo test --locked -p artifactory-emissary --test native_service -- --ignored --nocapture
   compose-tls:
+    needs: version-contract
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:

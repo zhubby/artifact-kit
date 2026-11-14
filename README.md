@@ -1,5 +1,7 @@
 # Artifactory
 
+项目统一版本以根目录 `VERSION` 为准。版本检查、Release 与受限 Kubernetes 试部署见[统一版本与发布](docs/versioning.md)。
+
 自助注册默认开启：访客注册后自动登录为全实例只读用户，可查看和下载全部项目的构建与产物。仅允许管理员分配账号时，设置 `ARTIFACTORY_REGISTRATION_ENABLED=false`；Helm 使用 `auth.registrationEnabled=false`。详情见 [用户自助注册](docs/operations.md#用户自助注册)。
 
 面向个人与内部可信团队的跨平台应用构建、签名与内部分发平台。
