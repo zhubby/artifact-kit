@@ -3,13 +3,23 @@ name: release-images
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing immutable release tag
+        required: true
+        type: string
+      images_only:
+        description: Preserve already-published Helm assets
+        default: false
+        type: boolean
 
 permissions:
   contents: read
   packages: write
 
 concurrency:
-  group: release-images-${{ github.event.release.tag_name }}
+  group: release-images-${{ github.event.release.tag_name || inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -18,10 +28,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
       - name: Verify the canonical version and release tag
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           python3 scripts/version.py --check --tag "$RELEASE_TAG"
           python3 -m unittest scripts.test_version -v
@@ -44,7 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
       - name: Resolve release source and image name
         id: source
         shell: bash
@@ -70,6 +80,9 @@ jobs:
           file: ${{ matrix.image.file }}
           platforms: linux/${{ matrix.arch }}
           outputs: type=image,name=${{ steps.source.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            ARTIFACTORY_BUILD_VERSION=${{ steps.source.outputs.version }}
+            ARTIFACTORY_BUILD_COMMIT=${{ steps.source.outputs.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
@@ -101,13 +114,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
       - name: Resolve image name
         id: source
         shell: bash
         env:
           COMPONENT: ${{ matrix.component }}
-        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/artifactory-$COMPONENT" >> "$GITHUB_OUTPUT"
+        run: |
+          {
+            echo "sha=$(git rev-parse HEAD)"
+            echo "version=$(cat VERSION)"
+            echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/artifactory-$COMPONENT"
+          } >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
           path: ${{ runner.temp }}/digests
@@ -125,9 +143,9 @@ jobs:
           images: ${{ steps.source.outputs.image }}
           flavor: latest=false
           tags: |
-            type=raw,value=${{ github.event.release.tag_name }}
-            type=semver,pattern={{version}}
-            type=sha,format=long
+            type=raw,value=${{ github.event.release.tag_name || inputs.tag }}
+            type=raw,value=${{ steps.source.outputs.version }}
+            type=raw,value=sha-${{ steps.source.outputs.sha }}
             type=raw,value=latest,enable=${{ !github.event.release.prerelease }}
       - name: Publish and verify both architectures
         shell: bash
@@ -150,6 +168,7 @@ jobs:
 
   charts:
     name: Publish versioned Helm packages
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.images_only }}
     needs: verify-version
     runs-on: ubuntu-latest
     permissions:
@@ -157,14 +176,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
       - uses: azure/setup-helm@v4
         with:
           version: v3.19.0
       - name: Package both charts and publish checksummed source identity
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           set -euo pipefail
           mkdir -p .local/release

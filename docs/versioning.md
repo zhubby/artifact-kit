@@ -34,6 +34,8 @@ cargo metadata --locked --no-deps --format-version 1 > /dev/null
 
 原生 Emissary 二进制仍使用 `emissary-release` 的六平台构建与签名流程。该流程需要独立的签名 secret 和发布环境；普通 `v<version>` 镜像发布不代表已提供签名 OTA manifest，也不代表 Apple / Windows 正式发行签名。
 
+发布容器显式注入已验证的版本与源码提交；Emissary Dockerfile 的默认版本也由版本脚本同步。若已发布标签的镜像流水线需要修复，可在 `main` 上通过 `release-images` 的 `workflow_dispatch` 指定原始标签；已有 Helm 资产时选择 `images_only=true`。该恢复路径仍检出并校验原标签，不移动标签、不覆盖 Helm 资产，镜像的 SHA 标签来自实际检出的源码，而不是工作流分支。
+
 ## 隔离的 Kubernetes 试部署
 
 `deploy/kubernetes-trial.yaml` 只创建 `artifactory` 命名空间及其内部的资源配额、部署身份和网络策略。仅在命名空间尚不存在、确认无他人资源时执行初始化；不要把文件中的 Namespace 用于接管已有命名空间。

@@ -59,6 +59,11 @@ def inspect_project(root):
             if not match:
                 raise ValueError(f"{path.relative_to(root)}: missing {field}")
             entries.append((path, field, match.group(1).split(" #", 1)[0].strip().strip("\"'")))
+    path = root / "crates/emissary/Dockerfile"
+    match = re.search(r"(?m)^ARG ARTIFACTORY_BUILD_VERSION=([^\n]+)$", path.read_text())
+    if not match:
+        raise ValueError("crates/emissary/Dockerfile: missing ARTIFACTORY_BUILD_VERSION")
+    entries.append((path, "ARTIFACTORY_BUILD_VERSION", match.group(1)))
     return entries, package_names
 
 
@@ -99,6 +104,9 @@ def synchronize(root, version, entries, package_names):
                 changed = changed or package["packages"][""]["version"] != version
                 package["packages"][""]["version"] = version
             updated = json.dumps(package, indent=2, ensure_ascii=False) + "\n" if changed else text
+        elif path.name == "Dockerfile":
+            updated = re.sub(r"(?m)^ARG ARTIFACTORY_BUILD_VERSION=[^\n]+$",
+                             f"ARG ARTIFACTORY_BUILD_VERSION={version}", text)
         else:
             updated = re.sub(r"(?m)^(version|appVersion):[^\n]*$",
                              lambda match: f'{match[1]}: "{version}"' if match[1] == "appVersion"

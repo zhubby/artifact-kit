@@ -35,6 +35,8 @@ class ProjectVersionTests(unittest.TestCase):
         for chart in ["artifactory", "artifactory-operator"]:
             self.write(f"charts/{chart}/Chart.yaml", f"apiVersion: v2\nname: {chart}\n"
                        'version: 0.1.0\nappVersion: "0.1.0"\n')
+        self.write("crates/emissary/Dockerfile", "FROM rust:1.95-bookworm\n"
+                   "ARG ARTIFACTORY_BUILD_VERSION=0.1.0\n")
 
     def write(self, relative, content):
         path = self.root / relative
@@ -81,6 +83,12 @@ class ProjectVersionTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("charts/artifactory/Chart.yaml", result.stderr)
 
+    def test_check_reports_container_binary_version_drift(self):
+        self.write("crates/emissary/Dockerfile", "ARG ARTIFACTORY_BUILD_VERSION=0.9.0\n")
+        result = self.run_version("--check")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("crates/emissary/Dockerfile", result.stderr)
+
     def test_check_requires_workspace_version_inheritance(self):
         self.write("crates/control-plane/Cargo.toml", '[package]\n'
                    'name = "artifactory-control-plane"\nversion = "0.1.0"\n')
@@ -92,6 +100,8 @@ class ProjectVersionTests(unittest.TestCase):
         result = self.run_version("--set", "0.2.0")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.root / "VERSION").read_text(), "0.2.0\n")
+        self.assertIn("ARG ARTIFACTORY_BUILD_VERSION=0.2.0\n",
+                      (self.root / "crates/emissary/Dockerfile").read_text())
         self.assertEqual(self.run_version("--check", "--tag", "v0.2.0").returncode, 0)
         package = json.loads((self.root / "web/package.json").read_text())
         lock = json.loads((self.root / "web/package-lock.json").read_text())
