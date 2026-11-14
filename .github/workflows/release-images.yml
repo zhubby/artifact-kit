@@ -23,7 +23,7 @@ jobs:
         arch: [amd64, arm64]
         image:
           - {name: control-plane, context: ., file: Dockerfile}
-          - {name: web, context: web, file: web/Dockerfile}
+          - {name: web, context: ., file: web/Dockerfile}
           - {name: agent-worker, context: ., file: packages/agent-worker/Dockerfile}
           - {name: operator, context: ., file: operator/Dockerfile}
           - {name: emissary, context: ., file: crates/emissary/Dockerfile}

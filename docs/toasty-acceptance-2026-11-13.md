@@ -30,7 +30,7 @@ baseline 对照计数（完整结果保存在私有 `.local/schema-parity.json`�
 | Source | 38 | 9 | 15 | 0 | 0 | 0 | 0 | 0 | 0 |
 | Telemetry | 103 | 15 | 8 | 0 | 0 | 0 | 3 | 4 | 14 |
 
-Toasty 原版连接丢失后的 panic 已在隔离测试中复现；本地修订保留上游发布包来源、校验和及许可证。流式结果需在读取期间持有连接，提前结束时发送取消请求并关闭物理连接；仅关闭 socket 不足以中断 PostgreSQL 的锁等待。连接复用、提前结束、中途 SQL 错误及锁等待取消的 4 项新增回归通过。详见 [Toasty 修订](../vendor/toasty/PATCH.md) 与 [PostgreSQL 驱动修订](../vendor/toasty-driver-postgresql/PATCH.md)。
+Toasty 原版连接丢失后的 panic 已在隔离测试中复现；本地修订保留上游发布包来源、校验和及许可证。流式结果需在读取期间持有连接，提前结束时发送取消请求并关闭物理连接；仅关闭 socket 不足以中断 PostgreSQL 的锁等待。连接复用、提前结束、中途 SQL 错误及锁等待取消的 4 项新增回归通过。详见 [Toasty 修订](https://github.com/zhubby/artifactory/blob/main/vendor/toasty/PATCH.md) 与 [PostgreSQL 驱动修订](https://github.com/zhubby/artifactory/blob/main/vendor/toasty-driver-postgresql/PATCH.md)。
 
 流式版本复验还暴露了既有构建汇总竞争：汇总在获得构建行锁前读取任务状态，等锁后可用旧的 `failed` 覆盖刚提交的重试/规划状态。确定性测试在修复前失败；汇总 SQL 增加 `xmin` 行版本条件后通过，并保留单语句更新和原锁顺序。最终原生 35 项复验通过，包括显式重试创建独立执行。失败的原生运行 `09c822e68608` 保留诊断，不计入通过结果。
 

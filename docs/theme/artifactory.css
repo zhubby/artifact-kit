@@ -1,0 +1,27 @@
+.light {
+  --bg: #f4f5ee;
+  --fg: #101312;
+  --sidebar-bg: #eceee9;
+  --sidebar-fg: #101312;
+  --links: #80591d;
+  --sidebar-active: #80591d;
+}
+
+.navy {
+  --bg: #101312;
+  --fg: #eceee9;
+  --sidebar-bg: #181d1a;
+  --sidebar-fg: #eceee9;
+  --links: #e1ba75;
+  --sidebar-active: #e1ba75;
+}
+
+.content img,
+.mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid {
+  overflow-x: auto;
+}

@@ -93,7 +93,9 @@ services:
     cap_drop: [ALL]
     read_only: true
   web:
-    build: ./web
+    build:
+      context: .
+      dockerfile: web/Dockerfile
     restart: unless-stopped
     depends_on: [control-plane]
     security_opt: [no-new-privileges:true]

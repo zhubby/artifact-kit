@@ -1,5 +1,7 @@
 # Substrate / AX 可选调度后端评估
 
+> 历史设计与计划归档。本文保留当时的决策和实施背景，不作为当前功能清单；实际结果以对应版本的源码与验收记录为准。
+
 > **后续设计更新（2026-11-12）：** 用户已选择将 native 也调整为 Kubernetes Job/Pod，由独立 Operator 管理，并将源码数据面与运行热路径移出业务控制平面。下文保留首轮评估作为研究依据，其中“native = 现有常驻 Poll Agent worker”和“公共规划逻辑集中在原控制平面”的架构/迁移建议已由 [Operator 架构设计](superpowers/specs/2026-11-12-kubernetes-agent-operator-design.md) 与 [落地计划](plans/2026-11-12-001-feat-kubernetes-agent-operator-plan.md) 取代。Substrate 仍是可选后端，AX 暂缓；本文件固定版本的上游能力和限制仍适用。
 
 > **技术栈确认：** Operator 明确采用 Rust/kube-rs，Runtime/Source 服务也使用 Rust；设备 Artifactory Agent 的现有 Go 实现后续以兼容协议的 Rust 实现逐步替换。下文提及 Go Agent 是当前代码事实，不表示长期语言选型。
@@ -69,10 +71,10 @@ AX 提供 Task、Workspace、Model、Gateway 资源、任务生命周期 API、C
 
 可复用的核心包括：
 
-- [planning.rs](../crates/control-plane/src/planning.rs)：领取、租约校验、工具、预算、计划提交和过期恢复。
-- [runtime.ts](../packages/agent-worker/src/runtime.ts)：`runTask(task, rpc, signal)` 已将 Pi 推理循环与 RPC 传输分开，是复用 Pi 实现的合适边界。
-- [main.ts](../packages/agent-worker/src/main.ts)：现有进程监督、轮询和心跳，可保留为 native 运行入口。
-- [scheduler.rs](../crates/control-plane/src/scheduler.rs)：源码解析和原生节点匹配；其中原生构建分配应继续服务两个规划后端产生的 jobs。
+- [planning.rs](https://github.com/zhubby/artifactory/blob/main/crates/control-plane/src/planning.rs)：领取、租约校验、工具、预算、计划提交和过期恢复。
+- [runtime.ts](https://github.com/zhubby/artifactory/blob/main/packages/agent-worker/src/runtime.ts)：`runTask(task, rpc, signal)` 已将 Pi 推理循环与 RPC 传输分开，是复用 Pi 实现的合适边界。
+- [main.ts](https://github.com/zhubby/artifactory/blob/main/packages/agent-worker/src/main.ts)：现有进程监督、轮询和心跳，可保留为 native 运行入口。
+- [scheduler.rs](https://github.com/zhubby/artifactory/blob/main/crates/control-plane/src/scheduler.rs)：源码解析和原生节点匹配；其中原生构建分配应继续服务两个规划后端产生的 jobs。
 
 | 现有或新增概念 | 对应 Substrate / AX | 建议映射 |
 | --- | --- | --- |

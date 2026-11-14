@@ -7,6 +7,8 @@ scope: native-first-phase
 
 # Kubernetes Agent Operator 架构设计
 
+> 历史设计与计划归档。本文保留当时的决策和实施背景，不作为当前功能清单；实际结果以对应版本的源码与验收记录为准。
+
 **建议将 native 调整为 Kubernetes Job/Pod 后端，以 Rust 编写的独立 Operator 项目管理 Pi 与源码处理资源；Substrate 作为可选 Actor 后端。两种后端共用 Rust 运行协调服务和源码服务，业务控制平面保留业务决策与最终计划接纳。设备端 Artifactory Agent 后续迁移到 Rust。**
 
 本文记录已确认的架构；native 首期实现、独立集群部署与实际验收见[实施计划](../../plans/2026-11-12-001-feat-kubernetes-agent-operator-plan.md)和[验收记录](../../acceptance/operator/2026-11-12.md)。Substrate 后端与 Rust 设备 Agent 属于后续阶段。本文更新了[先前 Substrate / AX 评估](../../substrate-scheduling-assessment-2026-11-12.md)中的 native 定义和职责划分；上游能力与限制仍以该评估固定的源码版本为依据，容量结论以实测记录为准。
@@ -41,12 +43,12 @@ scope: native-first-phase
 
 | 当前路径 | 已核对行为 | 设计影响 |
 | --- | --- | --- |
-| [planning.rs](../../../crates/control-plane/src/planning.rs) | FIFO + `SKIP LOCKED` 领取，每个 Agent worker 同时一个规划；90 秒租约；首次领取启动默认 600 秒逻辑截止时间，重试保留它 | 可复用业务规则，但每个 Pi 的租约与调用不能继续落在业务控制平面 |
-| [main.ts](../../../packages/agent-worker/src/main.ts) / [runtime.ts](../../../packages/agent-worker/src/runtime.ts) | 空闲约每 2 秒 Poll，运行约每 10 秒心跳；父进程监督 Pi 子进程；`runTask` 分离了推理与传输 | 复用 `runTask`，增加按运行启动的入口，逐步退出常驻 Poll 模式 |
-| [source_cache.rs](../../../crates/control-plane/src/source_cache.rs) | 在控制进程内执行 Git、递归 submodule、LFS、快照恢复、搜索、证据路径核验和缓存回收 | 需要抽取源码服务，单独搬 Pi 不会卸掉这些负载 |
-| [source_http.rs](../../../crates/control-plane/src/api/source_http.rs) | Git/LFS 数据经过控制进程；传输持有防回收锁/事务，限制为 6 个并发传输 | 数据面应直接路由到源码服务，传输保护不再占用业务数据库长事务 |
-| [scheduler.rs](../../../crates/control-plane/src/scheduler.rs) | 源码解析用全局 advisory lock；另有 Go 节点 OS/arch、工具、签名、pool/slots 匹配 | 源码操作改为仓库级并行；保留 Go 节点业务调度 |
-| [main.rs](../../../crates/control-plane/src/main.rs) | 业务 PostgreSQL 连接池上限 20 | 运行和源码使用独立连接池、数据所有权，避免长操作挤占业务事务 |
+| [planning.rs](https://github.com/zhubby/artifactory/blob/main/crates/control-plane/src/planning.rs) | FIFO + `SKIP LOCKED` 领取，每个 Agent worker 同时一个规划；90 秒租约；首次领取启动默认 600 秒逻辑截止时间，重试保留它 | 可复用业务规则，但每个 Pi 的租约与调用不能继续落在业务控制平面 |
+| [main.ts](https://github.com/zhubby/artifactory/blob/main/packages/agent-worker/src/main.ts) / [runtime.ts](https://github.com/zhubby/artifactory/blob/main/packages/agent-worker/src/runtime.ts) | 空闲约每 2 秒 Poll，运行约每 10 秒心跳；父进程监督 Pi 子进程；`runTask` 分离了推理与传输 | 复用 `runTask`，增加按运行启动的入口，逐步退出常驻 Poll 模式 |
+| [source_cache.rs](https://github.com/zhubby/artifactory/blob/main/crates/control-plane/src/source_cache.rs) | 在控制进程内执行 Git、递归 submodule、LFS、快照恢复、搜索、证据路径核验和缓存回收 | 需要抽取源码服务，单独搬 Pi 不会卸掉这些负载 |
+| [source_http.rs](https://github.com/zhubby/artifactory/blob/main/crates/control-plane/src/api/source_http.rs) | Git/LFS 数据经过控制进程；传输持有防回收锁/事务，限制为 6 个并发传输 | 数据面应直接路由到源码服务，传输保护不再占用业务数据库长事务 |
+| [scheduler.rs](https://github.com/zhubby/artifactory/blob/main/crates/control-plane/src/scheduler.rs) | 源码解析用全局 advisory lock；另有 Go 节点 OS/arch、工具、签名、pool/slots 匹配 | 源码操作改为仓库级并行；保留 Go 节点业务调度 |
+| [main.rs](https://github.com/zhubby/artifactory/blob/main/crates/control-plane/src/main.rs) | 业务 PostgreSQL 连接池上限 20 | 运行和源码使用独立连接池、数据所有权，避免长操作挤占业务事务 |
 
 例如 1,000 个活动 Pi、10 秒一次心跳，对应约 100 次心跳/秒；1,000 个空闲 Poll Worker 对应约 500 次领取请求/秒。这只是由当前周期推导的请求量，不能作为实际容量测试结果。
 
@@ -274,7 +276,7 @@ Runtime 按 pool/project 做准入，限制活动、provisioning 和排队总量
 
 这是已确定的技术栈方向，实施作为独立后续阶段；Operator 首期不依赖设备 Agent 重写完成。Substrate 的可选接入与设备语言迁移分别验收。
 
-- 沿用 [agent.proto](../../../proto/artifactory/agent/v1/agent.proto) 的 Enrollment、Control 双向流、日志和制品合同；Rust 客户端用 Tonic/Prost 生成类型。语言变化不单独触发 protocol major 升级；必要字段按现有兼容机制增加。
+- 沿用 [agent.proto](https://github.com/zhubby/artifactory/blob/main/proto/artifactory/emissary/v1/emissary.proto) 的 Enrollment、Control 双向流、日志和制品合同；Rust 客户端用 Tonic/Prost 生成类型。语言变化不单独触发 protocol major 升级；必要字段按现有兼容机制增加。
 - 以拟新增 `crates/agent/` 实现设备二进制，保持 `artifactory-agent` 的产品身份及可迁移配置。完整覆盖注册/mTLS、能力上报、连接恢复、租约与取消、源码快照、进程执行、日志、制品、签名阶段和现有 OTA/回滚语义；操作系统差异通过平台适配处理。
 - 先以 Go 实现作为行为对照，验证两种 Agent 在不同设备上混合接入。单台设备切换时先 draining 并收尾/撤销在途 attempt，停止旧进程，显式交接节点身份、证书、配置和 OTA journal，再启动 Rust 版。禁止两种进程同时持有同一节点有效执行身份。
 - 按 Linux/macOS/Windows 及实际支持的架构逐项验收进程树终止、shell/路径、工具链探测、Git/LFS/submodule、上传 fencing、签名与系统服务/OTA。容器或交叉编译成功不代替对应 OS 的原生验收；回退也必须先处理在途租约和持久状态。
@@ -294,7 +296,7 @@ Runtime 按 pool/project 做准入，限制活动、provisioning 和排队总量
 ## 13. 依据
 
 - [原生平台总体设计](2026-11-09-artifactory-design.md)、[现有 AI Builds 计划](../plans/2026-11-11-ai-builds.md)、[AI Builds 文档](../../ai-builds.md)。
-- 本文第二节所列本地源码，以及 [builds.rs](../../../crates/control-plane/src/api/builds.rs)、[ai_management.rs](../../../crates/control-plane/src/api/ai_management.rs) 的取消、澄清和权限规则。
+- 本文第二节所列本地源码，以及 [builds.rs](https://github.com/zhubby/artifactory/blob/main/crates/control-plane/src/api/builds.rs)、[ai_management.rs](https://github.com/zhubby/artifactory/blob/main/crates/control-plane/src/api/ai_management.rs) 的取消、澄清和权限规则。
 - [Substrate / AX 评估与固定上游源码](../../substrate-scheduling-assessment-2026-11-12.md)。
 - [Kubernetes Operator pattern](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)：基于资源与控制循环管理应用。
 - [Kubernetes Jobs](https://kubernetes.io/docs/concepts/workloads/controllers/job/)：重试、deadline，以及单实例配置仍可能重复启动的约束。

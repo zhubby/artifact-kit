@@ -1,0 +1,37 @@
+[book]
+title = "Artifactory 文档"
+description = "Artifactory 使用、部署、接口与验收记录"
+language = "zh-CN"
+src = "docs"
+
+[build]
+build-dir = "web/public/docs"
+create-missing = false
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[preprocessor.frontmatter]
+command = "node web/scripts/mdbook-frontmatter.mjs"
+renderers = ["html"]
+
+[output.html]
+site-url = "/docs/"
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/zhubby/artifactory"
+edit-url-template = "https://github.com/zhubby/artifactory/edit/main/docs/{path}"
+additional-css = ["docs/theme/artifactory.css"]
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+input-404 = "404.md"
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.playground]
+runnable = false
+
+[output.html.search]
+enable = true
+expand = true

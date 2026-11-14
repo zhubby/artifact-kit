@@ -1,6 +1,9 @@
 /target
 /web/node_modules/
 /web/.next/
+/web/public/docs/
+/mermaid.min.js
+/mermaid-init.js
 /web/playwright-report/
 /web/test-results/
 /.local/

@@ -202,6 +202,27 @@ targets:
                 return error.code == 401
         wait(ready, 90)
         check('console is served through trusted Caddy HTTPS', True)
+        for path in ('/docs', '/docs/'):
+            with opener(False).open(base + path, timeout=15) as response:
+                check('anonymous documentation index ' + path,
+                      response.status == 200 and response.url.endswith('/docs/index.html')
+                      and 'Artifactory 文档' in response.read().decode())
+        for path, content_type in (
+            ('/docs/acceptance/emissary/2026-11-13.html', 'text/html'),
+            ('/docs/mermaid.min.js', 'javascript'),
+            ('/docs/brand/artifactory-assembly-a.png', 'image/png'),
+            ('/docs/brand/artifactory-logo-kit.zip', 'application/zip'),
+        ):
+            with opener(False).open(base + path, timeout=15) as response:
+                check('documentation resource ' + path, response.status == 200
+                      and content_type in response.headers.get('Content-Type', '')
+                      and len(response.read()) > 100)
+        try:
+            opener(False).open(base + '/docs/missing/nested.html', timeout=15)
+            raise AssertionError('missing documentation must return HTTP 404')
+        except urllib.error.HTTPError as error:
+            check('missing documentation returns the book HTTP 404', error.code == 404
+                  and '页面未找到' in error.read().decode())
         status, _result, headers = request('/auth/login', {'username': 'admin', 'password': os.environ['ARTIFACTORY_BOOTSTRAP_PASSWORD']})
         cookie = headers.get('Set-Cookie', '')
         check('HTTPS login issues a Secure HttpOnly SameSite=Strict session', status == 200 and all(value in cookie for value in ('Secure', 'HttpOnly', 'SameSite=Strict')))
