@@ -37,7 +37,7 @@ export function AuthShell({
           <div className="brand-mark">
             <BrandMark />
           </div>
-          artifactory
+          Artifactory
           <span className="ml-2 rounded border border-border px-2 py-1 font-mono text-[9px] text-muted-foreground">
             {translate("login.controlPlane")}
           </span>

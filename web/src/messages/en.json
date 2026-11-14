@@ -442,7 +442,7 @@
     "back": "Back to overview"
   },
   "footer": {
-    "description": "artifactory · From source to delivery",
+    "description": "Artifactory · From source to delivery",
     "technical": "Native execution / Auditable delivery"
   },
   "preferences": {
@@ -561,7 +561,7 @@
     "plan": "AI build plan",
     "revisionCount": "Automatic revisions: {count} / 2",
     "callCount": "{count} model calls",
-    "zeroIntrusion": "Repository access is read-only. Analysis, plans and scripts stay in artifactory. Tracked files and submodule state are checked after every step.",
+    "zeroIntrusion": "Repository access is read-only. Analysis, plans and scripts stay in Artifactory. Tracked files and submodule state are checked after every step.",
     "snapshot": "Source snapshot",
     "continue": "Submit answer and continue",
     "answer": "Additional information",

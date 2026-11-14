@@ -442,7 +442,7 @@
     "back": "返回总览"
   },
   "footer": {
-    "description": "artifactory · 从源码到交付",
+    "description": "Artifactory · 从源码到交付",
     "technical": "原生执行 / 可审计交付"
   },
   "preferences": {
@@ -561,7 +561,7 @@
     "plan": "AI 构建计划",
     "revisionCount": "已自动修订 {count} / 2 次",
     "callCount": "{count} 次模型调用",
-    "zeroIntrusion": "原仓库只读接入；分析记录、执行计划和脚本均保存在 artifactory。每步结束检查受跟踪文件与子模块状态。",
+    "zeroIntrusion": "原仓库只读接入；分析记录、执行计划和脚本均保存在 Artifactory。每步结束检查受跟踪文件与子模块状态。",
     "snapshot": "源码快照",
     "continue": "提交回答并继续规划",
     "answer": "补充说明",

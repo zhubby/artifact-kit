@@ -182,7 +182,7 @@ export function Console() {
           <span className="brand-mark">
             <BrandMark />
           </span>
-          artifactory
+          Artifactory
         </Link>
         <div className="nav-label">{t("navigation.workspaceGroup")}</div>
         <nav>

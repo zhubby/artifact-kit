@@ -2,7 +2,7 @@
 
 首次更名：2026-11-11；命名核对：2026-11-13，Asia/Shanghai。
 
-产品展示名称统一为 **Artifactory**，命令、配置和资源标识使用 `artifactory`。项目仓库为 [zhubby/artifactory](https://github.com/zhubby/artifactory)。当前模块布局见[模块布局与命名](module-layout.md)。
+产品名称由 Artifact Kit 统一改为 **Artifactory**，界面和文档中的产品展示名首字母大写；命令、配置和资源标识使用 `artifactory`。项目仓库为 [zhubby/artifactory](https://github.com/zhubby/artifactory)。当前模块布局见[模块布局与命名](module-layout.md)。
 
 ## 当前名称与公共接口
 

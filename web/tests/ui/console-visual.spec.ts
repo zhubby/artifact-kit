@@ -65,12 +65,12 @@ for (const locale of ["zh-CN", "en"] as const)
         await page.goto(path);
         await expect(page).toHaveTitle(
           locale === "en"
-            ? "artifactory · Build console"
-            : "artifactory · 构建控制台",
+            ? "Artifactory · Build console"
+            : "Artifactory · 构建控制台",
         );
         if (name === "login")
-          await expect(page.locator(".login-story")).toContainText("artifactory");
-        else await expect(page.locator(".brand")).toHaveText("artifactory");
+          await expect(page.locator(".login-story")).toContainText("Artifactory");
+        else await expect(page.locator(".brand")).toHaveText("Artifactory");
         await expect(
           page.getByRole("heading", { name: heading, exact: true }),
         ).toBeVisible();

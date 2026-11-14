@@ -10,6 +10,8 @@
 /.deploy/
 /.context/
 /.env
+/ai-worker/node_modules/
+/ai-worker/dist/
 /packages/*/node_modules/
 /packages/*/dist/
 /scripts/__pycache__/
